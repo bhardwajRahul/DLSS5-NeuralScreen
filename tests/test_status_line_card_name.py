@@ -1,22 +1,29 @@
-"""The status line must be able to say which card runs the network (audit M4).
+"""The status line: the readings must be visible, and the counter must exist.
 
-The readings hug the right edge and the card name took whatever was left in the
-middle. The remainder measured 72 px at 1080p and 74 px at 4K - nearly the same,
-because the reading block grows with the font while the panel scale stops at
-user_scale 1.2 - so even "NVIDIA GeForce RTX 5070 Ti" was elided to about 63-72
-px, i.e. "NVIDIA…", for every card tried. In German at 4K the room was 38 px,
-below the old 40-unit floor, so the name was not drawn at all.
+Two bugs lived in this one line.
 
-The card the network is running on is the one value in that line that cannot be
-guessed from anywhere else, so it now gets its room first, capped at a third of
-the bar, and the readings are laid out into what remains - a reading that does
-not fit is dropped rather than clipped, because a half-number reads as a wrong
-number.
+The counter: it was removed from the line in 2caf312 while the main loop kept
+handing it to the panel, so it reached no font at all - the report was "no
+frame count shown at all".
 
-Checked here with the real faces and the real layout, at the sizes and card
-names the probe used, in the languages that produced the failures: the name
-must be drawn, it must be wide enough to identify the card rather than a bare
-"NVIDIA…", and every reading that IS drawn must fit inside the bar.
+The readings: they were laid out from the RIGHT edge in reverse order and any
+value that ran out of room was silently skipped, which made the FIRST casualty
+NR - the rate people watch - while the resolution (printed again in the source
+section above) stayed. Measured at 4K with a real card name: NR and FG gone,
+"SKIP 0  3840x2160" on screen.
+
+The line is now: dot, state, card name on the left; NR, FG, FRAMES anchored to
+the right edge, the counter at the very edge. The resolution and the
+skipped-frame count are gone from the line by decision - one is already
+printed above, the other is a number nobody acts on.
+
+What this test locks:
+  * one line, and it fits inside its block;
+  * the readings are on screen, in the order NR, FG, FR, with FR at the right
+    edge - not merely rendered, but blitted where they can be seen;
+  * the removed values really are gone, so nobody re-adds them by accident;
+  * the card name is still drawn (it is the one value that cannot be guessed);
+  * at a width where something must be dropped, NR survives.
 
 Run:  runtime\\python.exe tests\\test_status_line_card_name.py
 """
@@ -39,6 +46,9 @@ CARDS = (
 )
 SIZES = ((1920, 1080), (2560, 1440), (3840, 2160))
 LANGS = ("en", "de", "ru")
+#: What the line must show, left to right. The counter is last so it lands on
+#: the right edge.
+WANT = ("NR 98.8", "FG 167", "FR 19704")
 
 
 def _state(width: int, height: int, lang: str, card: str) -> dict:
@@ -52,64 +62,37 @@ def _state(width: int, height: int, lang: str, card: str) -> dict:
         "hdr": False, "spout": False, "rec_indicator": True,
         "skip_static": True, "windows": [], "window_current": "",
         "monitors": [], "monitor": "", "gpus": [], "gpu": "",
-        "version": "1.13.1", "channel": "@perseval_BLR",
+        "version": "1.15.0", "channel": "@perseval_BLR",
         "autostart": True, "open_on_start": True,
         "recording": False, "screenshot_dir": "", "recording_dir": "",
     }
 
 
-class _FontSpy:
-    """A font that records every string rendered through it.
+def _watch(menu, stats: dict, w: int, h: int) -> dict:
+    """Draw for real and report what the status line PUT ON SCREEN.
 
-    pygame makes `Font.render` read-only, so the object is wrapped instead of
-    patched: the menu holds its fonts as attributes, and swapping them for this
-    proxy means the test sees exactly what the drawer asked a font to draw -
-    not what the test itself believes the drawer does.
+    `render()` is not proof of visibility - the drawer builds an image for
+    every value and only then decides whether it fits - so the capture is the
+    blit, scoped to `_draw_stats` (other sections print similar strings).
+    Images are kept alive because CPython reuses `id()` once an object is
+    collected, which silently aliases unrelated strings.
+
+    Returns {"mono": [(label, x, y)], "ui": [(label, x, y)]}.
     """
-
-    __slots__ = ("_font", "_seen")
-
-    def __init__(self, font, seen: list):
-        object.__setattr__(self, "_font", font)
-        object.__setattr__(self, "_seen", seen)
-
-    def render(self, text, *a, **kw):
-        self._seen.append(str(text))
-        return self._font.render(text, *a, **kw)
-
-    def __getattr__(self, name):
-        return getattr(self._font, name)
-
-
-def _drawn_readings(menu, w: int, h: int) -> dict:
-    """What the status block actually PUT ON SCREEN, with where.
-
-    `render()` is not proof of visibility: the drawer builds an image for every
-    reading and only then decides whether it fits, so a string can be rendered
-    and still never appear. The honest capture is the blit - the moment a value
-    lands on the surface - scoped to `_draw_stats` so values drawn elsewhere on
-    the page (the source row also prints the resolution) cannot be mistaken for
-    status-line survivors.
-
-    Returns {text: (x, y)} for every image the status block blitted.
-    """
-    _ = (w, h)
-    placed: dict[str, tuple[int, int]] = {}
-    texts_by_id: dict[int, str] = {}
+    keep: list = []
+    registry: dict[int, tuple[str, str]] = {}
+    placed: dict[str, list] = {"mono": [], "ui": []}
     active = {"on": False}
 
-    real_mono = menu._mono_small
-
     class _TaggedFont:
-        """Wraps the mono face and remembers which image came from which text."""
-
-        def __init__(self, font, sink):
+        def __init__(self, font, tag):
             self._font = font
-            self._sink = sink
+            self._tag = tag
 
         def render(self, text, *a, **kw):
             img = self._font.render(text, *a, **kw)
-            self._sink[id(img)] = str(text)
+            keep.append(img)
+            registry[id(img)] = (str(text), self._tag)
             return img
 
         def __getattr__(self, name):
@@ -120,37 +103,35 @@ def _drawn_readings(menu, w: int, h: int) -> dict:
 
         def blit(self, source, dest, *a, **kw):
             if active["on"]:
-                label = texts_by_id.get(id(source))
-                if label is not None:
-                    placed[label] = (int(dest[0]), int(dest[1]))
+                info = registry.get(id(source))
+                if info is not None:
+                    placed[info[1]].append((info[0], int(dest[0]), int(dest[1])))
             return super().blit(source, dest, *a, **kw)
 
-    object.__setattr__(menu, "_mono_small", _TaggedFont(real_mono, texts_by_id))
-    real_draw_stats = menu._draw_stats
+    real_mono, real_ui = menu._mono_small, menu._small_font
+    object.__setattr__(menu, "_mono_small", _TaggedFont(real_mono, "mono"))
+    object.__setattr__(menu, "_small_font", _TaggedFont(real_ui, "ui"))
+    real_draw = menu._draw_stats
 
-    def scoped_draw_stats(surface, s):
+    def scoped(surface, s):
         active["on"] = True
         try:
-            return real_draw_stats(surface, s)
+            return real_draw(surface, s)
         finally:
             active["on"] = False
 
-    menu._draw_stats = scoped_draw_stats
+    menu._draw_stats = scoped
+    menu.stats = stats
     try:
-        surface = _WatchSurface((w, h), pygame.SRCALPHA)
-        menu.draw(surface)
+        menu.draw(_WatchSurface((w, h), pygame.SRCALPHA))
     finally:
-        menu._draw_stats = real_draw_stats
+        menu._draw_stats = real_draw
         object.__setattr__(menu, "_mono_small", real_mono)
+        object.__setattr__(menu, "_small_font", real_ui)
     return placed
 
 
-def _rendered_texts(menu, w: int, h: int, width: int, height: int) -> set[str]:
-    return set(_drawn_readings(menu, w, h))
-
-
 def main() -> int:
-    import pygame
     pygame.init()
     pygame.display.set_mode((64, 64))
     import fonts
@@ -158,7 +139,9 @@ def main() -> int:
 
     failures = []
     checked = 0
+    edge_cases = 0
 
+    # ---- the line as a whole, at every size/language/card ---------------
     for (w, h) in SIZES:
         for lang in LANGS:
             for card in CARDS:
@@ -170,8 +153,9 @@ def main() -> int:
                 menu.visible = True
                 menu.page = "main"
                 menu.layout(w, h)
-                menu.stats = {"fps": 144.0, "display_fps": 144.0,
-                              "skipped_static": 12, "resolution": f"{w}x{h}"}
+                stats = {"fps": 98.8, "display_fps": 167.3,
+                         "skipped_static": 12, "resolution": f"{w}x{h}",
+                         "frames": 19704}
 
                 drawn = []
                 real_clip = menu._clip
@@ -182,9 +166,8 @@ def main() -> int:
                     return img
 
                 menu._clip = spy
-                surface = pygame.Surface((w, h), pygame.SRCALPHA)
                 try:
-                    menu.draw(surface)
+                    placed = _watch(menu, stats, w, h)
                 except Exception as exc:
                     failures.append(f"{w}x{h}/{lang}/{card[:28]}: draw raised "
                                     f"{exc!r}")
@@ -194,151 +177,124 @@ def main() -> int:
                     menu._clip = real_clip
                 checked += 1
 
-                name_hits = [d for d in drawn if d[0] == card]
-                if not name_hits:
-                    failures.append(
-                        f"{w}x{h}/{lang}/{card[:28]}: the card name never "
-                        f"reached _clip - it is not drawn on the status line")
-                    continue
-                max_w, width = name_hits[0][1], name_hits[0][2]
-                if max_w <= 0 or width <= 0:
-                    failures.append(
-                        f"{w}x{h}/{lang}/{card[:28]}: the card name is drawn "
-                        f"at {width}px (max_w={max_w}) - it reads as nothing")
-                # "NVIDIA…" is 63 px at the smallest; require more than that,
-                # so the name has to carry at least a model hint.
-                floor = menu._small_font.size("NVIDIA")[0] + menu._u(6)
-                if width <= floor:
-                    failures.append(
-                        f"{w}x{h}/{lang}/{card[:28]}: the name is only "
-                        f"{width}px (floor {floor}) - it says 'NVIDIA…' and "
-                        f"not which card")
-
-                # Every reading that was drawn must fit inside the bar. Their
-                # max_w is not used (they are rendered whole or skipped), so
-                # measure the rendered width against what the code allowed:
-                # nothing may start left of the name's end.
-                for text, _mw, tw in drawn:
-                    if text == card or not text:
-                        continue
-                    if tw > menu._stats_rect.w:
-                        failures.append(
-                            f"{w}x{h}/{lang}/{card[:28]}: the reading "
-                            f"{text[:16]!r} renders {tw}px in a "
-                            f"{menu._stats_rect.w}px bar")
-
-    # The reading the reporter could not find: a frame counter. It was removed
-    # from the line in 2caf312 and the main loop kept handing it to the panel,
-    # so it reached no font at all. It has to be on screen now, and so does
-    # NR - the rate that used to be the FIRST casualty of the old right-to-left
-    # layout (measured at 4K: NR and FG dropped, "SKIP 0 3840x2160" kept).
-    for (w, h) in SIZES:
-        for card in CARDS:
-            menu = None
-            menu = OverlayMenu(1.0, lambda size=14, mono=False, bold=False,
-                               L="en": fonts.load(size, mono=mono,
-                                                  bold=bold, lang=L))
-            menu.lang = "en"
-            menu.set_state(_state(w, h, "en", card))
-            menu.visible = True
-            menu.page = "main"
-            menu.layout(w, h)
-            menu.stats = {"fps": 98.8, "display_fps": 167.3,
-                          "skipped_static": 0, "resolution": f"{w}x{h}",
-                          "frames": 19704}
-            placed = _drawn_readings(menu, w, h)
-            texts = set(placed)
-            # The readings must reach the right edge of their line: a run of
-            # numbers bunched against the left edge reads as a half-drawn line
-            # (the reporter's exact complaint about the first version). The
-            # layout spreads them, so the last one ends where the line ends.
-            if placed:
-                widest_end = max(
-                    pos[0] + menu._mono_small.size(t)[0]
-                    for t, pos in placed.items())
-                want = menu._stats_line2.right - menu._u(overlay_ui.STAT_PAD)
-                slack = max(3, menu._u(4))
-                if widest_end < want - slack:
-                    failures.append(
-                        f"{w}x{h}/{card[:28]}: the readings stop at "
-                        f"{widest_end}px but the line runs to {want}px - they "
-                        f"are bunched at the left instead of spread across it")
-            # Both lines must live INSIDE the status block: squeeze the block
-            # back to one line and the readings line overflows it, drawing over
-            # the section below while still "rendering" - which is why the
-            # geometry is checked and not just the strings.
-            block = menu._stats_rect
-            for line, which in ((getattr(menu, "_stats_line1", None), "first"),
-                                (getattr(menu, "_stats_line2", None), "second")):
+                # One line, and it must sit inside the block it was laid out
+                # for - a line taller than its block draws over the section
+                # below while still looking fine in the strings.
+                line = getattr(menu, "_stats_line1", None)
+                block = menu._stats_rect
                 if line is None or line.h <= 0:
-                    failures.append(f"{w}x{h}/{card[:28]}: the {which} status "
+                    failures.append(f"{w}x{h}/{lang}/{card[:28]}: the status "
                                     f"line was not laid out")
                 elif not block.contains(line):
                     failures.append(
-                        f"{w}x{h}/{card[:28]}: the {which} status line "
-                        f"{tuple(line)} is outside the status block "
-                        f"{tuple(block)} - the readings draw over the section "
-                        f"below")
-            # ALL of them at once, not one at a time: a single line physically
-            # cannot carry NR + FG + frames + resolution beside a real card
-            # name, which is exactly why the readings get a line of their own.
-            # Requiring them together is what makes a merge back to one line
-            # fail here instead of at a user's 4K screen.
-            for needle, what in (("NR 98.8", "NR rate"),
-                                 ("FR 19704", "frame counter"),
-                                 ("FG 167", "FG rate"),
-                                 (f"{w}x{h}", "resolution")):
-                if needle not in texts:
+                        f"{w}x{h}/{lang}/{card[:28]}: the status line "
+                        f"{tuple(line)} is outside its block {tuple(block)} - "
+                        f"it draws over the section below")
+                elif block.h > line.h + menu._u(6):
+                    # The block is sized for exactly one line. A taller block
+                    # is a leftover of the two-line layout: it pushes every
+                    # section below it down and leaves a dead strip.
                     failures.append(
-                        f"{w}x{h}/{card[:28]}: the {what} ({needle!r}) never "
-                        f"reached a font - it is not on screen together with "
-                        f"the others. Rendered: {sorted(t for t in texts if any(ch.isdigit() for ch in t))[:8]}")
+                        f"{w}x{h}/{lang}/{card[:28]}: the status block is "
+                        f"{block.h}px tall for a {line.h}px line - the layout "
+                        f"still reserves room for a second line")
 
-    # Priority, locked by a case where the line genuinely runs out of room.
-    # At the sizes above everything fits, so the order is never exercised -
-    # and the order is the whole point: NR must survive, the resolution is the
-    # one allowed to go. The fit is measured first, so the check only fires at
-    # a width where a choice is actually forced (measured: scale 0.4 fits
-    # NR+FG+FR in 184px and must drop the rest; 0.6 fits everything).
-    for scale in (0.4, 0.5, 0.6, 0.75):
+                # Blit order is right-to-left (the counter is drawn first so it
+                # lands at the edge), so the visual order is by x, not by the
+                # order the calls happened to be made in.
+                mono_sorted = sorted(placed["mono"], key=lambda p: p[1])
+                labels = [label for label, _x, _y in mono_sorted]
+                for want in WANT:
+                    if want not in labels:
+                        failures.append(
+                            f"{w}x{h}/{lang}/{card[:28]}: {want!r} is not on "
+                            f"screen. Drawn: {labels}")
+                if labels == list(WANT):
+                    # The counter has to end at the right edge: it is the
+                    # value the reporter could not find, and an anchored run
+                    # that stops short reads as a line that failed to draw.
+                    right = line.right - menu._u(overlay_ui.STAT_PAD)
+                    last_label, last_x, _ly = mono_sorted[-1]
+                    end = last_x + menu._mono_small.size(last_label)[0]
+                    if abs(end - right) > 1:
+                        failures.append(
+                            f"{w}x{h}/{lang}/{card[:28]}: the readings end at "
+                            f"{end}px, not at the right edge {right}px")
+                    # The name must not collide with the first reading. It is
+                    # elided when long, so it is matched by prefix, not by
+                    # equality.
+                    head = card[:12]
+                    names = [p for p in placed["ui"]
+                             if p[0].startswith(head)
+                             or card.startswith(p[0].rstrip("\u2026"))]
+                    if names:
+                        name_label = max(names, key=lambda p: p[1])
+                        name_end = name_label[1] + \
+                            menu._small_font.size(name_label[0])[0]
+                        if name_end + menu._u(14) > mono_sorted[0][1]:
+                            failures.append(
+                                f"{w}x{h}/{lang}/{card[:28]}: the card name "
+                                f"runs into the readings")
+                        else:
+                            floor = menu._small_font.size("NVIDIA")[0] + \
+                                menu._u(6)
+                            if menu._small_font.size(name_label[0])[0] <= floor:
+                                failures.append(
+                                    f"{w}x{h}/{lang}/{card[:28]}: the name is "
+                                    f"elided to {name_label[0]!r} - it does "
+                                    f"not say which card")
+                    else:
+                        failures.append(
+                            f"{w}x{h}/{lang}/{card[:28]}: the card name is not "
+                            f"drawn - it is the one value that cannot be "
+                            f"guessed from elsewhere")
+                else:
+                    # The order is the fix: NR first, the counter last so it
+                    # sits at the edge. A different order means the priority
+                    # logic changed.
+                    if set(labels) == set(WANT):
+                        failures.append(
+                            f"{w}x{h}/{lang}/{card[:28]}: the readings are on "
+                            f"screen but in the wrong order: {labels}")
+
+                # The two values the owner removed must stay removed: a
+                # permanent "SKIP 0" spends width on a number nobody acts on,
+                # and the resolution is already printed in the source section.
+                for gone in ("SKIP 12", f"{w}x{h}"):
+                    if gone in labels:
+                        failures.append(
+                            f"{w}x{h}/{lang}/{card[:28]}: {gone!r} is back on "
+                            f"the status line - it was removed by decision")
+
+    # ---- priority: when the line runs out of room ----------------------
+    # Small panel scales and long numbers force a choice. NR must survive it:
+    # dropping NR while keeping a lesser value was the original bug.
+    for scale in (0.3, 0.35, 0.4):
         menu = OverlayMenu(scale, lambda size=14, mono=False, bold=False,
-                           L="en": fonts.load(size, mono=mono, bold=bold, lang=L))
+                           L="en": fonts.load(size, mono=mono, bold=bold,
+                                              lang="en"))
         menu.lang = "en"
         menu.set_state(_state(1920, 1080, "en",
                               "NVIDIA GeForce RTX 5070 Ti Laptop GPU"))
         menu.visible = True
         menu.page = "main"
         menu.layout(1920, 1080)
-        menu.stats = {"fps": 98.8, "display_fps": 167.3, "skipped_static": 9999,
-                      "resolution": "3840x2160", "frames": 197045678}
+        stats = {"fps": 98.8, "display_fps": 167.3, "skipped_static": 9,
+                 "resolution": "3840x2160", "frames": 197045678}
 
-        # What the line can hold at this width, by the drawer's own rule.
-        line2 = menu._stats_line2
-        pad = menu._u(overlay_ui.STAT_PAD)
-        room = (line2.right - pad) - (line2.x + pad)
-        values = [f"NR 98.8", "FG 167", "FR 197045678", "SKIP 9999", "3840x2160"]
-        need_all = sum(menu._mono_small.size(v)[0] for v in values) \
-            + menu._u(18) * (len(values) - 1)
-
-        texts = _rendered_texts(menu, 1920, 1080, 1920, 1080)
-        if "NR 98.8" not in texts:
+        placed = _watch(menu, stats, 1920, 1080)
+        edge_cases += 1
+        mono_sorted = sorted(placed["mono"], key=lambda p: p[1])
+        labels = [label for label, _x, _y in mono_sorted]
+        if "NR 98.8" not in labels:
             failures.append(
                 f"scale {scale}: NR was dropped to make room for something "
-                f"else - the rate is the last thing that may go. Rendered: "
-                f"{sorted(t for t in texts if any(ch.isdigit() for ch in t))[:8]}")
-        if "FR 197045678" not in texts:
+                f"else - the rate is the last thing that may go. Drawn: "
+                f"{labels}")
+        if labels and labels[-1] != "FR 197045678":
             failures.append(
-                f"scale {scale}: the frame counter was dropped while the "
-                f"resolution stayed - the priority is inverted. Rendered: "
-                f"{sorted(t for t in texts if any(ch.isdigit() for ch in t))[:8]}")
-        # Where a choice is forced, the value that must pay is the resolution:
-        # it is the only reading that also appears elsewhere on the page.
-        if need_all > room and "3840x2160" in texts:
-            failures.append(
-                f"scale {scale}: the line cannot hold every reading "
-                f"({need_all}px needed, {room}px available) yet nothing was "
-                f"dropped - the overflow would overlap. Rendered: "
-                f"{sorted(t for t in texts if any(ch.isdigit() for ch in t))[:8]}")
+                f"scale {scale}: the counter is not the rightmost value "
+                f"({labels}) - it is anchored to the edge by design")
 
     if not checked:
         print("FAIL: no status line was drawn - this test no longer covers "
@@ -351,8 +307,9 @@ def main() -> int:
         print(f"... and {len(failures) - 15} more")
     if failures:
         return 1
-    print(f"OK: the card name is readable and the readings fit, on "
-          f"{checked} combinations")
+    print(f"OK: one status line, readings NR/FG/FR with the counter at the "
+          f"right edge, on {checked} combinations and {edge_cases} tight "
+          f"widths")
     return 0
 
 
