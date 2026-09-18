@@ -1933,6 +1933,7 @@ for _strings in STRINGS.values():
         "frame_limit_custom_value": "Custom limit",
         "nr_short": "NR",
         "fg_short": "FG",
+        "frames_short": "FR",
         "skipped_short": "SKIP",
         "screenshot_mode": "Screenshot saving",
         "screenshot_ask": "Save As",
