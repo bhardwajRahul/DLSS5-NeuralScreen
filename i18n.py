@@ -1933,8 +1933,6 @@ for _strings in STRINGS.values():
         "frame_limit_custom_value": "Custom limit",
         "nr_short": "NR",
         "fg_short": "FG",
-        "frames_short": "FR",
-        "skipped_short": "SKIP",
         "screenshot_mode": "Screenshot saving",
         "screenshot_ask": "Save As",
         "screenshot_auto": "Save automatically",
@@ -1962,7 +1960,6 @@ STRINGS["ru"].update({
     "frame_limit_custom": "Своё",
     "frame_limit_unlimited": "Без ограничений",
     "frame_limit_custom_value": "Свой предел",
-    "skipped_short": "ПРОП.",
     "screenshot_mode": "Сохранение снимка",
     "screenshot_ask": "Спросить путь",
     "screenshot_auto": "Сохранить сразу",
@@ -2019,7 +2016,6 @@ STRINGS["fr"].update({
     'select_shot_dir': 'Choisir le dossier des captures',
     'shot_folder_set': 'Dossier des captures : {path}',
     'shot_saved': 'Capture enregistrée : {path}',
-    'skipped_short': 'IGNORÉ',
 })
 
 STRINGS["de"].update({
@@ -2054,7 +2050,6 @@ STRINGS["de"].update({
     'select_shot_dir': 'Screenshot-Ordner wählen',
     'shot_folder_set': 'Screenshot-Ordner: {path}',
     'shot_saved': 'Screenshot gespeichert: {path}',
-    'skipped_short': 'ÜBERSPR.',
 })
 
 STRINGS["es"].update({
@@ -2089,7 +2084,6 @@ STRINGS["es"].update({
     'select_shot_dir': 'Elegir la carpeta de capturas',
     'shot_folder_set': 'Carpeta de capturas: {path}',
     'shot_saved': 'Captura guardada: {path}',
-    'skipped_short': 'OMIT.',
 })
 
 STRINGS["it"].update({
@@ -2124,7 +2118,6 @@ STRINGS["it"].update({
     'select_shot_dir': 'Scegli la cartella degli screenshot',
     'shot_folder_set': 'Cartella screenshot: {path}',
     'shot_saved': 'Screenshot salvato: {path}',
-    'skipped_short': 'SALT.',
 })
 
 STRINGS["pt"].update({
@@ -2159,7 +2152,6 @@ STRINGS["pt"].update({
     'select_shot_dir': 'Escolher a pasta de capturas',
     'shot_folder_set': 'Pasta de capturas: {path}',
     'shot_saved': 'Captura salva: {path}',
-    'skipped_short': 'IGNOR.',
 })
 
 STRINGS["pl"].update({
@@ -2194,7 +2186,6 @@ STRINGS["pl"].update({
     'select_shot_dir': 'Wybierz folder zrzutów',
     'shot_folder_set': 'Folder zrzutów: {path}',
     'shot_saved': 'Zrzut zapisany: {path}',
-    'skipped_short': 'POMIN.',
 })
 
 STRINGS["uk"].update({
@@ -2229,7 +2220,6 @@ STRINGS["uk"].update({
     'select_shot_dir': 'Виберіть папку скриншотів',
     'shot_folder_set': 'Папка скриншотів: {path}',
     'shot_saved': 'Скриншот збережено: {path}',
-    'skipped_short': 'ПРОП.',
 })
 
 STRINGS["zh"].update({
@@ -2264,7 +2254,6 @@ STRINGS["zh"].update({
     'select_shot_dir': '选择截图文件夹',
     'shot_folder_set': '截图文件夹：{path}',
     'shot_saved': '截图已保存：{path}',
-    'skipped_short': '跳过',
 })
 
 STRINGS["ja"].update({
@@ -2299,7 +2288,6 @@ STRINGS["ja"].update({
     'select_shot_dir': 'スクリーンショット フォルダーを選択',
     'shot_folder_set': 'スクリーンショット フォルダー: {path}',
     'shot_saved': 'スクリーンショットを保存しました: {path}',
-    'skipped_short': 'スキップ',
 })
 
 STRINGS["ko"].update({
@@ -2334,6 +2322,5 @@ STRINGS["ko"].update({
     'select_shot_dir': '스크린샷 폴더 선택',
     'shot_folder_set': '스크린샷 폴더: {path}',
     'shot_saved': '스크린샷 저장됨: {path}',
-    'skipped_short': '건너뜀',
 })
 
