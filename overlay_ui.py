@@ -867,12 +867,11 @@ class OverlayMenu:
             # "SKIP 0  3840x2160" on screen. A reading nobody can see reads as
             # a counter that does not work (report: "no frame count at all").
             #
-            # The readings are what cannot be read anywhere else: NR rate, FG
-            # rate, and the frame counter. The resolution and the skipped-frame
-            # count were dropped from the line by decision (19.09) - one is
-            # already printed above, the other is a number nobody acts on.
-            # Order left to right: NR, FG, FRAMES - the counter sits at the
-            # right edge, where the eye goes last.
+            # The readings are what cannot be read anywhere else: the NR rate
+            # and the FG rate. Resolution, the skipped-frame count and the
+            # frame counter are gone from the line by decision (19.09) - the
+            # first is already printed above, the other two are numbers nobody
+            # acts on. Order left to right: NR, FG.
             line_h = self._u(SMALL_SIZE) + self._u(18)
             status_h = line_h
             self._stats_rel = pygame.Rect(pad, cy, inner_w, status_h)
@@ -2419,22 +2418,19 @@ class OverlayMenu:
 
         One line. The left half is the state and the card - the two values that
         cannot be read anywhere else. The right half is the readings, anchored
-        to the RIGHT edge: NR rate, FG rate, then the frame counter at the very
-        edge.
+        to the RIGHT edge: NR rate then FG rate, with FG at the very edge.
 
         The reading order matters and was the bug. The old line laid the values
         out from the right in reverse order and skipped whatever ran out of
         room, which made the FIRST casualty NR - the rate people watch - while
         the resolution stayed. At 4K with a real card name the drop was
-        measured: NR and FG gone, "SKIP 0  3840x2160" still on screen. The
-        counter was worse: it was dropped from the line entirely, so it reached
-        no font at all (report: "no frame count at all").
+        measured: NR and FG gone, "SKIP 0  3840x2160" still on screen.
 
         The readings are placed FIRST and the card name gets what is left, so
-        the name can never push a reading off the bar. Resolution and the
-        skipped-frame count were removed from the line by decision: the first
-        is already printed in the source section above, the second is a number
-        nobody acts on.
+        the name can never push a reading off the bar. Resolution, the
+        skipped-frame count and the frame counter were removed from the line by
+        decision: the first is already printed in the source section above, and
+        the other two are numbers nobody acts on.
         """
         rect = self._stats_rect
         if rect.w <= 0:
@@ -2461,7 +2457,8 @@ class OverlayMenu:
         # ---- the readings, anchored to the right edge ---------------------
         # NR is the rate of real neural evaluations - idle acknowledgements do
         # not inflate it. FG is the worker presenter's reported output rate,
-        # not an inferred display refresh. The counter is cumulative frames.
+        # not an inferred display refresh. The frame counter is not shown at
+        # all: it was asked for once, then dropped again (19.09).
         readings: list[str] = []
         if not paused and not failed:
             fps = st.get("fps")
@@ -2472,9 +2469,6 @@ class OverlayMenu:
             shown = st.get("display_fps")
             if isinstance(shown, (int, float)) and shown > 0:
                 readings.append(f"{s.get('fg_short', 'FG')} {shown:.0f}")
-            frames = st.get("frames")
-            if isinstance(frames, (int, float)) and frames > 0:
-                readings.append(f"{s.get('frames_short', 'FR')} {int(frames)}")
 
         gap = self._u(14)
         right = line.right - pad
@@ -2506,9 +2500,9 @@ class OverlayMenu:
         if imgs is None:
             return
 
-        # Drawn right to left, last value first, so the frame counter - the
-        # final entry in `readings` - ends up at the right edge and the list
-        # still reads NR, FG, FRAMES from left to right.
+        # Drawn right to left, last value first, so the last reading - FG -
+        # ends up at the right edge and the list still reads NR, FG from left
+        # to right.
         x = float(right)
         for img, w in reversed(imgs):
             x -= w

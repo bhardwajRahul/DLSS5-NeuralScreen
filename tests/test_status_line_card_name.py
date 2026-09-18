@@ -1,26 +1,22 @@
-"""The status line: the readings must be visible, and the counter must exist.
+"""The status line: the readings must be visible, and in the right order.
 
-Two bugs lived in this one line.
+The bug: the readings were laid out from the RIGHT edge in reverse order and
+any value that ran out of room was silently skipped, which made the FIRST
+casualty NR - the rate people watch - while the resolution (printed again in
+the source section above) stayed. Measured at 4K with a real card name: NR and
+FG gone, "SKIP 0  3840x2160" on screen. A reading nobody can see reads as a
+broken counter.
 
-The counter: it was removed from the line in 2caf312 while the main loop kept
-handing it to the panel, so it reached no font at all - the report was "no
-frame count shown at all".
-
-The readings: they were laid out from the RIGHT edge in reverse order and any
-value that ran out of room was silently skipped, which made the FIRST casualty
-NR - the rate people watch - while the resolution (printed again in the source
-section above) stayed. Measured at 4K with a real card name: NR and FG gone,
-"SKIP 0  3840x2160" on screen.
-
-The line is now: dot, state, card name on the left; NR, FG, FRAMES anchored to
-the right edge, the counter at the very edge. The resolution and the
-skipped-frame count are gone from the line by decision - one is already
-printed above, the other is a number nobody acts on.
+The line is now: dot, state, card name on the left; NR and FG anchored to the
+right edge, FG at the very edge. The card name takes what room is left, so it
+can never push a reading off the bar. Resolution, the skipped-frame count and
+the frame counter are gone from the line by decision - all three are numbers
+nobody acts on, and the resolution is already printed above.
 
 What this test locks:
-  * one line, and it fits inside its block;
-  * the readings are on screen, in the order NR, FG, FR, with FR at the right
-    edge - not merely rendered, but blitted where they can be seen;
+  * one line, and it fits inside its block (no leftover reserved strip);
+  * NR and FG are on screen, in that order, with FG at the right edge - not
+    merely rendered, but blitted where they can be seen;
   * the removed values really are gone, so nobody re-adds them by accident;
   * the card name is still drawn (it is the one value that cannot be guessed);
   * at a width where something must be dropped, NR survives.
@@ -46,9 +42,9 @@ CARDS = (
 )
 SIZES = ((1920, 1080), (2560, 1440), (3840, 2160))
 LANGS = ("en", "de", "ru")
-#: What the line must show, left to right. The counter is last so it lands on
-#: the right edge.
-WANT = ("NR 98.8", "FG 167", "FR 19704")
+#: What the line must show, left to right. FG is last so it lands on the right
+#: edge.
+WANT = ("NR 98.8", "FG 167")
 
 
 def _state(width: int, height: int, lang: str, card: str) -> dict:
@@ -260,7 +256,7 @@ def main() -> int:
                 # The two values the owner removed must stay removed: a
                 # permanent "SKIP 0" spends width on a number nobody acts on,
                 # and the resolution is already printed in the source section.
-                for gone in ("SKIP 12", f"{w}x{h}"):
+                for gone in ("SKIP 12", f"{w}x{h}", "FR 19704"):
                     if gone in labels:
                         failures.append(
                             f"{w}x{h}/{lang}/{card[:28]}: {gone!r} is back on "
@@ -291,10 +287,10 @@ def main() -> int:
                 f"scale {scale}: NR was dropped to make room for something "
                 f"else - the rate is the last thing that may go. Drawn: "
                 f"{labels}")
-        if labels and labels[-1] != "FR 197045678":
+        if labels and labels[-1] != "FG 167":
             failures.append(
-                f"scale {scale}: the counter is not the rightmost value "
-                f"({labels}) - it is anchored to the edge by design")
+                f"scale {scale}: FG is not the rightmost value ({labels}) - "
+                f"it is anchored to the edge by design")
 
     if not checked:
         print("FAIL: no status line was drawn - this test no longer covers "
@@ -307,9 +303,8 @@ def main() -> int:
         print(f"... and {len(failures) - 15} more")
     if failures:
         return 1
-    print(f"OK: one status line, readings NR/FG/FR with the counter at the "
-          f"right edge, on {checked} combinations and {edge_cases} tight "
-          f"widths")
+    print(f"OK: one status line, readings NR/FG with FG at the right edge, "
+          f"on {checked} combinations and {edge_cases} tight widths")
     return 0
 
 
