@@ -206,11 +206,11 @@
         "size": 19391
       },
       {
-        "git_blob": "a4802686a0dfaabb5424500d0ad3dd89c748e3ed",
+        "git_blob": "ee432d9f5cfa1d2208824bbbd11e82dc422a61e3",
         "origin": "git",
         "path": "hotkeys.py",
-        "sha256": "3a7fdc1a6c63ceba146ec45b02fb43f966dfd6a22a380e4606698e4ef9fde6c2",
-        "size": 17761
+        "sha256": "e20150ce66186609ecd3cce2e023bc5ee471f08242c5a2f64e75722522d22313",
+        "size": 18845
       },
       {
         "git_blob": "6a0a351ba6221267dc358dabd46f428189761084",
@@ -8201,7 +8201,7 @@
         "size": 7258
       }
     ],
-    "tree_sha256": "42ff9c9227a7dcaf9015773ace7eae0a5e67127229f28590296f206563d71778"
+    "tree_sha256": "300eb87a74ffd86b205b6a4cf28586a5d3aee1541c7ee51493fbdea1428b8296"
   },
   "product": "NeuralScreen",
   "runtime": {
@@ -14992,11 +14992,11 @@
       "size": 19391
     },
     {
-      "git_blob": "a4802686a0dfaabb5424500d0ad3dd89c748e3ed",
+      "git_blob": "ee432d9f5cfa1d2208824bbbd11e82dc422a61e3",
       "path": "hotkeys.py",
       "role": "shipped-resource",
-      "sha256": "3a7fdc1a6c63ceba146ec45b02fb43f966dfd6a22a380e4606698e4ef9fde6c2",
-      "size": 17761
+      "sha256": "e20150ce66186609ecd3cce2e023bc5ee471f08242c5a2f64e75722522d22313",
+      "size": 18845
     },
     {
       "git_blob": "6a0a351ba6221267dc358dabd46f428189761084",
