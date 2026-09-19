@@ -2402,10 +2402,28 @@ class OverlayMenu:
         state it announces lasts until the worker is rebuilt, and someone who
         looks at the menu a minute later deserves the same answer. Three
         black-screen reports came from people who never opened the log.
+
+        Frame Generation outranks the NR switch: since v1.16.0 the presenter
+        runs on the bypass path too, so "NR off" no longer means "nothing is
+        happening to the picture". The old order said "not processing" while
+        the screen was actually being interpolated - a v1.16.0 reporter read
+        exactly that and concluded Frame Generation was dead (#107).
         """
         paused = not bool(self.state.get("nr"))
         failed = self.state.get("gpu_ok") is False and not paused
+        # Frame Generation on its own is work the user asked for, and the
+        # worker reports the rate it really reaches - the reading is the
+        # proof that the presenter is alive, not the switch position. It names
+        # the line only while NR is OFF: with NR on, the neural pass is the
+        # larger part of the picture and keeps the plain "processing".
+        framegen = bool(self.state.get("frame_generation")) and paused
+        if framegen and self.state.get("display_fps") is not None:
+            return str(s.get("status_fg_only", "frame generation")), False
         if paused:
+            if framegen:
+                # FG is on but has not reported a rate yet: starting up, or
+                # refused. Say what is true instead of "not processing".
+                return str(s.get("status_fg_waiting", "frame generation starting")), False
             return str(s.get("status_off", "not processing")), False
         if failed:
             return str(s.get("gpu_no_nr", "no neural pass")), True
