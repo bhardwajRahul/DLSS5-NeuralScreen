@@ -183,6 +183,7 @@ ABOUT = {
     "test_keyboard_navigation.py": "Tab, arrows, activation, Esc and focus auto-scroll",
     "test_light_theme_contrast.py": "light/dark text, controls and focus meet WCAG contrast",
     "test_wgc_capture.py": "the worker captures one window (the single-window input)",
+    "test_zorder_decision_log.py": "the z-order guard names what it saw and what it decided",
     "test_window_filter.py": "the window list holds only real taskbar windows",
     "test_window_labels.py": "window titles stay clean while HWND remains the identity",
     "test_worker_reply.py": "raw native tests consume explicit CACK before command replies",
@@ -326,6 +327,7 @@ TEST_GROUPS = {
         "test_window_surround.py",
         "test_windows_page.py",
         "test_worker_reply.py",
+        "test_zorder_decision_log.py",
     }),
     GROUP_WARP: frozenset({
         "test_hdr_shaders.py",
