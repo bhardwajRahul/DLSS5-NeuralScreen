@@ -102,10 +102,32 @@ def main() -> int:
     test_body = body_after(src, "static int RunTest()")
     if not test_body:
         failures.append("RunTest() is gone")
-    elif "SetTestVideoParams()" not in test_body:
-        failures.append("--test no longer arms the shipped profile: the "
-                        "read-back check compares against zeros and reports a "
-                        "failure that exists only in the self-test")
+    # The profile must reach the parameters, but no longer through a
+    # test-local setter: --test and the Serve path (a 32-bit game on the feed
+    # pipe) both have no stream header, so the shared block falls back to
+    # ShippedVideoDefaults(). That fallback is what keeps a zero profile from
+    # being written - and a zero profile means intensity 0, style 0, i.e. the
+    # runtime is told to do nothing.
+    if "ShippedVideoDefaults()" not in src:
+        failures.append("the shipped-defaults fallback is gone: with no stream "
+                        "header the parameter block would write a zero profile")
+    elif not re.search(r"g_video_profile_set\s*=\s*true", src):
+        failures.append("nothing records that a stream header arrived: the "
+                        "fallback cannot be chosen and the live profile would "
+                        "be ignored (the flag is never set)")
+    else:
+        video = body_after(src, "static int RunVideo()")
+        if not re.search(r"g_video_profile_set\s*=\s*true", video):
+            failures.append("RunVideo() does not mark the profile as set: the "
+                            "live stream's own values would be replaced by the "
+                            "shipped defaults on every frame")
+        shared = body_after(src, "static void ApplyNrEvalParams(")
+        if "ShippedVideoDefaults()" not in shared:
+            failures.append("the shared parameter block no longer falls back to "
+                            "the shipped profile when no header arrived")
+        if "g_video_profile_set" not in shared:
+            failures.append("the shared parameter block ignores whether a "
+                            "profile was set")
 
     for f in failures:
         print("FAIL:", f)

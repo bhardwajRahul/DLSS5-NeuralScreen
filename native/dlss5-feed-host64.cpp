@@ -1628,15 +1628,14 @@ static bool ReinitNgx()
     return InitNgx();
 }
 
-// Forward declarations: the NR parameter block and the test profile live below
-// (they need SetVerifiedU/F, g_video_options and g_pw_exposure, which are
-// declared after this point), but Evaluate has to share them - both must set
-// the same parameters the live path sets, or --test exercises a different
-// contract than the program runs.
+// Forward declarations: the NR parameter block lives below (it needs
+// SetVerifiedU/F, g_video_options and g_pw_exposure, which are declared after
+// this point), but Evaluate has to share it - both must set the same parameters
+// the live path sets, or --test exercises a different contract than the program
+// runs.
 static void ApplyNrEvalParams(NVSDK_NGX_Parameter *p, ID3D12Resource *color,
                               ID3D12Resource *output, ID3D12Resource *mv,
                               UINT w, UINT h, int reset, float mvsx, float mvsy);
-static void SetTestVideoParams();
 
 static bool Evaluate(ID3D12Resource *color, ID3D12Resource *output, ID3D12Resource *depth, ID3D12Resource *mv,
                      UINT w, UINT h_, int reset, float mvsx, float mvsy)
@@ -1691,11 +1690,9 @@ static int RunTest()
     const UINT W = 640, H = 360;
     Log("[host] --test: %ux%u synthetic DLAA", W, H);
 
-    // The parameter read-back check inside Evaluate compares what it set with
-    // what the runtime reports, so these cannot stay zero: g_video_options is
-    // an empty VideoHeader in this mode. The shipped defaults, the same values
-    // a live session sends for the Natural profile.
-    SetTestVideoParams();
+    // No stream header in this mode, so the NR profile comes from
+    // ShippedVideoDefaults() inside the shared parameter block - the same
+    // fallback the Serve path uses. Nothing to set up here.
 
     ID3D12Resource *color  = MakeTex(W, H, DXGI_FORMAT_R8G8B8A8_UNORM, false);
     ID3D12Resource *output = MakeTex(W, H, DXGI_FORMAT_R8G8B8A8_UNORM, true);
@@ -2091,6 +2088,11 @@ static bool EnsurePresentFormat(bool hdr, bool pq = false);
 static void CloseHdrResources();
 
 static VideoHeader g_video_options = {};
+// True once RunVideo has stored a stream header. --test and the Serve path (a
+// 32-bit game on the feed pipe) never send one, and the NR parameter block has
+// to fall back to the shipped defaults there instead of writing a zero profile
+// that tells the runtime to do nothing.
+static bool g_video_profile_set = false;
 static uint32_t g_last_eval_result = 0;
 // Static-frame skipping (FRAME_FLAG_SKIP_STATIC): how many frames were skipped
 // since the last change, and whether the "idle" line was already written for
@@ -5298,13 +5300,33 @@ static bool SetVerifiedU(NVSDK_NGX_Parameter *p, const char *name, unsigned int 
     return !NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(p->Get(name, &got))) && got == value;
 }
 
-// The NR parameter block, shared by the live evaluate and by --test. Both must
-// set the same names with the same verification, or the self-test exercises a
-// different contract than the program runs.
+// The shipped Natural profile: what a live session sends when the user has not
+// chosen anything else. `--test` and the Serve path (a 32-bit game on the feed
+// pipe) never receive a stream header, so these are the values the NR
+// parameters must be built from there - a zeroed profile would tell the runtime
+// to do nothing (intensity 0, style 0) and would look like a broken build.
+static VideoHeader ShippedVideoDefaults()
+{
+    VideoHeader vh = {};
+    vh.warmup = 8;
+    vh.intensity = 1.00f;
+    vh.local_tone = 0.50f;
+    vh.local_structure = 1.00f;
+    vh.skin_structure = -1.0f;
+    vh.style = 1;
+    vh.auto_mask = 1;
+    vh.ui_correction = 0;
+    return vh;
+}
+
+// The NR parameter block, shared by the live evaluate, the self-test and the
+// Serve path. All must set the same names with the same verification, or one of
+// them exercises a different contract than the program runs.
 static void ApplyNrEvalParams(NVSDK_NGX_Parameter *p, ID3D12Resource *color,
                               ID3D12Resource *output, ID3D12Resource *mv,
                               UINT w, UINT hgt, int reset, float mvsx, float mvsy)
 {
+    const VideoHeader opts = g_video_profile_set ? g_video_options : ShippedVideoDefaults();
     p->Reset();
     p->Set("DLSSNR.Color", color);
     p->Set("DLSSNR.Output", output);
@@ -5319,13 +5341,13 @@ static void ApplyNrEvalParams(NVSDK_NGX_Parameter *p, ID3D12Resource *color,
     bool verified = true;
     verified &= SetVerifiedU(p, "DLSSNR.Enabled", 1u);
     verified &= SetVerifiedU(p, "DLSSNR.Reset", (unsigned int)reset);
-    verified &= SetVerifiedF(p, "DLSSNR.Intensity", g_video_options.intensity);
-    verified &= SetVerifiedF(p, "DLSSNR.LocalToneStrength", g_video_options.local_tone);
-    verified &= SetVerifiedF(p, "DLSSNR.LocalStructureStrength", g_video_options.local_structure);
-    verified &= SetVerifiedF(p, "DLSSNR.SkinStructureStrength", g_video_options.skin_structure);
-    verified &= SetVerifiedU(p, "DLSSNR.UseAutoMask", g_video_options.auto_mask);
-    verified &= SetVerifiedU(p, "DLSSNR.Style", g_video_options.style);
-    verified &= SetVerifiedU(p, "DLSSNR.UICorrection", g_video_options.ui_correction);
+    verified &= SetVerifiedF(p, "DLSSNR.Intensity", opts.intensity);
+    verified &= SetVerifiedF(p, "DLSSNR.LocalToneStrength", opts.local_tone);
+    verified &= SetVerifiedF(p, "DLSSNR.LocalStructureStrength", opts.local_structure);
+    verified &= SetVerifiedF(p, "DLSSNR.SkinStructureStrength", opts.skin_structure);
+    verified &= SetVerifiedU(p, "DLSSNR.UseAutoMask", opts.auto_mask);
+    verified &= SetVerifiedU(p, "DLSSNR.Style", opts.style);
+    verified &= SetVerifiedU(p, "DLSSNR.UICorrection", opts.ui_correction);
     if (!verified)
         Log("[host] NGX parameter read-back mismatch - a value did not stick");
     p->Set("DLSS.Pre.Exposure", 1.0f);
@@ -6003,6 +6025,7 @@ static int RunVideo()
     if (upscale && (vh.full_w < vh.width || vh.full_h < vh.height || vh.full_w > 7680 || vh.full_h > 4320))
     { Log("[video] invalid full-res size %ux%u", vh.full_w, vh.full_h); return 2; }
     g_video_options = vh;
+    g_video_profile_set = true;
     const bool live = g_live_force || (vh.frame_count == 0);
     std::string full_note;
     if (upscale) full_note = " (full-res frames " + std::to_string(vh.full_w) + "x" + std::to_string(vh.full_h) + ")";
