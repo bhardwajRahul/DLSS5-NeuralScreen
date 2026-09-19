@@ -9,10 +9,11 @@ in UTC, not the tag timestamps.
 Scope and honesty notes:
 
 * The list starts at `v1.0.0` and ends at `v1.15.1`; every tag in that range has a
-  published GitHub release (35 releases in total, `gh release list`). The tag
-  `v0.1.0-alpha` (2026-09-06) is **not** part of this history: it is a tag from the
-  other project line that shares this repository's history (the AMD fork), not a
-  NeuralScreen version. It is excluded rather than guessed at. The tag
+  published GitHub release, 34 of them. GitHub returns 35 releases for the
+  repository because the count includes the one tag listed as out of scope below.
+  The tag `v0.1.0-alpha` (2026-09-06) is **not** part of this history: it is a tag
+  from the other project line that shares this repository's history (the AMD
+  fork), not a NeuralScreen version. It is excluded rather than guessed at. The tag
   `pre-state-refactor` (2026-09-11) is an internal marker commit with no release
   and is not listed either.
 * `v1.3.1-win10-diag` is a diagnostic-only tag, not a version. It is listed at
