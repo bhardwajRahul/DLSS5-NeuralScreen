@@ -262,6 +262,42 @@ def main() -> int:
                             f"{w}x{h}/{lang}/{card[:28]}: {gone!r} is back on "
                             f"the status line - it was removed by decision")
 
+    # ---- Frame Generation running alone (NR off) ------------------------
+    # Reported from a live log: with only Frame Generation on, the worker was
+    # interpolating (`[fg] displayed 287.7 FPS (real + generated, 3x)`) while
+    # the line showed no counter at all. The readings were gated on the neural
+    # pass being on, so the one mode where FG is the only thing running hid the
+    # one number that proves it runs.
+    alone = 0
+    for (w, h) in ((1920, 1080), (2560, 1440)):
+        menu = OverlayMenu(1.0, lambda size=14, mono=False, bold=False,
+                           L="en": fonts.load(size, mono=mono, bold=bold,
+                                              lang="en"))
+        menu.lang = "en"
+        state = _state(w, h, "en", "NVIDIA GeForce RTX 5070 Ti")
+        state["nr"] = False                    # the neural pass is off
+        state["frame_generation"] = True
+        menu.set_state(state)
+        menu.visible = True
+        menu.page = "main"
+        menu.layout(w, h)
+        stats = {"fps": 0.0, "display_fps": 287.7, "skipped_static": 0,
+                 "resolution": f"{w}x{h}", "frames": 92372}
+        placed = _watch(menu, stats, w, h)
+        alone += 1
+        labels = [label for label, _x, _y in
+                  sorted(placed["mono"], key=lambda p: p[1])]
+        if not any(l.startswith("FG ") for l in labels):
+            failures.append(
+                f"{w}x{h}/FG alone: the Frame Generation counter is not on "
+                f"screen while NR is off. Drawn: {labels}")
+        # NR must NOT be drawn: "NR 0.0" reads as a broken network rather than
+        # a switched-off one, and the state label already says which mode.
+        if any(l.startswith("NR ") for l in labels):
+            failures.append(
+                f"{w}x{h}/FG alone: NR is drawn while its pass is off "
+                f"({labels}) - it reads as a broken counter")
+
     # ---- priority: when the line runs out of room ----------------------
     # Small panel scales and long numbers force a choice. NR must survive it:
     # dropping NR while keeping a lesser value was the original bug.

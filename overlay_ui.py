@@ -2478,12 +2478,23 @@ class OverlayMenu:
         # not an inferred display refresh. The frame counter is not shown at
         # all: it was asked for once, then dropped again (19.09).
         readings: list[str] = []
-        if not paused and not failed:
-            fps = st.get("fps")
-            readings.append(
-                f"{s.get('nr_short', 'NR')} {fps:.1f}"
-                if isinstance(fps, (int, float)) else
-                f"{s.get('nr_short', 'NR')} —")
+        if not failed:
+            # NR is the rate of real neural evaluations - idle acknowledgements
+            # do not inflate it. It is meaningless while the pass is off, so it
+            # is not drawn then: "NR 0.0" would read as a broken network rather
+            # than a switched-off one.
+            if not paused:
+                fps = st.get("fps")
+                readings.append(
+                    f"{s.get('nr_short', 'NR')} {fps:.1f}"
+                    if isinstance(fps, (int, float)) else
+                    f"{s.get('nr_short', 'NR')} —")
+            # Frame Generation reports its own rate whether or not the neural
+            # pass is on (v1.16.0), and with NR off it is the ONLY reading
+            # there is. It must not sit behind `not paused`: that hid the
+            # counter in exactly the mode where the presenter runs alone, and
+            # the report was "with only Frame Generation on, no frame counter"
+            # (#107, second half).
             shown = st.get("display_fps")
             if isinstance(shown, (int, float)) and shown > 0:
                 readings.append(f"{s.get('fg_short', 'FG')} {shown:.0f}")
