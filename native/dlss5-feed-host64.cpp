@@ -4187,6 +4187,29 @@ static IDXGIOutput *EnumCaptureOutput(IDXGIAdapter1 *adapter)
 {
     wchar_t want[64] = {};
     const DWORD got = GetEnvironmentVariableW(L"NS_OUTPUT", want, 64);
+    // How many outputs this adapter actually exposes, named. A diagnostic
+    // package lists every display driver in the registry, including
+    // display-only adapters (Parsec, Cherry, virtual desktop tools) that
+    // DXGI never reports as an adapter - so "the bundle lists a Parsec
+    // display but the log never mentions it" had no honest answer (#96).
+    // This line is that answer: these are the outputs the capture can use.
+    {
+        UINT total = 0;
+        for (UINT i = 0; ; ++i)
+        {
+            IDXGIOutput *probe = nullptr;
+            if (FAILED(adapter->EnumOutputs(i, &probe)) || probe == nullptr) break;
+            DXGI_OUTPUT_DESC d = {};
+            probe->GetDesc(&d);
+            Log("[cap] output %u: %ls %dx%d at (%d,%d)", i, d.DeviceName,
+                d.DesktopCoordinates.right - d.DesktopCoordinates.left,
+                d.DesktopCoordinates.bottom - d.DesktopCoordinates.top,
+                d.DesktopCoordinates.left, d.DesktopCoordinates.top);
+            probe->Release();
+            ++total;
+        }
+        Log("[cap] the capture adapter exposes %u output(s) - capture is limited to these", total);
+    }
     UINT index = 0;
     if (got >= _countof(want))
     {

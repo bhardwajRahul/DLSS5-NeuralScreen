@@ -281,6 +281,7 @@ TEST_GROUPS = {
         "test_diagnostic_settings.py",
         "test_command_recording_reuse.py",
         "test_taskbar_foreign_minimize.py",
+    "test_capture_output_log.py",
         "test_top_window_virtual_desktop.py",
         "test_low_cost_off.py",
         "test_media_output_flow.py",
