@@ -948,19 +948,11 @@ static void AbortCommands()   // never execute a list NGX crashed in
     }
 }
 
-static NVSDK_NGX_Result SafeCreateDLSS(NVSDK_NGX_DLSS_Create_Params *cp, DWORD *code)
-{
-    *code = 0;
-    __try { return NGX_D3D12_CREATE_DLSS_EXT(h.list, 1, 1, &h.feature, h.params, cp); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { *code = GetExceptionCode(); return static_cast<NVSDK_NGX_Result>(0x7FFFFFFF); }
-}
-
-static NVSDK_NGX_Result SafeEvaluateDLSS(NVSDK_NGX_D3D12_DLSS_Eval_Params *ep, DWORD *code)
-{
-    *code = 0;
-    __try { return NGX_D3D12_EVALUATE_DLSS_EXT(h.list, h.feature, h.params, ep); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { *code = GetExceptionCode(); return static_cast<NVSDK_NGX_Result>(0x7FFFFFFF); }
-}
+// SafeCreateDLSS/SafeEvaluateDLSS used to wrap the NGX CORE entry points. They
+// are gone: the feature is created and evaluated through the DLSSNR runtime
+// (g_nr_create/g_nr_evaluate) on every path, and the core wrapper only ever
+// answered 0xBAD00004 (FeatureNotFound) for a handle the runtime owns - the
+// reason --test reported 0/300 for as long as it existed.
 
 static void SafeReleaseFeature(NVSDK_NGX_Handle *f)
 {
@@ -1636,26 +1628,34 @@ static bool ReinitNgx()
     return InitNgx();
 }
 
+// Forward declarations: the NR parameter block and the test profile live below
+// (they need SetVerifiedU/F, g_video_options and g_pw_exposure, which are
+// declared after this point), but Evaluate has to share them - both must set
+// the same parameters the live path sets, or --test exercises a different
+// contract than the program runs.
+static void ApplyNrEvalParams(NVSDK_NGX_Parameter *p, ID3D12Resource *color,
+                              ID3D12Resource *output, ID3D12Resource *mv,
+                              UINT w, UINT h, int reset, float mvsx, float mvsy);
+static void SetTestVideoParams();
+
 static bool Evaluate(ID3D12Resource *color, ID3D12Resource *output, ID3D12Resource *depth, ID3D12Resource *mv,
                      UINT w, UINT h_, int reset, float mvsx, float mvsy)
 {
     if (!BeginCommands()) return false;
 
-    NVSDK_NGX_D3D12_DLSS_Eval_Params ep = {};
-    ep.Feature.pInColor  = color;
-    ep.Feature.pInOutput = output;
-    ep.pInDepth          = depth;
-    ep.pInMotionVectors  = mv;
-    ep.InRenderSubrectDimensions.Width  = w;
-    ep.InRenderSubrectDimensions.Height = h_;
-    ep.InReset           = reset;
-    ep.InMVScaleX        = mvsx;
-    ep.InMVScaleY        = mvsy;
-    ep.InPreExposure     = 1.0f;
-    ep.InExposureScale   = 1.0f;
-
+    // The feature is created through the DLSSNR runtime (g_nr_create), so it
+    // must be evaluated through the same runtime. This used to call the NGX
+    // CORE entry point (NGX_D3D12_EVALUATE_DLSS_EXT) - a different
+    // implementation that knows nothing about that handle, so every evaluate
+    // answered 0xBAD00004 (FeatureNotFound) and --test reported 0/300 while
+    // the real pipeline was fine. The live path (EvaluateVideo) has always
+    // used g_nr_evaluate; this is the same call, with the same parameter
+    // contract.
+    ApplyNrEvalParams(h.params, color, output, mv, w, h_, reset, mvsx, mvsy);
     DWORD ecode = 0;
-    NVSDK_NGX_Result re = SafeEvaluateDLSS(&ep, &ecode);
+    NVSDK_NGX_Result re = static_cast<NVSDK_NGX_Result>(0x7FFFFFFF);
+    __try { re = g_nr_evaluate(h.list, h.feature, h.params, nullptr); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { ecode = GetExceptionCode(); }
     if (ecode != 0) { AbortCommands(); Log("[host] evaluate raised 0x%08X (caught; nothing submitted)", ecode); return false; }
     if (EndCommands() == 0) return false;   // queue Signal failed (device removed)
     if (NVSDK_NGX_FAILED(re)) { Log("[host] evaluate failed 0x%08X (%s)", re, NgxResultName(re)); return false; }
@@ -1690,6 +1690,12 @@ static int RunTest()
 {
     const UINT W = 640, H = 360;
     Log("[host] --test: %ux%u synthetic DLAA", W, H);
+
+    // The parameter read-back check inside Evaluate compares what it set with
+    // what the runtime reports, so these cannot stay zero: g_video_options is
+    // an empty VideoHeader in this mode. The shipped defaults, the same values
+    // a live session sends for the Natural profile.
+    SetTestVideoParams();
 
     ID3D12Resource *color  = MakeTex(W, H, DXGI_FORMAT_R8G8B8A8_UNORM, false);
     ID3D12Resource *output = MakeTex(W, H, DXGI_FORMAT_R8G8B8A8_UNORM, true);
@@ -5290,6 +5296,58 @@ static bool SetVerifiedU(NVSDK_NGX_Parameter *p, const char *name, unsigned int 
     p->Set(name, value);
     unsigned int got = 0xFFFFFFFFu;
     return !NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(p->Get(name, &got))) && got == value;
+}
+
+// The NR parameter block, shared by the live evaluate and by --test. Both must
+// set the same names with the same verification, or the self-test exercises a
+// different contract than the program runs.
+static void ApplyNrEvalParams(NVSDK_NGX_Parameter *p, ID3D12Resource *color,
+                              ID3D12Resource *output, ID3D12Resource *mv,
+                              UINT w, UINT hgt, int reset, float mvsx, float mvsy)
+{
+    p->Reset();
+    p->Set("DLSSNR.Color", color);
+    p->Set("DLSSNR.Output", output);
+    p->Set("DLSSNR.MVec", mv);
+    p->Set("DLSSNR.ColorSubrectBaseX", 0u); p->Set("DLSSNR.ColorSubrectBaseY", 0u);
+    p->Set("DLSSNR.ColorSubrectWidth", w); p->Set("DLSSNR.ColorSubrectHeight", hgt);
+    p->Set("DLSSNR.MVecSubrectBaseX", 0u); p->Set("DLSSNR.MVecSubrectBaseY", 0u);
+    p->Set("DLSSNR.MVecSubrectWidth", w); p->Set("DLSSNR.MVecSubrectHeight", hgt);
+    p->Set("DLSSNR.OutputSubrectBaseX", 0u); p->Set("DLSSNR.OutputSubrectBaseY", 0u);
+    p->Set("DLSSNR.OutputSubrectWidth", w); p->Set("DLSSNR.OutputSubrectHeight", hgt);
+    p->Set("DLSSNR.MVecScaleX", mvsx); p->Set("DLSSNR.MVecScaleY", mvsy);
+    bool verified = true;
+    verified &= SetVerifiedU(p, "DLSSNR.Enabled", 1u);
+    verified &= SetVerifiedU(p, "DLSSNR.Reset", (unsigned int)reset);
+    verified &= SetVerifiedF(p, "DLSSNR.Intensity", g_video_options.intensity);
+    verified &= SetVerifiedF(p, "DLSSNR.LocalToneStrength", g_video_options.local_tone);
+    verified &= SetVerifiedF(p, "DLSSNR.LocalStructureStrength", g_video_options.local_structure);
+    verified &= SetVerifiedF(p, "DLSSNR.SkinStructureStrength", g_video_options.skin_structure);
+    verified &= SetVerifiedU(p, "DLSSNR.UseAutoMask", g_video_options.auto_mask);
+    verified &= SetVerifiedU(p, "DLSSNR.Style", g_video_options.style);
+    verified &= SetVerifiedU(p, "DLSSNR.UICorrection", g_video_options.ui_correction);
+    if (!verified)
+        Log("[host] NGX parameter read-back mismatch - a value did not stick");
+    p->Set("DLSS.Pre.Exposure", 1.0f);
+    p->Set("DLSS.Exposure.Scale", g_pw_exposure);
+}
+
+// --test drives the worker with no client, so no header ever fills
+// g_video_options. The defaults a live session sends for the shipped Natural
+// profile go in instead - the read-back check above needs real values, and a
+// zeroed profile would make the synthetic run report a contract failure that
+// only exists in the self-test.
+static void SetTestVideoParams()
+{
+    g_video_options = {};
+    g_video_options.warmup = 8;
+    g_video_options.intensity = 1.00f;
+    g_video_options.local_tone = 0.50f;
+    g_video_options.local_structure = 1.00f;
+    g_video_options.skin_structure = -1.0f;
+    g_video_options.style = 1;
+    g_video_options.auto_mask = 1;
+    g_video_options.ui_correction = 0;
 }
 
 static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
