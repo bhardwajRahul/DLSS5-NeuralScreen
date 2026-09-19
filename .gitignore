@@ -25,6 +25,11 @@ runtime/
 # Program log (pythonw launch without a console)
 NeuralScreen.log
 
+# The worker's own log, written next to the binary. It appears whenever the
+# worker runs directly - `nvngx.dll --test` writes one every time - and it was
+# untracked-but-visible until a mutation run left one behind.
+native/dlss5-feed-host*.log
+
 # Per-machine compatibility verdict and user-created support bundles
 compatibility-cache.json
 support-bundles/
