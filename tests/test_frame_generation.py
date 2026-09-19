@@ -44,7 +44,7 @@ def reply(pipe, count):
     return read_reply(pipe, count)
 
 
-def run(hdr=False, dynamic=False, check_pixels=False):
+def run(hdr=False, dynamic=False, check_pixels=False, fg_only=False):
     w, h = 640, 360
     work_w, work_h = w, h
     if hdr:
@@ -91,13 +91,13 @@ def run(hdr=False, dynamic=False, check_pixels=False):
             x = 80 + (i % 80) * 4
             frame[80:280, x:x+120, :3] = (220, 100, 50)
             frame[15:65, 500:620, :3] = 255  # static HDR white patch
-            bypass = 125 <= i < 130
+            bypass = True if fg_only else (125 <= i < 130)
             flags = wire.FRAME_FLAG_WANT_PIXELS if bypass else 0
             if bypass:
                 flags |= wire.FRAME_FLAG_BYPASS
-            if dynamic:
-                multiplier = 2 if i < 140 else 3 if i < 270 else 4
-                enabled = 15 <= i < 400 or i >= 410
+            if dynamic or fg_only:
+                multiplier = 2 if (fg_only or i < 140) else 3 if i < 270 else 4
+                enabled = True if fg_only else (15 <= i < 400 or i >= 410)
                 flags |= 0x800 | (0x100 if enabled else 0) | ((multiplier - 2) << 9)
             if hdr:
                 pygame.event.pump()
@@ -147,7 +147,32 @@ def run(hdr=False, dynamic=False, check_pixels=False):
         if hdr:
             pygame.quit()
     assert worker.returncode == 0, worker.returncode
-    assert log.count("[fg] 2x enabled") >= 2, "FG did not resume after bypass"
+    if fg_only:
+        # NR off from the very first frame and FG on: this is the case that had
+        # no lifecycle lines at all in a user's log (#104). The presenter must
+        # start here, on the bypass path, not only after NR comes back.
+        assert "[fg] Init_Ext -> 0x00000001" in log, \
+            "FG never initialised on the bypass path: no [fg] Init_Ext"
+        assert re.search(r"\[fg\] \d+x enabled at", log), \
+            "the presenter never started: no '[fg] Nx enabled at' on the bypass path"
+        assert "[fg] displayed" in log, \
+            "the presenter never reported a rate: no '[fg] displayed' on the bypass path"
+        assert "presenter failed" not in log and "Evaluate failed" not in log, log[-600:]
+        rates = [float(x) for x in re.findall(r"\[fg\] displayed ([\d.]+) FPS", log)]
+        assert rates, "no presenter rate with NR off and FG on"
+        print(f"PASS: NR off + FG on -> {len(rates)} presenter reports, "
+              f"max {max(rates):.1f} FPS; FG starts on the bypass path")
+        return
+    assert log.count("[fg] 2x enabled") >= 1, "FG never started"
+    # The presenter must SURVIVE the bypass window, not be rebuilt after it.
+    # The old assert counted two '2x enabled' lines and passed on a build where
+    # the bypass path joined the presenter and rebuilt it afterwards - it was
+    # counting the symptom (#104). With the fix the presenter keeps running:
+    # the feature is created once and the bypass frames flow through it.
+    assert log.count("[fg] Init_Ext") == 1, \
+        f"the presenter was rebuilt ({log.count('[fg] Init_Ext')} inits): the bypass path still tears it down"
+    assert log.count("[fg] 2x enabled") == 1, \
+        f"the presenter was restarted after bypass ({log.count('[fg] 2x enabled')} starts)"
     if dynamic:
         assert "[fg] 3x enabled" in log and "[fg] 4x enabled" in log
         assert log.count("[fg] UI: off") >= 2 and log.count("[fg] 4x enabled") >= 2
@@ -185,7 +210,9 @@ def run(hdr=False, dynamic=False, check_pixels=False):
 
 
 if __name__ == "__main__":
-    if "--run" in sys.argv or "--hdr" in sys.argv or "--dynamic" in sys.argv:
-        run("--hdr" in sys.argv, "--dynamic" in sys.argv, "--check-pixels" in sys.argv)
+    if "--run" in sys.argv or "--hdr" in sys.argv or "--dynamic" in sys.argv \
+            or "--fg-only" in sys.argv:
+        run("--hdr" in sys.argv, "--dynamic" in sys.argv,
+            "--check-pixels" in sys.argv, "--fg-only" in sys.argv)
     else:
         print("SKIP: opt-in DLSS-G/GPU test; pass --run")
