@@ -8,7 +8,7 @@ member-level ``SHA256SUMS``.
 
 Normal use (after the release commit has been tagged):
 
-    runtime\python.exe build_release_zip.py v1.15.0
+    runtime\python.exe build_release_zip.py v1.15.1
 
 The command deliberately refuses release candidates, dirty tracked trees and
 tags that do not resolve to HEAD. Ignored local files do not affect the gate.
@@ -32,7 +32,7 @@ from typing import Iterable, Sequence
 
 
 BASE = Path(__file__).resolve().parent
-VERSION = "1.15.0"
+VERSION = "1.15.1"
 EXPECTED_TAG = f"v{VERSION}"
 TARGET_ARCHS = (
     "RTX 30/40/50 (sm_86/89/120 kernels, spoof 0x1B0; "
