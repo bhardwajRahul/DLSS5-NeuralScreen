@@ -331,6 +331,22 @@ class HotkeyController:
                 # Someone else already holds the combination — not fatal,
                 # the remaining hotkeys keep working.
                 self.failed.append(name)
+        # The poller's baseline is taken HERE, at the moment the hotkeys go
+        # live, and not on the poller's first sample. Two rules meet here:
+        # a key already held when we start must not fire (a stuck key, a game
+        # holding Num1), and a key pressed AFTER we start must fire - even if
+        # the poller's first sample happens to land while it is still down.
+        # Defaulting the baseline to the first sample satisfied the first rule
+        # and broke the second: in a game (where WM_HOTKEY never arrives and
+        # the poller is the only path) the first press after launch was eaten
+        # as the baseline and did nothing. Measured: 6 of 6 presses lost when
+        # the first sample landed inside the press.
+        with self._lock:
+            self._poll_down = {vk: _pressed(vk)
+                               for _mods, vk, _cmd, _n in self._bindings.values()}
+            # A fresh baseline also clears the cooldowns: they belong to the
+            # previous registration, and MSG_REBIND goes through here.
+            self._poll_last = {}
         self._active = True
 
     def _poll_loop(self) -> None:
