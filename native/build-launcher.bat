@@ -4,7 +4,7 @@ rem Output goes to the repository root, next to main.py, because that is where
 rem it has to sit to find everything.
 cd /d "%~dp0"
 setlocal
-call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul
+call "%~dp0vcvars.bat" || exit /b 1
 rc /nologo /fo launcher.res launcher.rc
 if errorlevel 1 exit /b 1
 cl /nologo /O2 /EHsc /W3 /MD launcher.cpp launcher.res ^

@@ -2,7 +2,7 @@
 rem dlss5-feed-host64.exe -- the 64-bit NGX host (desktop-nr live build).
 cd /d "%~dp0"
 setlocal
-call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul
+call "%~dp0vcvars.bat" || exit /b 1
 rem The module the NGX calls leave from. Its FILE NAME is what the feature
 rem library checks - see ns_forwarder.cpp. Built first: without it the worker
 rem falls back to calling the library itself, which only passes while the
