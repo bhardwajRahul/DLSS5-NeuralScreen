@@ -252,8 +252,13 @@ def _log_environment(cfg: dict) -> None:
         win = _sys.getwindowsversion()
         ENVIRONMENT["version"] = APP_VERSION
         ENVIRONMENT["windows"] = f"{win.major}.{win.minor} ({win.build})"
+        # The date belongs in the header: the line stamps are times of day, so
+        # a log could not be placed in time at all - a bundle's date was only
+        # readable from the screenshot file names, and two bundles from
+        # different days could not be told apart.
         print(f"[env] NeuralScreen {APP_VERSION} | Windows {win.major}.{win.minor} "
-              f"(build {win.build}) | {platform.platform()}")
+              f"(build {win.build}) | {platform.platform()} | "
+              f"{time.strftime('%Y-%m-%d %H:%M:%S')}")
     except Exception:
         print(f"[env] NeuralScreen {APP_VERSION} | Windows unknown")
     try:
@@ -305,6 +310,20 @@ def _log_environment(cfg: dict) -> None:
         except OSError:
             pass
         print(f"[env] HDR: {'on' if hdr else 'off' if hdr is not None else 'unknown'}")
+        # The effect switches this session starts with. Without them a report
+        # cannot say whether "frame generation does not work" is about a
+        # feature that was on from the start or one switched on halfway
+        # through - and the log's own "[fg] UI: on" only marks the change.
+        try:
+            print("[env] switches: "
+                  f"NR {'on' if not cfg.get('_paused', False) else 'off'} | "
+                  f"FG {'on' if cfg.get('frame_generation') else 'off'}"
+                  f" x{int(cfg.get('frame_multiplier', 2))} | "
+                  f"motion {cfg.get('motion_backend', 'cpu')} | "
+                  f"skip_static {'on' if cfg.get('skip_static') else 'off'} | "
+                  f"spout {'on' if cfg.get('spout') else 'off'}")
+        except Exception:
+            pass
     except Exception:
         pass
     try:

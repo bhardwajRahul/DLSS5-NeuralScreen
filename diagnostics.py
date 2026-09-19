@@ -71,6 +71,14 @@ class DiagnosticBundleRequest:
     runtime_signature: Mapping[str, Any] | None = None
     sensitive_values: Sequence[str] = field(default_factory=tuple)
     max_log_bytes: int = DEFAULT_LOG_BYTES
+    # The product settings the report was made with. Four support packages
+    # (19.09) could not answer "what was the switch set to" - frame generation,
+    # the multiplier, the motion backend, the profiles - because the bundle
+    # carried no configuration at all, and the evidence table for each of them
+    # ends in a list of settings that had to be asked for by hand. Only the
+    # product keys go in; every value is scrubbed like the log and the payload
+    # is bounded, so this stays a product snapshot rather than a user dump.
+    settings: Mapping[str, Any] = field(default_factory=dict)
 
 
 _PRIVATE_KEY_RE = re.compile(
@@ -532,6 +540,42 @@ def collect_system_snapshot() -> dict[str, Any]:
     }
 
 
+# The product keys a report needs, in the order the panel shows them. Anything
+# outside this list is dropped rather than trusted: `hotkeys` is a user's
+# binding choices and `screenshot_dir` / `recording_dir` are paths - neither
+# belongs in a bundle even scrubbed, and a product snapshot that quietly grew
+# a personal field would be a privacy bug, not a feature.
+_SETTINGS_KEYS = (
+    "profile", "style", "auto_mask", "ui_correction",
+    "intensity", "local_tone", "local_structure", "skin_structure",
+    "work_scale", "nr_small", "motion_backend", "flow_preset",
+    "frame_generation", "frame_multiplier", "frame_limit_mode",
+    "frame_limit_custom", "skip_static", "hdr", "spout",
+    "monitor", "gpu", "gpu_no_nr", "theme", "lang",
+    "nr_dll",
+)
+_MAX_SETTINGS_VALUE = 120
+
+
+def _bounded_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The product settings, keyed by an allow-list and bounded per value.
+
+    A value that is not a bool, number or short string is dropped: a nested
+    object here would be an unbounded part of the report, and the point of the
+    section is a dozen scalars that say how the program was configured.
+    """
+    result: dict[str, Any] = {}
+    for key in _SETTINGS_KEYS:
+        if key not in settings:
+            continue
+        value = settings[key]
+        if isinstance(value, bool) or isinstance(value, (int, float)):
+            result[key] = value
+        elif isinstance(value, str) and len(value) <= _MAX_SETTINGS_VALUE:
+            result[key] = value
+    return result
+
+
 def _tail(path: Path, limit: int) -> tuple[str, dict[str, Any]]:
     metadata = {"included": False, "truncated": False, "bytes": 0}
     try:
@@ -659,6 +703,7 @@ def create_diagnostic_bundle(
                 "stage": request.failure_stage.strip(),
                 "details": dict(request.failure_details),
             },
+            "settings": _bounded_settings(request.settings),
             "log": log_metadata,
         },
         request.sensitive_values,

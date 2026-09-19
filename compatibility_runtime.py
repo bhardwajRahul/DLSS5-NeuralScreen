@@ -377,7 +377,23 @@ def create_support_bundle(st, *, stage: str | None = None) -> Path:
         app_version=APP_VERSION,
         runtime_path=runtime_path(),
         log_path=BASE_DIR / "NeuralScreen.log",
+        settings=settings_snapshot(st),
     ))
+
+
+def settings_snapshot(st) -> dict:
+    """The product settings this session is running with.
+
+    Read from the live config rather than from the file on disk: the file is
+    written on a menu change, and a user who changed a setting a second ago
+    would otherwise send yesterday's value - which is exactly the question the
+    section exists to answer.
+    """
+    try:
+        cfg = getattr(st, "cfg", None)
+        return dict(cfg) if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
 
 
 def startup_gate(st) -> bool:
