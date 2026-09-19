@@ -32,7 +32,12 @@ The example version throughout is `1.15.2`; replace it with the real one.
 Eight assets, no more and no less. `verify_github.py` holds exactly this set in
 `required_assets`; a missing one is reported as `release vX is missing asset
 README.md`, and anything extra is reported as `release vX carries N asset(s)
-beyond the release set: ...`. This is not a formality: documentation images were
+beyond the release set: ...`. The set is built from `RELEASE_DOCUMENTS`, the
+constant `build_release_zip.py` uses as well, and
+`tests/test_release_documents_agree.py` fails if the two lists ever diverge -
+the failure mode that matters, because the verifier only reports a missing
+document after the release is already published. This is not a formality:
+documentation images were
 uploaded as assets once and the "required are present" check did not notice,
 which is why the extra-asset check exists.
 

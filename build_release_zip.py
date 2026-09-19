@@ -42,6 +42,14 @@ RUNTIME_MANIFEST = "runtime-manifest.json"
 THIRD_PARTY_NOTICES = "THIRD-PARTY-NOTICES.md"
 CHECKSUMS = "SHA256SUMS"
 
+# The documents a release page must carry, on top of the four artifacts this
+# builder emits. They are inside the archive as payload, but GitHub needs them
+# as separate assets, and uploading them by hand is exactly the step that was
+# forgotten once: the verifier reported "release vX is missing asset README.md"
+# after everything else had already passed. verify_github.py holds the same set
+# in `required_assets`; the release commands in RELEASING.md are built from it.
+RELEASE_DOCUMENTS = ("README.md", "README.ru.md", "TECHNICAL.md", "TECHNICAL.ru.md")
+
 MANDATORY_FILES = (
     "config.default.json",
     "native/libraries/README.md",
@@ -976,6 +984,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         archive = build_release(BASE, expected_tag=args.tag)
         print(f"built {archive.name} ({archive.stat().st_size} bytes)")
         print(f"sidecars: {CHECKSUMS}, {RUNTIME_MANIFEST}, {THIRD_PARTY_NOTICES}")
+        # The release command, with the complete asset list. Assembling it by
+        # hand is how the four documents were left off a published release once:
+        # the builder never named them as assets, and nothing failed until the
+        # verifier ran.
+        assets = " ".join(
+            [archive.name, CHECKSUMS, RUNTIME_MANIFEST, THIRD_PARTY_NOTICES,
+             *RELEASE_DOCUMENTS]
+        )
+        print("next: upload all eight assets -")
+        print(f"  gh release create {args.tag} \\")
+        print("    -R perseval-BLR/NeuralScreen \\")
+        print('    --title "<one line>" \\')
+        print("    --notes-file <draft> \\")
+        print(f"    {assets}")
         return 0
     except ReleaseContractError as exc:
         print(f"RELEASE CONTRACT FAILED: {exc}", file=sys.stderr)
