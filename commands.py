@@ -630,6 +630,18 @@ def apply_menu_action(st, action: tuple) -> None:
             st.display.set_menu_opaque(False)
             st.display.set_menu_input(False)
             settings_io.save_menu_layout(st)
+            # The close button and Esc both land here, and neither used to say
+            # so: the settings paths printed opened/closed, this one printed
+            # nothing. A diagnostic package then read "21 opened against 0
+            # closed", which cannot be interpreted - a menu that was never
+            # closed and a close that was never logged look identical. The
+            # duration is what dates it against the events around it.
+            opened_at = getattr(st, "menu_opened_at", 0.0)
+            if opened_at:
+                print(f"[main] overlay menu closed (the close button, "
+                      f"open for {time.monotonic() - opened_at:.1f} s)")
+            else:
+                print("[main] overlay menu closed (the close button)")
         elif name == "exit":
             print(f"[main] exit: button in the overlay menu "
                   f"(frames processed {st.frame_index})")
@@ -753,6 +765,7 @@ def drain_commands(st) -> bool:
                 st.display.set_menu_opaque(opened)
                 st.display.set_menu_input(opened)
                 if opened:
+                    st.menu_opened_at = time.monotonic()
                     if not was_open:
                         # In one-window mode the HUD layer is the size of
                         # the captured window - a menu near the edge would

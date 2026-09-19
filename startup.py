@@ -24,9 +24,11 @@ from __future__ import annotations
 import ctypes
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
+import time
 
 import numpy as np
 
@@ -59,12 +61,56 @@ from tray import TrayController
 LOG_PATH = BASE_DIR / "NeuralScreen.log"
 
 
+# Every line in the log carries the time it was written.
+#
+# The worker stamps its own lines ("16:03:11.482  [fg] ..."); the Python side
+# did not, and half of a real user's log came out untimed - measured on the
+# four diagnostic packages of 19.09: 499 of 916 lines (raycornea), 477 of 966
+# (saymoin), 145 of 243 (codemned), 111 of 220 (saymoin), 76 of 153 (manik).
+# That is exactly the half a report needs: "the menu opened 21 times" cannot be
+# placed against "the user minimised a window" when neither line carries a
+# time, and a z-order decision could only be dated by its neighbouring line.
+# The [z] lines and the menu open/close lines are both in that untimed half.
+#
+# Only unstamped lines get a prefix, so a worker line is not stamped twice, and
+# the stamp is put on when the line is written rather than when it was queued.
+_TIMESTAMP_RE = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d{3}\s")
+
+
+class _StampedLog:
+    """A text stream that puts HH:MM:SS.mmm in front of every untimed line."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        out = []
+        for part in text.splitlines(True):
+            body = part.rstrip("\r\n")
+            newline = part[len(body):]
+            if body and not _TIMESTAMP_RE.match(body):
+                stamp = time.strftime("%H:%M:%S")
+                millis = int(time.time() * 1000) % 1000
+                body = f"{stamp}.{millis:03d}  {body}"
+            out.append(body + newline)
+        self._stream.write("".join(out))
+        return len(text)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 def _init_logging() -> None:
-    """Redirect stdout/stderr into NeuralScreen.log (utf-8)."""
+    """Redirect stdout/stderr into NeuralScreen.log (utf-8), with timestamps."""
     try:
         log_file = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
-        sys.stdout = log_file
-        sys.stderr = log_file
+        sys.stdout = _StampedLog(log_file)
+        sys.stderr = _StampedLog(log_file)
     except Exception:
         pass  # it did not work - the prints just vanish, we do not crash
 
