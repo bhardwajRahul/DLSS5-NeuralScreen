@@ -30,6 +30,28 @@ Scope and honesty notes:
 
 ---
 
+## v1.16.1 - 2026-09-19 - the status line told the truth about Frame Generation
+
+* Frame Generation was reported as "not processing" while Neural Rendering was
+  off, although it was running (#107, reported against v1.16.0 the same day).
+  The status line answered from the NR switch before looking at Frame
+  Generation - correct before v1.16.0, a lie after the bypass path started
+  presenting. The line now follows the work: NR off with a reported rate says
+  "frame generation", NR off before the first rate says "frame generation
+  starting", and NR on keeps "processing". Both strings ship in all twelve
+  languages.
+* The capture log names every output of the adapter it uses, with the device
+  name and rectangle, and reports the total. A diagnostic package lists display
+  drivers from the registry, including display-only adapters (Parsec, Cherry)
+  that DXGI never reports as adapters, so "is it capturing the real monitor or
+  the virtual one?" had no answer. The lines are written before the output is
+  matched, so they survive a mismatched NS_OUTPUT.
+* The taskbar check no longer flakes: the cursor is re-parked immediately
+  before each synthetic activation instead of once at startup, and a park that
+  cannot be made is reported. Mutations exposed two steps that passed without
+  checking what they named - one relied on a foreground change Windows can
+  refuse, the other had no coverage of the cursor condition at all.
+
 ## v1.16.0 - 2026-09-19 - Frame Generation with NR off, and reports that explain themselves
 
 * Frame Generation now runs while Neural Rendering is off (#104). The bypass
