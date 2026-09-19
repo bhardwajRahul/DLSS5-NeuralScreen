@@ -30,6 +30,29 @@ Scope and honesty notes:
 
 ---
 
+## v1.16.0 - 2026-09-19 - Frame Generation with NR off, and reports that explain themselves
+
+* Frame Generation now runs while Neural Rendering is off (#104). The bypass
+  present path stopped the presenter on every frame and the reset flag kept it
+  non-interpolating even when left running, so the switch reached the worker,
+  the frame counter climbed, and nothing generated. Measured with NR off from
+  the first frame: `Init_Ext`, `2x enabled at`, 118.7 FPS real + generated.
+* `--test` reported 0/300 and now reports 300/300: it created the feature
+  through the DLSSNR runtime and evaluated it through the NGX core, which knows
+  nothing about that handle.
+* Half of every log had no timestamp (499 of 916 lines in one package, 76 of
+  153 in another). Every line carries a time now, the header carries the date,
+  and the menu close is logged with how long the menu had been open.
+* The diagnostic package says how the program was configured: a settings
+  section built from the live config, allow-listed to product keys, with
+  hotkeys, directories and presets dropped.
+* The first hotkey press in a game did nothing: the polling fallback took its
+  baseline from the first sample, so an early press read as "already down".
+* The status line stays one row; the resolution, the skip count and the frame
+  counter left it by decision.
+* The release procedure (`RELEASING.md`) and the release history
+  (`CHANGELOG.md`) are written down instead of living in memory.
+
 ## v1.15.1 - 2026-09-19 - the readings on the status line, and the guard that tells us why
 
 * The status line dropped the numbers people watch: it laid values out from the
