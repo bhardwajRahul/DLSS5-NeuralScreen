@@ -644,6 +644,9 @@ def bring_up(st) -> None:
     st.mon_w, st.mon_h = st.width, st.height  # the full monitor size (for the menu layer)
     st.gray_active = False       # guides take luminance from the worker's gray channel
     st.pending_shot = None  # frame request before Save As, then cleared
+    # When the overlay menu was opened, for the close line in the log
+    # (time.monotonic()). 0.0 means "not open", so the close always logs.
+    st.menu_opened_at = 0.0
     st.shot_rgba = None  # frozen before Save As, never a dialog-contaminated worker slot
     st.skipped_static_frames = 0  # explicit OUT1 status, not inferred from empty pixels
     st.recorder: VideoRecorder | None = None  # recording (Num0), MP4 AV1 NVENC

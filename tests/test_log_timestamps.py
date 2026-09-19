@@ -58,6 +58,7 @@ def main() -> int:
     failures = []
     startup = STARTUP.read_text(encoding="utf-8", errors="replace")
     commands = COMMANDS.read_text(encoding="utf-8", errors="replace")
+    main_text = (ROOT / "main.py").read_text(encoding="utf-8", errors="replace")
 
     # --- 1/2. the stream stamps exactly the untimed lines ------------------
     try:
@@ -129,6 +130,30 @@ def main() -> int:
                         "would always fall back to the duration-less form")
     if not re.search(r"^import time$", commands, re.M):
         failures.append("commands.py does not import `time` for the duration")
+
+    # --- 5. every state field the close paths write must exist ------------
+    # The pipeline state is a __slots__ class: assigning a field that is not in
+    # the list raises AttributeError, and drain_commands runs at the top of the
+    # per-frame loop - so one missing name kills the program (measured: the
+    # window-mode test failed with "'_Pipeline' object has no attribute
+    # 'menu_opened_at' and no __dict__ for setting" until the slot was added).
+    # This checks the fields this feature writes, which is where the mistake is
+    # made; the runner-wide version belongs with the state definition.
+    slots = re.search(r'__slots__\s*=\s*\((.*?)\)\n', main_text, re.S)
+    if not slots:
+        failures.append("the pipeline __slots__ list was not found - a field "
+                        "written by the close path cannot be checked")
+    else:
+        declared = set(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"', slots.group(1)))
+        for field in ("menu_opened_at",):
+            if field not in declared:
+                failures.append(f"`{field}` is written on the pipeline state but "
+                                "is not in __slots__: the assignment raises "
+                                "AttributeError and kills the main loop")
+        # And the field must be initialised, or the close falls back to the
+        # duration-less form on a menu that has never been opened.
+        if f"st.{field} = " not in startup:
+            failures.append(f"`{field}` is never initialised in the state builder")
 
     for f in failures:
         print("FAIL:", f)

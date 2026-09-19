@@ -290,6 +290,7 @@ class _Pipeline:
         "last_foreground",
         "window_list",
         "last_restart",
+        "menu_opened_at",
         "mon_h",
         "mon_w",
         "monitor",
