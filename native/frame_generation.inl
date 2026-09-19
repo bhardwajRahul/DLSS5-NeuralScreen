@@ -501,7 +501,8 @@ static void FgDump(ID3D12Resource *source, D3D12_RESOURCE_STATES state, unsigned
     rb->Unmap(0, &written);
 }
 
-static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATES state)
+static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATES state,
+                      bool bypass)
 {
     if (!FgRequested()) { StopFgPresentation(); return false; }
     if (!EnsureFg(v, color->GetDesc().Format))
@@ -610,11 +611,16 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
             Transition(destination, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE)};
         h.list->ResourceBarrier(2, after);
     }
-    // Export remains the real SDR neural frame, at the processing rate.
-    auto spout_pre = Transition(v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    // Export follows the source the viewer sees: in bypass that is the raw
+    // capture, not the neural result, which on this path is a frame the screen
+    // is not showing at all.
+    ID3D12Resource *export_src = bypass ? v.color.tex : v.output;
+    const auto export_rest = bypass ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+                                    : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    auto spout_pre = Transition(export_src, export_rest, D3D12_RESOURCE_STATE_COPY_SOURCE);
     h.list->ResourceBarrier(1, &spout_pre);
-    SpoutBridgeCopy(h.list, v.output, g_fg.w, g_fg.height);
-    auto spout_post = Transition(v.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    SpoutBridgeCopy(h.list, export_src, g_fg.w, g_fg.height);
+    auto spout_post = Transition(export_src, D3D12_RESOURCE_STATE_COPY_SOURCE, export_rest);
     h.list->ResourceBarrier(1, &spout_post);
     const UINT64 fg_fence = EndCommands();
     if (!WaitFenceValue(h.fence, fg_fence, 30000, "fg-evaluate"))

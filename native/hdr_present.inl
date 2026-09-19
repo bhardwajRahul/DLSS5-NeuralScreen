@@ -100,7 +100,11 @@ static bool EnsureHdrPipeline(UINT w, UINT height, bool pq)
 
 static bool PresentHdr(VideoState &v, bool bypass)
 {
-    const bool framegen = FgRequested() && !bypass;
+    // NR OFF is not a reason for ordinary presentation either: FG owns the
+    // present loop on both paths. `bypass` still selects WHICH frame is
+    // composed (the raw capture, below) - it just no longer decides whether
+    // the presenter runs.
+    const bool framegen = FgRequested();
     if (!framegen) StopFgPresentation();
     const UINT w = v.upscale ? v.full_w : v.w;
     const UINT height = v.upscale ? v.full_h : v.hgt;
@@ -178,7 +182,8 @@ static bool PresentHdr(VideoState &v, bool bypass)
     // while every present on it reports success (#58).
     if (framegen)
     {
-        if (FgPresent(v, g_hdr_output, D3D12_RESOURCE_STATE_COMMON)) return true;
+        // The export follows the same source this path composed and showed.
+        if (FgPresent(v, g_hdr_output, D3D12_RESOURCE_STATE_COMMON, bypass)) return true;
         return PresentHdr(v, bypass); // failed FG has disabled itself; ordinary output
     }
     const bool ok = PresentStatus(g_present_swap->Present(0, 0), "hdr present");

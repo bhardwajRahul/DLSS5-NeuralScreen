@@ -747,10 +747,11 @@ def main() -> int:
                     prepare_capture(st.worker, st.reader, st.frame_index, st.pts)
                 try:
                     t0 = time.perf_counter()
-                    if bypass:
-                        # NR OFF: the worker skips the NGX evaluate, so nothing
-                        # ever reads this motion field. Computing it anyway cost
-                        # 2.9 ms of DIS per frame (measured, 320x180 flow, moving
+                    if bypass and not st.cfg.get("frame_generation", False):
+                        # NR OFF, and FG is not presenting these frames: the
+                        # worker skips the NGX evaluate, so nothing ever reads
+                        # this motion field. Computing it anyway cost 2.9 ms of
+                        # DIS per frame (measured, 320x180 flow, moving
                         # content) - and it cost it on the mode that runs
                         # FASTEST, 121-133 FPS in bypass, where it came to about
                         # half a core spent filling a buffer the worker throws
@@ -764,6 +765,14 @@ def main() -> int:
                         # and the first real flow field would be garbage.
                         # Cleared, the first NR frame reports a scene cut
                         # instead - which is what a resumed pipeline is.
+                        #
+                        # With FG on this branch is not taken: the presenter
+                        # interpolates between the frames it is handed, so the
+                        # field and its reset flag ARE read, and a per-frame
+                        # reset is what left the feature with nothing to
+                        # interpolate (#104). The guides below are then the
+                        # ordinary ones - with the hardware backend that is a
+                        # scene score, not a DIS call.
                         st.guides.previous_gray = None
                         guide = st.guides.zero_guide()
                     elif st.gray_active:

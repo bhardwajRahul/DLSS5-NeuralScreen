@@ -2067,7 +2067,12 @@ static float g_hdr_frame_white = 1.0f;
 static UINT g_hdr_split = UINT_MAX;
 static bool PresentHdr(VideoState &v, bool bypass);
 static bool FgRequested();
-static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATES state);
+// `bypass` tells the presenter that the frame it is handing over is the raw
+// capture (NR off), not the neural result: the export must follow the same
+// source the screen shows. Defaulted so the two ordinary call sites are
+// unchanged.
+static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATES state,
+                      bool bypass = false);
 // The fence value FgPresent submitted and waited on. PresentFrame reads it
 // for the defer-tail contract: the FG branch returns early, before the
 // ordinary EndCommands/submit path fills the caller's token. Defined in
@@ -2092,6 +2097,11 @@ static uint32_t g_last_eval_result = 0;
 static uint32_t g_skip_static_count = 0;
 static bool     g_skip_static_logged = false;
 static bool     g_last_out_bypass = false;
+// Which source the last frame presented: the neural result or the raw capture.
+// FG's history is only valid inside one source, so the change of this flag is
+// what resets the presenter - the bypass flag itself is true on every frame of
+// the mode and resetting on it made the runtime interpolate nothing.
+static bool     g_fg_source_bypass = false;
 static bool     g_last_out_split_on = false;
 static uint32_t g_last_out_split_x = 0;
 static bool     g_force_next_frame = false;   // render one frame even if unchanged
@@ -2687,10 +2697,23 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
 static bool PresentBypass(VideoState &v)
 {
     if (!RebuildPresentIfStale()) return false;
-    StopFgPresentation();
+    // NR OFF is not a reason to tear the presenter down. Frame Generation owns
+    // the present loop on this path too; it only goes away when it is not
+    // asked for (or the switch is off). This used to call
+    // StopFgPresentation() unconditionally, which joined the presenter thread
+    // and cleared its history on every bypass frame - so the runtime was
+    // rebuilt per frame and never interpolated anything (#104).
+    const bool framegen = FgRequested();
+    if (!framegen) StopFgPresentation();
     if (g_hdr_capture) return PresentHdr(v, true);
     // Same as PresentFrame: nothing to restore unless HDR has been on (#58).
     if (HdrEnabled() && !EnsurePresentFormat(false)) return false;
+    // Before GetBuffer: FG submits and waits on its own fence, and the
+    // backbuffer must not be taken and left unreleased. v.color rests in
+    // NON_PIXEL_SHADER_RESOURCE between frames (see the barriers below).
+    if (framegen && FgPresent(v, v.color.tex,
+                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, true))
+        return true;
     ID3D12Resource *bb = nullptr;
     const HRESULT get_buffer = g_present_swap->GetBuffer(
         g_present_swap->GetCurrentBackBufferIndex(), __uuidof(ID3D12Resource),
@@ -6524,9 +6547,15 @@ static int RunVideo()
         g_hdr_split = (fh.reserved & FRAME_FLAG_SPLIT) ?
             SplitXFromFlags(fh.reserved, v.upscale ? v.full_w : v.w) : UINT_MAX;
         const bool bypass = (fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr;
-        g_fg_reset = frame == 0 || fh.reset != 0 || bypass
+        // A switch between the neural result and the raw capture invalidates
+        // FG's history ONCE. The bypass flag itself must not: it is true on
+        // every frame of the mode, and resetting on it made the runtime
+        // interpolate nothing at all on that path (#104).
+        const bool fg_source_switch = (bypass != g_fg_source_bypass);
+        g_fg_reset = frame == 0 || fh.reset != 0 || fg_source_switch
                      || previous_hdr_split != g_hdr_split
                      || (stall_pending && source_fresh);
+        g_fg_source_bypass = bypass;
         // The NR evaluate shares the same stall reset: one forced reset
         // frame, then the ordinary flow.
         const bool stall_reset = stall_pending && source_fresh;

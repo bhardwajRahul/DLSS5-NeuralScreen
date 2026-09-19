@@ -59,7 +59,40 @@ def main():
         if bypass:
             assert guides.previous_gray is None
             guides.zero_guide.assert_called_once()
-    print('PASS: capture precedes one guide update; NVOFA skips DIS; bypass skips guides')
+
+    # Bypass WITH Frame Generation: the presenter interpolates the frames it is
+    # handed, so the guides stop being disposable there. Zero motion and a
+    # per-frame reset is exactly what left the feature with nothing to
+    # interpolate (#104) - and the reset also reaches FG, which resets on
+    # `fh.reset` regardless of the bypass flag.
+    frame = object()
+    guide = SimpleNamespace(motion=object(), reset=False)
+    calls = []
+    def process(*args, **kwargs):
+        calls.append('guides')
+        return guide
+    guides = SimpleNamespace(process=Mock(side_effect=process),
+                             zero_guide=Mock(return_value=guide), previous_gray=object())
+    worker = object()
+    st = SimpleNamespace(worker=worker, worker_logs=[], reader=object(),
+         cfg={'motion_backend': 'nvofa', 'frame_generation': True}, gray_active=True,
+         frame_index=7, pts=70, guides=guides, shm=SimpleNamespace(read_gray=lambda: frame),
+         work_frame=None, pending_shot=None, recorder=None, motion_small=True,
+         dda_mode=True, split_pos=0, lang='en', guide_fails=0)
+    status = SimpleNamespace(failed=False, worker=worker, update=lambda *a: True)
+    send = Mock()
+    namespace = dict(st=st, bypass=True, motion_status=status, time=time, sys=sys,
+                     check_worker=Mock(), prepare_capture=Mock(), send_frame=send,
+                     _perf=Mock())
+    exec(code, namespace)
+    assert guides.process.call_count == 1, \
+        'bypass + FG must compute real guides: zero motion and reset=True leave FG nothing to interpolate'
+    assert guides.zero_guide.call_count == 0, \
+        'bypass + FG fell back to zero_guide: the field FG interpolates from is zero and reset'
+    assert send.call_args.args[4] is False, \
+        'the reset flag still reaches the worker every bypass frame; FG resets on fh.reset too'
+    print('PASS: capture precedes one guide update; NVOFA skips DIS; bypass skips guides '
+          'unless FG is presenting them')
 
 
 if __name__ == '__main__':

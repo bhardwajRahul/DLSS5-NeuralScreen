@@ -244,12 +244,18 @@ background work.
 
 Two things follow from that, both done:
 
-* **In bypass (NR OFF) it is not computed at all.** The worker skips the
-  NGX evaluate, so nothing ever reads the field; filling it cost ~2.9 ms on
-  the mode that runs fastest (121-133 FPS), about half a core spent on a
-  buffer that gets thrown away. `previous_gray` is cleared along with it, so
-  the first frame after NR comes back reports a scene cut instead of
-  correlating against a screen that may be minutes old.
+* **In bypass (NR OFF) it is not computed at all while FG is off too.** The
+  worker skips the NGX evaluate, so nothing ever reads the field; filling it
+  cost ~2.9 ms on the mode that runs fastest (121-133 FPS), about half a core
+  spent on a buffer that gets thrown away. `previous_gray` is cleared along
+  with it, so the first frame after NR comes back reports a scene cut instead
+  of correlating against a screen that may be minutes old.
+* **With FG on, that frame is read after all.** FG interpolates between the
+  frames it is handed, so the field stops being disposable the moment bypass
+  frames are presented by the FG presenter (#104). The hardware backend
+  (`motion_backend: nvofa`) already fills it for every captured frame, so the
+  DIS cost is only paid when that path is unavailable; the Python-side
+  `previous_gray` is still cleared, because the two sources must not mix.
 * **The preset is a setting now** (`flow_preset`), because it is worth a
   measurement rather than an assumption.
 
@@ -568,6 +574,11 @@ wrong; that is inherent to the screen-space approach, not a tuning issue.
 The multiplier is x2/x3/x4 (the DLSS-G contract caps there), the switch is
 opt-in, and the header reports both rates - the network's and the presenter's
 - whenever they differ.
+
+FG is independent of NR: with the neural pass off, the presenter interpolates
+the raw capture instead of the neural frame, so the doubled rate survives
+turning NR off. It used to be stopped by the bypass present path on every
+frame, which is why the switch appeared to do nothing there (#104).
 
 The FG runtime (`nvngx_dlssg.dll`) ships in the archive - the public
 310.9.1.0 redistributable, NVIDIA-signed, included unmodified. The licensing

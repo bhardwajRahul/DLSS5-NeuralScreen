@@ -19,7 +19,9 @@ Recording and Spout export real SDR frames, not generated frames.
 
 This is experimental: depth is flat and motion is estimated from capture.
 Occlusion and UI artifacts remain possible. HUD detection is a separate proposal.
-Bypass and FG failures return to ordinary presentation.
+FG runs on both present paths: with NR off it presents the raw capture rather
+than the neural frame, so the doubled rate survives turning the neural pass off.
+An FG failure returns that frame to ordinary presentation.
 
 Validation:
 - `runtime/python.exe tests/test_framegen_controls.py`
