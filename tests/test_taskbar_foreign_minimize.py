@@ -129,10 +129,10 @@ def _drain(commands: queue.Queue) -> list:
 
 #: The window procedure dedupes commands: one click can deliver both
 #: WA_CLICKACTIVE and WA_ACTIVE, so a repeat within this window is dropped.
-#: A test that sends a synthetic activation right after a REAL one (which
-#: `_force_foreground` causes) is deduped away and reads as a lost click -
-#: measured in the suite, where the timing differs from a solo run. Wait it
-#: out and drain, so each assertion sees only its own message.
+#: Wait past it (and drain) so each assertion sees only its own message.
+#: Measured: the dedup is 0.5 s, so the wait below has a thin margin - but it
+#: is NOT what the suite flake was: in a caught failure the guard had emitted
+#: nothing at all (`last=0.000`), so nothing was there to dedupe.
 EMIT_DEDUP_S = 0.55
 
 
@@ -140,6 +140,27 @@ def _arm(commands: queue.Queue) -> None:
     """Wait past the command dedup and drop what earlier steps emitted."""
     time.sleep(EMIT_DEDUP_S)
     _drain(commands)
+
+
+def _park_before_send(failures: list, step: str) -> bool:
+    """Re-assert the cursor over the taskbar right before a synthetic send.
+
+    The guard reads the cursor AT THE MOMENT the message arrives, and the
+    cursor is a shared resource: the user, another test or a foreground change
+    can take it off the taskbar between the park at startup and the assertion
+    seconds later. Measured (probe_cursor_away): moving it away mid-run fails
+    steps 2 and 3 with `cursor_tb=False` - which reads as "the click path
+    broke" while nothing in the product changed. That was the suite flake.
+
+    Parking at the point of use shrinks the window from seconds to
+    microseconds, and a park that cannot be made is REPORTED: a step whose
+    precondition silently disappeared must not pass vacuously.
+    """
+    if _park_cursor_on_taskbar():
+        return True
+    failures.append(f"{step}: could not park the cursor over the taskbar - "
+                    f"the activation check cannot be trusted")
+    return False
 
 
 def main() -> int:
@@ -198,17 +219,31 @@ def main() -> int:
     time.sleep(0.4)
     user32.ShowWindow(foreign, SW_MINIMIZE)
     time.sleep(0.5)
-    user32.SetForegroundWindow(hwnd)
+    # _force_foreground, not a bare SetForegroundWindow: Windows refuses the
+    # latter for a process that does not own the foreground, and with our
+    # window NOT in front this step is rejected by the foreground test before
+    # it ever reaches the minimised-window condition it exists to check.
+    # Measured, with that condition removed (mutation M1): caught once in 8
+    # runs - the other 7 passed vacuously.
+    ours_in_front = _force_foreground(hwnd)
     time.sleep(0.3)
+    # Park here too: the guard reads the cursor at the moment of the message.
+    parked = _park_before_send(failures, "step 1b")
+    over_tray = taskbar.TaskbarWindow._cursor_over_taskbar(win)
     print(f"    previous minimised={bool(user32.IsIconic(foreign))}, "
-          f"ours foreground={user32.GetForegroundWindow() == hwnd}")
-    user32.SendMessageW(hwnd, WM_ACTIVATE, taskbar.WA_ACTIVE, foreign)
-    time.sleep(0.5)
-    got = _drain(commands)
-    print(f"    commands: {got}")
-    if got:
-        failures.append("a WM_ACTIVATE carrying a minimised window opened the "
-                        f"menu (issue #96, other message form): {got}")
+          f"ours foreground={user32.GetForegroundWindow() == hwnd}, "
+          f"cursor over taskbar={over_tray}")
+    if not ours_in_front:
+        failures.append("could not take the foreground for the minimised-window "
+                        "check (Windows refused) - the check cannot be trusted")
+    elif parked:
+        user32.SendMessageW(hwnd, WM_ACTIVATE, taskbar.WA_ACTIVE, foreign)
+        time.sleep(0.5)
+        got = _drain(commands)
+        print(f"    commands: {got}")
+        if got:
+            failures.append("a WM_ACTIVATE carrying a minimised window opened the "
+                            f"menu (issue #96, other message form): {got}")
 
     # --- 2. a real click must still work -----------------------------------
     # Measured: a click activates OUR window (Windows makes us the foreground
@@ -231,16 +266,20 @@ def main() -> int:
         # sequence); wait out the dedup and drop it, so the assertion below
         # can only be satisfied by the message this step sends.
         _arm(commands)
+        # The cursor must be over the taskbar WHEN the message arrives: park it
+        # again here, not only at startup (the suite flake - see _park_before_send).
+        parked = _park_before_send(failures, "step 2")
         print(f"    ours foreground={user32.GetForegroundWindow() == hwnd}, "
               f"previous alive={bool(user32.IsWindow(foreign))} "
               f"minimised={bool(user32.IsIconic(foreign))}")
-        user32.SendMessageW(hwnd, WM_ACTIVATE, taskbar.WA_ACTIVE, foreign)
-        time.sleep(0.5)
-        got = _drain(commands)
-        print(f"    commands: {got}")
-        if "show_settings" not in got:
-            failures.append("an activation with the previous app alive no "
-                            f"longer opens the menu: {got}")
+        if parked:
+            user32.SendMessageW(hwnd, WM_ACTIVATE, taskbar.WA_ACTIVE, foreign)
+            time.sleep(0.5)
+            got = _drain(commands)
+            print(f"    commands: {got}")
+            if "show_settings" not in got:
+                failures.append("an activation with the previous app alive no "
+                                f"longer opens the menu: {got}")
 
     # --- 3. the second click on our already-active button ------------------
     # Issue #93: this arrives as WM_NCACTIVATE(1) with no WM_ACTIVATE before
@@ -253,14 +292,18 @@ def main() -> int:
     else:
         time.sleep(0.3)
         _arm(commands)          # drop anything taking the foreground emitted
+        # Same as step 2: the cursor must be on the taskbar when the message
+        # lands, and it may have been moved since the park at startup.
+        parked = _park_before_send(failures, "step 3")
         print(f"    we are foreground={user32.GetForegroundWindow() == hwnd}")
-        user32.SendMessageW(hwnd, WM_NCACTIVATE, 1, 0)
-        time.sleep(0.5)
-        got = _drain(commands)
-        print(f"    commands: {got}")
-        if "show_settings" not in got:
-            failures.append("the second click on our active button was dropped "
-                            f"(#93 regression): {got}")
+        if parked:
+            user32.SendMessageW(hwnd, WM_NCACTIVATE, 1, 0)
+            time.sleep(0.5)
+            got = _drain(commands)
+            print(f"    commands: {got}")
+            if "show_settings" not in got:
+                failures.append("the second click on our active button was dropped "
+                                f"(#93 regression): {got}")
 
     # --- 4. the taskbar button's own minimize/restore ----------------------
     print("\n[4] SC_MINIMIZE from the taskbar button")
@@ -272,6 +315,39 @@ def main() -> int:
     if "show_settings" not in got:
         failures.append(f"the taskbar button's own minimize no longer shows "
                         f"the menu: {got}")
+
+    # --- 5. an activation with the cursor OFF the taskbar ------------------
+    # Issue #93: switching programs also happens with the cursor over the
+    # taskbar, and clicking ANOTHER app's icon activates that app. The cursor
+    # condition is what separates those from a click on our own button, so
+    # removing it must break this step. Measured: with the condition dropped
+    # (mutation M2), the rest of the test still passed - nothing exercised it.
+    print("\n[5] an activation while the cursor is OFF the taskbar")
+    if not _force_foreground(hwnd):
+        failures.append("could not take the foreground for the off-taskbar "
+                        "check (Windows refused)")
+    else:
+        time.sleep(0.3)
+        _arm(commands)
+        # Park the cursor AWAY from the taskbar: same message, same foreground
+        # window, only the cursor differs - which is the whole point.
+        user32.SetCursorPos(600, 300)
+        time.sleep(0.2)
+        over_tray = taskbar.TaskbarWindow._cursor_over_taskbar(win)
+        print(f"    cursor over taskbar={over_tray}, "
+              f"foreground ours={user32.GetForegroundWindow() == hwnd}")
+        if over_tray:
+            failures.append("could not move the cursor off the taskbar - the "
+                            "off-taskbar check cannot be trusted")
+        else:
+            user32.SendMessageW(hwnd, WM_ACTIVATE, taskbar.WA_ACTIVE, foreign)
+            time.sleep(0.5)
+            got = _drain(commands)
+            print(f"    commands: {got}")
+            if got:
+                failures.append("an activation with the cursor off the taskbar "
+                                f"opened the menu (#93 regression): {got}")
+        _park_cursor_on_taskbar()
 
     user32.DestroyWindow(foreign)
     win.stop()
