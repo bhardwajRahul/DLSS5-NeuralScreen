@@ -59,18 +59,18 @@
         "size": 2614
       },
       {
-        "git_blob": "308bdd7dff273b57897ac5c456602af0c1528009",
+        "git_blob": "5e56c261aac985a0d218ccc31d901b5402d1eaba",
         "origin": "git",
         "path": "README.md",
-        "sha256": "7cbee3a997edda73e9fb1bd9aacfebd8a670300a685078bc0709df3d55bfe0a6",
-        "size": 11712
+        "sha256": "62aa5a0003c541a7fbb9541f9aefc80227171a6f447f0b8bc8a3ac27b31856c6",
+        "size": 11672
       },
       {
-        "git_blob": "25abade1fcb6e77ad1f88c300ef8972bce5ad932",
+        "git_blob": "5b6e00c3f40a5e21d89ba2c4c49e45d303ef51b2",
         "origin": "git",
         "path": "README.ru.md",
-        "sha256": "da10455c32d2b32558a8577774f8e54a6dfcddc75f715a60c13bad2922eb238e",
-        "size": 18776
+        "sha256": "f6d0a10a338a3919ef2c2bf3dc02fd2ec161a813f680485524e24730ae9a79e1",
+        "size": 18744
       },
       {
         "git_blob": "52b336d30a702504327173aacfe39956aae0cb0b",
@@ -8215,7 +8215,7 @@
         "size": 7258
       }
     ],
-    "tree_sha256": "10aae030d27ca78809ccd5d7dd1d579f3ce211e77fd9f1f13164d1384fa16d6c"
+    "tree_sha256": "742d2462508f8c14d4b106c9e284b9c5aff7c22ff337591c780a1c87facc2e6c"
   },
   "product": "NeuralScreen",
   "runtime": {
@@ -14845,18 +14845,18 @@
       "size": 2614
     },
     {
-      "git_blob": "308bdd7dff273b57897ac5c456602af0c1528009",
+      "git_blob": "5e56c261aac985a0d218ccc31d901b5402d1eaba",
       "path": "README.md",
       "role": "shipped-resource",
-      "sha256": "7cbee3a997edda73e9fb1bd9aacfebd8a670300a685078bc0709df3d55bfe0a6",
-      "size": 11712
+      "sha256": "62aa5a0003c541a7fbb9541f9aefc80227171a6f447f0b8bc8a3ac27b31856c6",
+      "size": 11672
     },
     {
-      "git_blob": "25abade1fcb6e77ad1f88c300ef8972bce5ad932",
+      "git_blob": "5b6e00c3f40a5e21d89ba2c4c49e45d303ef51b2",
       "path": "README.ru.md",
       "role": "shipped-resource",
-      "sha256": "da10455c32d2b32558a8577774f8e54a6dfcddc75f715a60c13bad2922eb238e",
-      "size": 18776
+      "sha256": "f6d0a10a338a3919ef2c2bf3dc02fd2ec161a813f680485524e24730ae9a79e1",
+      "size": 18744
     },
     {
       "git_blob": "52b336d30a702504327173aacfe39956aae0cb0b",
