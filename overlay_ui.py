@@ -3643,37 +3643,45 @@ class OverlayMenu:
                 pygame.draw.circle(surface, _rgb(col), (px, ly),
                                    max(2, self._u(2)), max(1, self._u(1)))
 
-    def _action_icon(self, surface, key: str, cx: int, cy: int) -> int:
+    def _action_icon(self, surface, key: str, cx: int, cy: int,
+                     k: float = 1.0) -> int:
         """Draw the line icon for an action, centred on (cx, cy).
 
         Returns the x where the label should start, so the caller can centre the
         icon+label PAIR. Geometry and 1.4 px stroke from the mockup's own SVG.
+
+        `k` scales the whole glyph. An icon is sized to the caption it leads:
+        drawn at the regular size beside a small caption it stops reading as a
+        mark and starts reading as a picture (user, 20.09).
         """
         col = _rgb(self.c["text"])
-        w = 1 if self._u(2) < 2 else 2          # 1.4 px at panel scale
+        _u = self._u
+        def u(base: float) -> int:
+            return max(1, int(round(_u(base) * k)))
+        w = 1 if u(2) < 2 else 2                # 1.4 px at panel scale
         if key == "screenshot":
             # A camera from the front: body, finder bump, lens.
-            bw, bh = self._u(17), self._u(15)
+            bw, bh = u(17), u(15)
             x0, y0 = cx - bw // 2, cy - bh // 2
             pygame.draw.rect(surface, col,
-                             pygame.Rect(x0, y0 + self._u(4), bw, bh - self._u(4)),
-                             w, border_radius=self._u(2))
+                             pygame.Rect(x0, y0 + u(4), bw, bh - u(4)),
+                             w, border_radius=u(2))
             pygame.draw.polygon(surface, col, [
-                (x0 + self._u(3), y0 + self._u(4)),
-                (x0 + self._u(6), y0 + self._u(1)),
-                (x0 + self._u(11), y0 + self._u(1)),
-                (x0 + self._u(14), y0 + self._u(4)),
+                (x0 + u(3), y0 + u(4)),
+                (x0 + u(6), y0 + u(1)),
+                (x0 + u(11), y0 + u(1)),
+                (x0 + u(14), y0 + u(4)),
             ], w)
             pygame.draw.circle(surface, col,
-                               (cx, cy + self._u(2)), self._u(3), w)
+                               (cx, cy + u(2)), u(3), w)
         elif key == "record":
             # A ring with a filled dot: the recording lamp.
-            pygame.draw.circle(surface, col, (cx, cy), self._u(6), w)
+            pygame.draw.circle(surface, col, (cx, cy), u(6), w)
             pygame.draw.circle(surface, _rgb(self.c["danger"]), (cx, cy),
-                               self._u(3))
+                               u(3))
         else:
             return cx
-        return cx + self._u(9)
+        return cx + u(9)
 
     def _draw_action(self, surface, item: Item, s: dict) -> None:
         """A footer button: the name, the hotkey below it, and for exit a note."""
@@ -3834,14 +3842,28 @@ class OverlayMenu:
                     else self.c["accent"] if hot
                     else self.c["text"])
             icon = item.extra.get("icon")
-            icon_w = self._u(17) + self._u(9) if icon else 0
-            label = self._clip(self._font, item.extra.get("label", item.key),
+            # The glyph follows the caption: SMALL_SIZE / FONT_SIZE of the
+            # nominal 17, so the mark and the word are one size step.
+            ik = SMALL_SIZE / float(FONT_SIZE)
+            icon_w = (int(round(self._u(17) * ik)) + self._u(9)) if icon else 0
+            # The SMALL font, like every other caption that lives inside a
+            # cell - the SOURCE cells, the Model steps, the FG steps. The
+            # regular size is for a button that is its own full-width control
+            # (Quit, Back) and for the row labels. Mixing the two inside one
+            # strip is what read as "not quite organic" (user, 20.09).
+            #
+            # It cannot go the other way: measured at 17, the Model segment
+            # needs 135 px in a 112 px cell in Russian (121%), so the strips
+            # meet at the small size, not at the regular one.
+            label = self._clip(self._small_font,
+                               item.extra.get("label", item.key),
                                _rgb(tone),
                                item.rect.w - self._u(16) - icon_w)
             x = item.rect.centerx - (icon_w + label.get_width()) // 2
             if icon:
                 self._action_icon(surface, str(icon),
-                                  x + self._u(17) // 2, item.rect.centery)
+                                  x + int(round(self._u(17) * ik)) // 2,
+                                  item.rect.centery, k=ik)
             surface.blit(label, (x + icon_w,
                                  item.rect.centery - label.get_height() // 2))
             return
