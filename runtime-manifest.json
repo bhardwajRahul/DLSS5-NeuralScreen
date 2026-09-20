@@ -59,17 +59,17 @@
         "size": 2614
       },
       {
-        "git_blob": "5e56c261aac985a0d218ccc31d901b5402d1eaba",
+        "git_blob": "55022c3ee72eb1fdb1c18c60126f8261763a2377",
         "origin": "git",
         "path": "README.md",
-        "sha256": "62aa5a0003c541a7fbb9541f9aefc80227171a6f447f0b8bc8a3ac27b31856c6",
+        "sha256": "72a7ae83b43e044d0926ff08f0c83266cc39b2ae41ea4b09aefb54c6631adde1",
         "size": 11672
       },
       {
-        "git_blob": "5b6e00c3f40a5e21d89ba2c4c49e45d303ef51b2",
+        "git_blob": "3e07f925e2c6cb370e5b1b676f18d84b49a5ad0e",
         "origin": "git",
         "path": "README.ru.md",
-        "sha256": "f6d0a10a338a3919ef2c2bf3dc02fd2ec161a813f680485524e24730ae9a79e1",
+        "sha256": "ff176dce828f8e722b167ea8a5c544b838470d9f010d9420a27a66429935a28b",
         "size": 18744
       },
       {
@@ -8215,7 +8215,7 @@
         "size": 7258
       }
     ],
-    "tree_sha256": "53b50c8fb2c09fe3f95e44cd16cb1141091cecedf4faafbc9a9b281cadd5d294"
+    "tree_sha256": "930b59a3033100ff569e392c5e4e9537a649db739d8d323998a9de957c2ab96d"
   },
   "product": "NeuralScreen",
   "runtime": {
@@ -14845,17 +14845,17 @@
       "size": 2614
     },
     {
-      "git_blob": "5e56c261aac985a0d218ccc31d901b5402d1eaba",
+      "git_blob": "55022c3ee72eb1fdb1c18c60126f8261763a2377",
       "path": "README.md",
       "role": "shipped-resource",
-      "sha256": "62aa5a0003c541a7fbb9541f9aefc80227171a6f447f0b8bc8a3ac27b31856c6",
+      "sha256": "72a7ae83b43e044d0926ff08f0c83266cc39b2ae41ea4b09aefb54c6631adde1",
       "size": 11672
     },
     {
-      "git_blob": "5b6e00c3f40a5e21d89ba2c4c49e45d303ef51b2",
+      "git_blob": "3e07f925e2c6cb370e5b1b676f18d84b49a5ad0e",
       "path": "README.ru.md",
       "role": "shipped-resource",
-      "sha256": "f6d0a10a338a3919ef2c2bf3dc02fd2ec161a813f680485524e24730ae9a79e1",
+      "sha256": "ff176dce828f8e722b167ea8a5c544b838470d9f010d9420a27a66429935a28b",
       "size": 18744
     },
     {
