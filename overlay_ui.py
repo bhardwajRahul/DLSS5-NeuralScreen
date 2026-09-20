@@ -1703,23 +1703,20 @@ class OverlayMenu:
             # Save / Delete preset: the user presets live in the same list
             # as the built-in profiles. Delete is only offered while a user
             # preset is active - the built-in profiles are not deletable.
-            bgap = self._u(BTN_GAP)
-            bw = (inner_w - bgap) // 2
+            # One strip, two cells, like the SOURCE control: a pair of
+            # bordered boxes weighed as much as anything on the page, and the
+            # strip says "these two belong together" without spending a border
+            # each to say it (user, 20.09).
+            bw = inner_w // 2
             for idx, (key, label) in enumerate((
                     ("save_preset", s["save_preset"]),
                     ("delete_preset", s["delete_preset"]))):
+                cw = bw if idx == 0 else inner_w - bw
                 items.append(Item("button", key,
-                                  pygame.Rect(pad + idx * (bw + bgap),
-                                              cy, bw, act_h),
-                                  # Flat: text, no box. A bordered button here
-                                  # weighed exactly as much as Screenshot and
-                                  # Record two blocks below, and saving a preset
-                                  # is not that kind of action - the hierarchy
-                                  # claimed otherwise than the page meant.
+                                  pygame.Rect(pad + idx * bw, cy, cw, act_h),
                                   extra={"label": label,
                                          "filled": False,
-                                         "flat": True,
-                                         "align": "center",
+                                         "pair": "left" if idx == 0 else "right",
                                          "disabled": key == "delete_preset"
                                          and not self.state.get("preset_active")}))
             cy += act_h + self._u(8)
@@ -1739,8 +1736,7 @@ class OverlayMenu:
             # Two rows of two: Select window + Fullscreen on top, Screenshot
             # + Record below (user rule 10.09: the capture actions belong
             # together in one section, the footer keeps only Exit).
-            bgap = self._u(BTN_GAP)
-            bw = (inner_w - bgap) // 2
+            bw = inner_w // 2
             # Select window and Fullscreen left this section for the source
             # segment above: picking what to process is not an action, it is
             # a setting, and it belongs where the source is named.
@@ -1754,15 +1750,21 @@ class OverlayMenu:
             )
             for row in rows:
                 for idx, (key, label) in enumerate(row):
+                    # One strip, two cells - the SOURCE control's look, which
+                    # is what the page already uses for two things that belong
+                    # side by side (user, 20.09).
+                    cw = bw if idx == 0 else inner_w - bw
                     items.append(Item("button", key,
-                                      pygame.Rect(pad + idx * (bw + bgap),
-                                                  cy, bw, act_h),
+                                      pygame.Rect(pad + idx * bw, cy, cw,
+                                                  act_h),
                                       extra={"label": label,
                                              # The 1c rule: each capture action
                                              # carries a 1.4 px line icon.
                                              "icon": key if key in
                                              ("screenshot", "record") else None,
                                              "filled": False,
+                                             "pair": ("left" if idx == 0
+                                                      else "right"),
                                              "disabled": (key == "record" and
                                                           bool(self.state.get(
                                                               "recording_finalizing")))}))
@@ -3802,6 +3804,47 @@ class OverlayMenu:
         # multiplier was invisible, the renderer had no filled handling).
         filled = bool(item.extra.get("filled")) and not disabled
         small = bool(item.extra.get("small"))
+        pair = item.extra.get("pair")
+        if pair:
+            # A cell of a two-cell strip, drawn the way the SOURCE control is:
+            # one raised surface across the row, a hairline where the two meet,
+            # and no border of its own. Two bordered boxes weighed as much as
+            # anything else on the page and said twice over that they are two
+            # separate things, which is not what a pair is.
+            #
+            # Per-corner radii rather than one group rect drawn underneath: the
+            # groups are painted AFTER the items (the FG row needs its frame on
+            # top of a filled cell), and a strip drawn then would cover these
+            # captions.
+            radius = self._u(RADIUS // 2)
+            left = pair == "left"
+            pygame.draw.rect(
+                surface, _rgb(self.c["surface"]), item.rect,
+                border_top_left_radius=radius if left else 0,
+                border_bottom_left_radius=radius if left else 0,
+                border_top_right_radius=0 if left else radius,
+                border_bottom_right_radius=0 if left else radius)
+            if not left:
+                # The seam, drawn once by the right-hand cell.
+                pygame.draw.line(surface, _rgb(self.c["border"]),
+                                 (item.rect.x, item.rect.y + self._u(6)),
+                                 (item.rect.x, item.rect.bottom - self._u(6)),
+                                 max(1, self._u(1)))
+            tone = (self.c["muted"] if disabled
+                    else self.c["accent"] if hot
+                    else self.c["text"])
+            icon = item.extra.get("icon")
+            icon_w = self._u(17) + self._u(9) if icon else 0
+            label = self._clip(self._font, item.extra.get("label", item.key),
+                               _rgb(tone),
+                               item.rect.w - self._u(16) - icon_w)
+            x = item.rect.centerx - (icon_w + label.get_width()) // 2
+            if icon:
+                self._action_icon(surface, str(icon),
+                                  x + self._u(17) // 2, item.rect.centery)
+            surface.blit(label, (x + icon_w,
+                                 item.rect.centery - label.get_height() // 2))
+            return
         if small and item.extra.get("segment"):
             # A cell of a segment GROUP (the FG row): the group owns the outer
             # frame, the radius and the dividers, and each cell only fills its
