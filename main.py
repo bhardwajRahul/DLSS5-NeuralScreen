@@ -136,6 +136,12 @@ from protocol import (  # noqa: F401
 
 
 
+#: How many consecutive frames without an NGX evaluation before the interface
+#: stops claiming the picture is processed. Ten frames is a fraction of a second
+#: at any rate the pass runs at, and long enough that a single skipped slot or a
+#: stall reset cannot trip it.
+NR_IDLE_STREAK_LIMIT = 10
+
 FPS_LOG_INTERVAL = 2.0  # seconds, FPS log to the console
 PERF_LOG_INTERVAL = 5.0  # seconds, log of the mean pipeline stage timings
 PERF_KEYS = ("grab", "resize_full", "guides", "send", "recv", "show")
@@ -300,6 +306,10 @@ class _Pipeline:
         "next_auto_revive",
         "nr_direct",
         "nr_small",
+        # The "NR ON but nothing is being processed" verdict: a streak of frames
+        # the worker answered without evaluating, and the flag the HUD reads.
+        "nr_idle_streak",
+        "nr_not_evaluating",
         "out_attempted",
         "out_shm",
         "off_suspended",
@@ -984,6 +994,19 @@ def main() -> int:
             # unrelated failures (even an hour apart) turned NR off.
             st.consecutive_restarts = 0
             status = "NR OFF" if st.paused else "NR ON"
+            # Did the worker actually EVALUATE this frame? `last_ngx_result` is
+            # 0 when no evaluation happened - the state where the menu says NR ON
+            # while the picture goes out raw. Kept as a short streak so one odd
+            # frame (a skipped slot, a stall reset) is not reported as a fault.
+            if not st.paused and not frame_skipped:
+                ngx = int(getattr(st.reader, "last_ngx_result", 0) or 0)
+                if ngx == 0:
+                    st.nr_idle_streak += 1
+                else:
+                    st.nr_idle_streak = 0
+            else:
+                st.nr_idle_streak = 0
+            st.nr_not_evaluating = st.nr_idle_streak >= NR_IDLE_STREAK_LIMIT
             st.pts += 1
 
             # A native Save As dialog is an ordinary desktop window, so DDA
@@ -1122,6 +1145,10 @@ def main() -> int:
             last_fps = nr_rate.rate(completed_at)
             st.display.set_hud({
                 "fps": last_fps,
+                # NR ON but the worker is not evaluating: the picture is raw.
+                # Without this the only symptom is a counter that runs too fast,
+                # and the user has no way to know the pass stopped.
+                "nr_not_evaluating": st.nr_not_evaluating,
                 # What the presenter shows with Frame Generation on - the
                 # worker reports it every two seconds. The HUD pairs the
                 # network rate with it ("42 / 84 fps"); None while FG is off.

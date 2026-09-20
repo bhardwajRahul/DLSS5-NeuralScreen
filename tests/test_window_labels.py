@@ -50,8 +50,15 @@ def main() -> int:
         entries, current = settings_io._window_menu_state(WINDOWS, 0x20202)
         if [entry["title"] for entry in entries] != [title for _, title in WINDOWS]:
             failures.append("settings payload changed a window title")
-        if current != {"hwnd": 0x20202, "title": WINDOWS[1][1]}:
+        # Compared by FIELD, not by the whole dict: the record carries a size
+        # as well now (the windows page shows it), and a strict equality here
+        # would fail on any field added for the UI - which is not what this
+        # test is about. What it locks is that hwnd stays an integer and the
+        # title is not folded into the identity.
+        if current.get("hwnd") != 0x20202 or current.get("title") != WINDOWS[1][1]:
             failures.append(f"wrong current structured window: {current!r}")
+        if not isinstance(current.get("hwnd"), int):
+            failures.append(f"hwnd is not an integer: {current!r}")
         if any(f"{entry['hwnd']:X}:" in entry["title"] for entry in entries):
             failures.append("technical HWND leaked into a payload label")
 

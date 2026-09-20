@@ -39,6 +39,9 @@ THEMES = {
         "ok": "#39683F",       # green of the support indicator
         "danger": "#96351F",
         "focus": "#7A321F",    # stronger clay ring, never colour-only fill
+        # On cream the fill steps down to the border tone (the mockup's
+        # #82746B): the accent would read as "switched on".
+        "slider_fill": "#82746B",
     },
     "dark": {
         "bg": "#262624",
@@ -50,6 +53,9 @@ THEMES = {
         "ok": "#7FB07F",
         "danger": "#E06C4F",
         "focus": "#F2B098",
+        # The track fill behind the knob. Not the accent: a slider is a value,
+        # not a state, and the accent is reserved for state on this panel.
+        "slider_fill": "#A3A099",
     },
 }
 
@@ -57,6 +63,18 @@ THEMES = {
 # What we show in the remapping page and in which order. On the left is the
 # command the hotkey lives under in hotkeys.DEFAULT_BINDINGS and in
 # config["hotkeys"].
+
+#: The value each drop-down is neutral AT. Anything not listed is neutral when
+#: it holds its first option, which is how these lists are built (the default
+#: comes first). Kept next to the page rather than inside it so the rule is
+#: readable in one place.
+NEUTRAL_CHOICE = {
+    "frame_limit_mode": "unlimited",
+    "motion_backend": "nvofa",
+    "screenshot_mode": "ask",
+    "screenshot_format": "png",
+}
+
 HOTKEY_ROWS = (
     ("toggle", "hk_nr"),
     ("framegen", "hk_framegen"),
@@ -115,17 +133,20 @@ PAD = 26
 TITLE_H = 54
 LABEL_H = 24
 CTRL_H = 26
-ROW_GAP = 20
+ROW_GAP = 16
 SECTION_GAP = 14
 SLIDER_H = 6
 KNOB_R = 9
 BTN_H = 42
 BTN_PAD = 18
-BTN_GAP = 10
+BTN_GAP = 8
 ICON_W = 34        # header button: a rounded square, not a circle
                    # 30 was too small to notice: the user asked where the
                    # collapse button was while looking straight at it.
-ACTION_H = 46      # action button: title with the hotkey caption below it
+ACTION_H = 36      # action/primary button: one line of text, the mockup's
+                   # padding-10 + 15px. It was 46 while the hotkey caption
+                   # was drawn under the name; the main page shows no hotkeys,
+                   # so 25 of those units held nothing.
 EXIT_H = 64        # exit: plus an explanation on a third line
 STAT_LINE_H = 24
 STAT_PAD = 14
@@ -170,6 +191,10 @@ def _window_record(value: Any) -> dict:
             hwnd = None
         title = str(value.get("title", value.get("label", "")))
         return {"hwnd": hwnd, "label": title,
+                # The size travels with the row (it decides whether a pick
+                # makes sense); the menu never asks Windows for it, because
+                # re-reading the window list is what the freeze prevents.
+                "size": str(value.get("size") or "").strip(),
                 "identity": hwnd if hwnd is not None else value}
     if isinstance(value, (tuple, list)) and len(value) >= 2:
         try:
@@ -281,6 +306,11 @@ class OverlayMenu:
             # Skip static frames (processing section): no new capture frame -
             # the network idles instead of re-running.
             "skip_static": True,
+            # NR is on while the worker is not evaluating: the picture is raw.
+            # Listed HERE for the reason two keys above spell out - set_state
+            # drops an unknown key in silence, and the drawer then reads a
+            # verdict that never arrived (the spout/hdr trap).
+            "nr_not_evaluating": False,
             "open_on_start": True,
             "split": 0.0,
             # Which card this is and whether NR runs on it. gpu_ok:
@@ -340,6 +370,7 @@ class OverlayMenu:
         # only; the defaults keep the non-main pages safe (the drawers are
         # skipped there anyway).
         self._stats_rel = pygame.Rect(0, 0, 0, 0)
+        self._tabs_rel = pygame.Rect(0, 0, 0, 0)
         self._gpu_rel = pygame.Rect(0, 0, 0, 0)
         # The panel can be dragged by its title bar and stretched by its
         # corner. The offset is stored relative to the screen centre, so it
@@ -592,6 +623,7 @@ class OverlayMenu:
         if item.kind == "info":
             return item.key == "source_now"
         return item.kind in {
+            "tab",
             "icon", "action", "hotkey", "button", "toggle", "choice",
             "slider", "segmented", "option",
         }
@@ -706,6 +738,12 @@ class OverlayMenu:
         elif item.kind == "hotkey":
             self.capturing = item.key
             out.append(("capture", item.key))
+        elif item.kind == "tab":
+            # A tab selects a PAGE, not a value: it re-runs the layout with the
+            # new tab, which is what the old pill row did through `segmented`.
+            if item.key in SETTINGS_TABS and item.key != self.settings_tab:
+                self.settings_tab = item.key
+                out.append(("settings_tab", item.key))
         elif item.kind == "segmented":
             options = list(item.payload or [])
             current = str(item.extra.get("current", ""))
@@ -879,10 +917,17 @@ class OverlayMenu:
             self._gpu_rel = pygame.Rect(0, 0, 0, 0)   # folded into the line
             cy += status_h + gap
 
+
         # The content is split into titled blocks: eight identical rows in a
         # row gave the eye nothing to hold on to. The titles are not
         # interactive, so they live in their own list rather than in items.
         self._sections: list[tuple[str, pygame.Rect]] = []
+        #: Segment groups built by toggle(..., inline_right=...): the outer frame
+        #: and the dividers, drawn after the cells so the cells can fill their
+        #: own boxes first. (rect, cell count)
+        self._segment_groups: list[tuple[pygame.Rect, int]] = []
+        #: The same groups in SCREEN coordinates (derived at the end of layout).
+        self._segment_rects: list[tuple[pygame.Rect, int]] = []
         sec_h = self._u(SMALL_SIZE) + self._u(10)
 
         # Which tab the rows being built belong to. section() sets it and
@@ -890,9 +935,16 @@ class OverlayMenu:
         # no re-indentation of the page that was here before tabs.
         show = True
 
-        def section(title: str, tab: str | None = None) -> None:
-            nonlocal cy, show
+        #: Whether the rows built from here carry a state square. Set by
+        #: section(), read by every builder below - the mockup decides this per
+        #: SECTION, and the same control kind appears both with and without one.
+        squares = False
+
+        def section(title: str, tab: str | None = None,
+                    squares_here: bool = False) -> None:
+            nonlocal cy, show, squares
             show = tab is None or tab == self.settings_tab
+            squares = squares_here
             if not show:
                 return
             cy += self._u(6)
@@ -912,7 +964,8 @@ class OverlayMenu:
                               extra={"label": label, "hint": hint,
                                      "mark": mark, "ends": ends,
                                      "value_text": value_text,
-                                     "label_h": label_h})
+                                     "label_h": label_h,
+                                     "square": squares})
             # The hit zone is the TRACK, not the row: a click on the label
             # or on the blank space left of the track must not jump the
             # value (user rule 16.09). The track's rect is computed
@@ -934,7 +987,7 @@ class OverlayMenu:
                 return
             extra = {"label": label, "current": current,
                      "labels": list(labels or options),
-                     "label_h": label_h}
+                     "label_h": label_h, "square": squares}
             hint_h = 0
             if hint:
                 extra["hint"] = hint
@@ -989,11 +1042,13 @@ class OverlayMenu:
             rect = pygame.Rect(pad + inner_w - seg_w, cy, seg_w, seg_h)
             items.append(Item("segmented", key, rect, payload=list(options),
                               extra={"label": label, "current": current,
-                                     "labels": list(labels or options)}))
+                                     "labels": list(labels or options),
+                                     "square": squares}))
             cy += seg_h + gap
 
         def toggle(key: str, label: str, on: bool, hint: str = "",
-                   inline_right: list[tuple[str, str, bool]] | None = None) -> None:
+                   inline_right: list[tuple[str, str, bool]] | None = None,
+                   segments_only: bool = False) -> None:
             nonlocal cy
             if not show:
                 return
@@ -1001,12 +1056,18 @@ class OverlayMenu:
             # the multiplier rides the FG row itself (user, 14.09) instead of
             # a second full-width row below it. Returns their x-span so the
             # caller can lay them out.
+            #
+            # `segments_only` drops the switch itself and lets the segment group
+            # BE the control (the mockup's FG row: Off / x2 / x3 / x4, nothing
+            # else). It is only for rows whose group carries every state: with no
+            # switch left, a group that could not express "off" would strand the
+            # feature on.
             inline_x = None
             if inline_right:
                 btn_w = self._u(44)
                 btn_h = self._u(CTRL_H) - self._u(8)
                 inline_x = pad
-            extra = {"label": label}
+            extra = {"label": label, "square": squares}
             hint_h = 0
             if hint:
                 extra["hint"] = hint
@@ -1032,22 +1093,46 @@ class OverlayMenu:
                               pygame.Rect(pad, cy, inner_w, ctrl_h + hint_h),
                               value=1.0 if on else 0.0,
                               extra=extra))
-            items[-1].extra["hit"] = pygame.Rect(
-                switch_x - self._u(6), cy,
-                switch_w + self._u(12), ctrl_h)
+            items[-1].extra["segments_only"] = segments_only
+            # A segments_only row has no switch of its own, and its hit zone must
+            # not fall back to the row rect: the row spans the panel and would
+            # swallow clicks meant for the cells. A zero-size rect placed far off
+            # the panel is the honest "no zone here" - an empty Rect is falsy, so
+            # callers that do  would use the row.
+            #  is None for a row whose control is the segment group: the
+            # group's own cells carry the zones. A zero-size Rect would NOT work
+            # - every consumer reads the zone as , and
+            # an empty Rect is falsy, so the whole row fell back to its 488px
+            # rect and swallowed the cells' clicks.
+            items[-1].extra["hit"] = (None if segments_only else
+                                      pygame.Rect(switch_x - self._u(6), cy,
+                                                  switch_w + self._u(12), ctrl_h))
             if inline_x is not None:
-                # The buttons: right-aligned against the switch's left edge,
-                # small pills in one line with the toggle.
-                bx = (pad + inner_w - self._u(30) - self._u(12)  # switch track
-                      - len(inline_right) * (btn_w + self._u(8)))
+                # The cells: one segment GROUP against the row's right edge,
+                # touching, with the group frame and dividers drawn by
+                # `_draw_segment_groups` after the cells.
+                cell_h = self._u(CTRL_H)
+                cell_w = max(self._u(44),
+                             max(self._small_font.size(lbl)[0]
+                                 for _, lbl in inline_right) + self._u(20))
+                right = pad + inner_w
+                bx = right - len(inline_right) * cell_w
                 for (opt_key, opt_label) in inline_right:
                     items.append(Item("button", opt_key,
-                                      pygame.Rect(bx, cy + (ctrl_h - btn_h) // 2,
-                                                  btn_w, btn_h),
+                                      pygame.Rect(bx, cy + (ctrl_h - cell_h) // 2,
+                                                  cell_w, cell_h),
                                       extra={"label": opt_label,
                                              "filled": False,
-                                             "small": True}))
-                    bx += btn_w + self._u(6)
+                                             "small": True,
+                                             "segment": True}))
+                    bx += cell_w
+                # Content coordinates, like every other rect here: the screen
+                # rect is derived at the end of the layout (see `_segment_rects`).
+                self._segment_groups.append((
+                    pygame.Rect(right - len(inline_right) * cell_w,
+                                cy + (ctrl_h - cell_h) // 2,
+                                len(inline_right) * cell_w, cell_h),
+                    len(inline_right)))
             cy += ctrl_h + hint_h + gap
 
         # The windows page: the full list of capturable windows, one row per
@@ -1072,6 +1157,7 @@ class OverlayMenu:
                                       payload=window["identity"],
                                       extra={"label": window["label"],
                                              "hwnd": window["hwnd"],
+                                             "size": window.get("size", ""),
                                              "selected": (
                                                  window["hwnd"] is not None
                                                  and window["hwnd"]
@@ -1084,10 +1170,31 @@ class OverlayMenu:
             # page is where everything set once in a lifetime lives, and it
             # is where every new setting will land - a single column of
             # sections is what made the old menu grow without bound.
-            segmented("settings_tab", "", self.settings_tab,
-                      list(SETTINGS_TABS),
-                      labels=[s[f"tab_{t}"] for t in SETTINGS_TABS])
-            cy += self._u(4)
+            # A row of TABS, not a segment: the active one is a raised cell
+            # with an accent square, not an accent-filled cell. An accent fill
+            # is this panel's word for "on", and a tab is a place, not a switch.
+            tab_h = self._u(15) + 2 * self._u(10)
+            self._tabs_rel = pygame.Rect(pad, cy, inner_w, tab_h)
+            cy += tab_h + self._u(4)
+            # The tabs as items: one per group, in a row. They are built here
+            # rather than by the `segmented` helper because their chosen state
+            # is drawn as a square, and the helper's whole contract is "the
+            # chosen cell is accent-filled".
+            tab_w = inner_w // len(SETTINGS_TABS)
+            for idx, t in enumerate(SETTINGS_TABS):
+                # `cw`, NOT `w`: `w` is the panel's width for the rest of this
+                # function, and reusing the name here made every rect below the
+                # loop 122 wide - the panel's viewport included, so the tabs
+                # could not be hit.
+                cw = tab_w if idx < len(SETTINGS_TABS) - 1 \
+                    else inner_w - tab_w * (len(SETTINGS_TABS) - 1)
+                items.append(Item(
+                    "tab", t,
+                    pygame.Rect(pad + idx * tab_w, self._tabs_rel.y, cw,
+                                self._tabs_rel.h),
+                    extra={"label": s[f"tab_{t}"],
+                           "active": t == self.settings_tab}))
+
             section(s["sec_capture"], "capture")
             monitors = self.state.get("monitors") or []
             if monitors:
@@ -1127,20 +1234,35 @@ class OverlayMenu:
                    ["ask", "auto"],
                    labels=[s.get("screenshot_ask", "Save As"),
                            s.get("screenshot_auto", "Save automatically")])
-            choice("screenshot_format", s.get("screenshot_format", "Screenshot format"),
-                   str(self.state.get("screenshot_format", "png")),
-                   ["png", "jpg"], labels=["PNG", "JPEG"])
-            # The screenshot folder: a plain button that opens the folder
-            # picker (issue #20). The current value is shown as the caption
-            # so the user sees what is configured.
+            # Three fixed options in the mockup, two in fact: BMP is not a
+            # format this app writes, and offering a value the program cannot
+            # honour is worse than showing one option fewer. The rule is the
+            # affordance - a fixed short list is a segment, only open-ended
+            # lists stay drop-downs.
+            segmented("screenshot_format", s.get("screenshot_format",
+                                                 "Screenshot format"),
+                      str(self.state.get("screenshot_format", "png")),
+                      ["png", "jpg"], labels=["PNG", "JPG"])
+            # The screenshot folder: the PATH and the action, side by side.
+            # It used to be one button whose caption carried the path, and a
+            # long path ate the caption. Now the destination is its own line
+            # (mono, elided in the middle so the drive and the last folder both
+            # survive) and the button says only what it does.
             shot_dir = self.state.get("screenshot_dir") or ""
-            label = s.get("shot_dir_btn", "Screenshot folder...")
-            if shot_dir:
-                label = f"{label}  ·  {shot_dir}"
             if show:
+                bgap = self._u(BTN_GAP)
+                btn_w = max(self._u(120), inner_w // 3)
+                path_rect = pygame.Rect(pad, cy, inner_w - btn_w - bgap,
+                                        ctrl_h)
+                items.append(Item("info", "shot_dir_path", path_rect,
+                                  extra={"label": "",
+                                         "value": self._elide_path(shot_dir)}))
                 items.append(Item("button", "shot_dir",
-                                  pygame.Rect(pad, cy, inner_w, ctrl_h),
-                                  extra={"label": label}))
+                                  pygame.Rect(pad + inner_w - btn_w, cy,
+                                              btn_w, ctrl_h),
+                                  extra={"label": s.get("change_folder",
+                                                        "Change folder..."),
+                                         "small": True}))
                 cy += ctrl_h + gap
 
             # Recording: everything about what leaves the program besides
@@ -1304,7 +1426,7 @@ class OverlayMenu:
                     # a full PAD on top of that was the second hole.
                     cy += act_h + self._u(6)
         else:
-            section(s["sec_processing"])
+            section(s["sec_processing"], squares_here=True)
             nr_on = bool(self.state.get("nr"))
             # No key name here. The main page used to print "Num1" beside the
             # switch, and every control that had a key printed it - furniture
@@ -1348,12 +1470,27 @@ class OverlayMenu:
                     "your x{want} is asked for again on the next attempt"
                 ).format(live=live, want=multiplier)
             toggle("frame_generation", "DLSS 4.5 FG", fg, hint=fg_hint,
-                   inline_right=[("frame_multiplier:2", "×2"),
+                   segments_only=True,
+                   inline_right=[("frame_generation:off", s.get("off", "off")),
+                                 ("frame_multiplier:2", "×2"),
                                  ("frame_multiplier:3", "×3"),
                                  ("frame_multiplier:4", "×4")])
-            for idx, value in enumerate((2, 3, 4)):
-                btn = items[-3 + idx]
-                btn.extra["filled"] = multiplier == value
+            # The four cells are ONE segment group (the mockup's direction): Off
+            # plus the three steps, the live one filled. Off is filled while FG
+            # is off, a step while it runs - so the group always says exactly
+            # what is happening.
+            #
+            # The steps stay clickable with FG off, and that is deliberate: they
+            # are a preference for the NEXT attempt, not a live control. Locking
+            # them behind the switch deadlocked a 40-series card (caps at x2)
+            # when the first attempt was refused and flipped itself back off.
+            # Picking a step with FG off therefore also asks for FG on - one
+            # click instead of two, and no dead end.
+            for idx, value in enumerate((2, 3, 4), start=1):
+                btn = items[-4 + idx]
+                btn.extra["filled"] = fg and multiplier == value
+            off_btn = items[-4]
+            off_btn.extra["filled"] = not fg
 
             limit_mode = str(self.state.get("frame_limit_mode", "unlimited"))
             choice("frame_limit_mode", s.get("frame_limit", "Frame limit"),
@@ -1414,7 +1551,7 @@ class OverlayMenu:
             # until now the only one answered on another page. The segment
             # sends what the Actions buttons used to send; the list of
             # windows still opens on its own page.
-            section(s["sec_source"])
+            section(s["sec_source"], squares_here=True)
             in_window = bool(self.state.get("window_mode"))
             segmented("source", "", "window" if in_window else "fullscreen",
                       ["fullscreen", "window"],
@@ -1430,6 +1567,9 @@ class OverlayMenu:
                                   pygame.Rect(pad, cy, inner_w, self._u(LABEL_H)),
                                   extra={"label": (current["label"]
                                                    or s["mode_window"]),
+                                         # A number, so it is drawn in the same
+                                         # cell as every other number (1c rule).
+                                         "cell": True,
                                          "value": str(self.state.get("work_size")
                                                       or "")}))
                 cy += self._u(LABEL_H) + gap
@@ -1498,9 +1638,14 @@ class OverlayMenu:
 
             section(s["sec_compare"])
             split_val = float(self.state.get("split", 0.0))
+            # The value is a NUMBER, and "off" lives in the hint. The direction
+            # the mockup sets: a word in a value cell makes the cell read as a
+            # label, and the wipe then looks like a switch rather than a
+            # position - while the cell is the one place a percentage can be
+            # read at a glance.
             slider("split", 0.0, 1.0, split_val, s["split"], hint=s["split_hint"],
-                   value_text=(s.get("off", "off") if split_val <= 0.0
-                               else f"{split_val:.2f}"))
+                   value_text=(s.get("wipe_zero", "0%") if split_val <= 0.0
+                               else f"{int(round(split_val * 100))}%"))
 
             section(s["sec_actions"])
             # Two rows of two: Select window + Fullscreen on top, Screenshot
@@ -1525,6 +1670,10 @@ class OverlayMenu:
                                       pygame.Rect(pad + idx * (bw + bgap),
                                                   cy, bw, act_h),
                                       extra={"label": label,
+                                             # The 1c rule: each capture action
+                                             # carries a 1.4 px line icon.
+                                             "icon": key if key in
+                                             ("screenshot", "record") else None,
                                              "filled": False,
                                              "disabled": (key == "record" and
                                                           bool(self.state.get(
@@ -1547,18 +1696,59 @@ class OverlayMenu:
         cy += self._u(14)
         act_h = self._u(ACTION_H)
         if self.page in ("settings", "windows"):
-            items.append(Item("action", "back",
-                              pygame.Rect(pad, cy, inner_w, act_h),
-                              extra={"label": s["back"],
-                                     "filled": False}))
+            if self.page == "windows":
+                # Back and Refresh side by side. The list is frozen while this
+                # page is open (a re-read every frame made rows shuffle under
+                # the cursor - 13.09), so a fresh reading has to be asked for.
+                bgap = self._u(BTN_GAP)
+                bw = (inner_w - bgap) // 2
+                items.append(Item("action", "back",
+                                  pygame.Rect(pad, cy, bw, act_h),
+                                  extra={"label": s["back"],
+                                         "filled": False}))
+                items.append(Item("action", "refresh_windows",
+                                  pygame.Rect(pad + bw + bgap, cy, bw, act_h),
+                                  extra={"label": s.get("refresh_list",
+                                                        "Refresh list")}))
+            else:
+                items.append(Item("action", "back",
+                                  pygame.Rect(pad, cy, inner_w, act_h),
+                                  extra={"label": s["back"],
+                                         "filled": False}))
             cy += act_h + pad
         else:
             # The name and nothing else, centred: the key and the
             # explanation under it turned one button into a paragraph.
             items.append(Item("action", "exit",
                               pygame.Rect(pad, cy, inner_w, act_h),
-                              extra={"label": s["exit_full"], "danger": True}))
+                              extra={"label": s["exit_full"], "danger": True,
+                                     "square": True, "square_danger": True}))
             cy += act_h + pad
+
+        # The state of every row that draws a square. Decided HERE, where the
+        # state payload is, and never in a drawer: a drawer that re-derives a
+        # default is a second source of truth for the same question.
+        for it in items:
+            if it.kind == "choice":
+                current = str(it.extra.get("current", ""))
+                options = [str(o) for o in (it.payload or [])]
+                neutral = NEUTRAL_CHOICE.get(it.key)
+                if neutral is None:
+                    neutral = options[0] if options else ""
+                it.extra["state_filled"] = current != neutral
+            elif it.kind == "segmented":
+                current = str(it.extra.get("current", ""))
+                options = [str(o) for o in (it.payload or [])]
+                default = str(it.extra.get("state_default", options[0] if options else ""))
+                it.extra["state_filled"] = current != default
+            elif it.kind == "slider":
+                lo, hi = float(it.lo), float(it.hi)
+                mid = (lo + hi) / 2.0
+                # A one-way control is neutral at its low end; a two-way one
+                # (lo < 0 < hi) at the middle.
+                neutral = mid if lo < 0.0 < hi else lo
+                span = max(1e-6, hi - lo)
+                it.extra["state_filled"] = abs(it.value - neutral) > span * 0.02
 
         # The content height is known. The panel may be shorter - then the
         # content scrolls: at 1080p a full panel took up almost the whole
@@ -1606,6 +1796,12 @@ class OverlayMenu:
         self._hint_rect = self._hint_rel.move(x, sy)
         self._rule_rect = self._rule_rel.move(x, sy)
         self._section_rects = [(t, r.move(x, sy)) for t, r in self._sections]
+        # The segment groups travel with the panel too. Without this their
+        # frames stayed at the content origin while their cells moved with the
+        # items - the group's border and dividers drawn a panel-width to the
+        # LEFT of the cells they belong to (user: "the FG strip went left").
+        self._segment_rects = [(r.move(x, sy), n)
+                               for r, n in self._segment_groups]
         if self._max_scroll > 0:
             bar_w = max(2, self._u(3))
             view_h = self._viewport.h
@@ -1823,7 +2019,8 @@ class OverlayMenu:
                                     "toggle", "slider", "choice")
                         or (it.kind == "info"
                             and it.key == "source_now")) and \
-                            (it.extra.get("hit") or it.rect).collidepoint(event.pos):
+                            ((it.extra.get("hit") or it.rect) if it.extra.get("hit") is not None
+                             else it.rect).collidepoint(event.pos):
                         self.hover = f"{it.kind}:{it.key}"
                         break
             # The windows page rows: the row itself is highlighted too, like
@@ -1982,6 +2179,11 @@ class OverlayMenu:
             self.capturing = None
             self.hover_window = None
             return [("capture", None)]
+        if key == "refresh_windows":
+            # main drops the cached list and the next payload rebuild takes a
+            # fresh reading. The page stays open - that is the point of the
+            # button: re-read without losing your place.
+            return [("refresh_windows", None)]
         return [("button", key)]
 
     def _profile_modified(self) -> bool:
@@ -2069,7 +2271,10 @@ class OverlayMenu:
             return []
         if key == "frame_multiplier":
             # Optimistic like style: the segment highlights at once, main
-            # applies the new multiplier to the worker.
+            # applies the new multiplier to the worker. Turning Frame Generation
+            # ON when a step is picked with it off is main's business
+            # (commands.apply_menu_action) - the menu only reports the click, so
+            # there is exactly one place that decides what a click means.
             self.state["frame_multiplier"] = int(value)
             return [("frame_multiplier", int(value))]
         if key == "frame_limit_mode":
@@ -2196,6 +2401,8 @@ class OverlayMenu:
             # (the switch pill, the slider track, the select field, the
             # hotkey field), computed by layout.
             zone = item.extra.get("hit") or item.rect
+            if item.extra.get("hit", True) is None:
+                continue          # the row declares no zone (its cells own it)
             if not zone.collidepoint(pos):
                 continue
             # A hint under a toggle is a caption, not a hit target:
@@ -2298,6 +2505,7 @@ class OverlayMenu:
             {"toggle": self._draw_toggle, "slider": self._draw_slider,
              "choice": self._draw_choice, "button": self._draw_button,
              "segmented": self._draw_segmented,
+             "tab": self._draw_tab,
              "info": self._draw_info,
              "action": self._draw_action,
              "hotkey": self._draw_hotkey,
@@ -2307,6 +2515,7 @@ class OverlayMenu:
              # The windows page rows are drawn by _draw_options (they are
              # option items, like the entries of an expanded list).
              "option": lambda *_: None}[item.kind](surface, item, s)
+        self._draw_segment_groups(surface)
         if self.open_choice and self.options:
             # The expanded list fades at its edges: a soft gradient around
             # the rows (top/bottom/left/right) instead of dimming the whole
@@ -2370,6 +2579,8 @@ class OverlayMenu:
         # extra["hit"] is exactly the rect a click tests, so the ring and the
         # click target agree.
         rect = item.extra.get("hit") or item.rect
+        if item.extra.get("hit", True) is None:
+            return                # the row declares no zone (its cells own it)
         if item.kind == "choice":
             rect = item.extra.get("strip") or rect
         elif item.kind == "hotkey":
@@ -2427,6 +2638,14 @@ class OverlayMenu:
             return str(s.get("status_off", "not processing")), False
         if failed:
             return str(s.get("gpu_no_nr", "no neural pass")), True
+        # NR is on and the worker is not evaluating: the picture is raw. The
+        # only symptom used to be a counter running too fast, which reads as a
+        # broken counter rather than as "the pass stopped" - so the state cell
+        # says it outright, in the failure tone.
+        if bool(self.state.get("nr_not_evaluating")):
+            return str(s.get("nr_not_running",
+                             "NR is on but nothing is processed - restart "
+                             "the worker or pick another source")), True
         if bool(self.state.get("idle")):
             return str(s.get("idle_short", "idle")), False
         return str(s.get("status_on", "processing")), False
@@ -2593,46 +2812,62 @@ class OverlayMenu:
 
     def _draw_toggle(self, surface, item: Item, s: dict) -> None:
         on = item.value > 0.5
+        segments_only = bool(item.extra.get("segments_only"))
         size = self._u(20)
-        # A switch, not a checkbox: the track is a pill and the knob sits at
-        # the end that matches the state. A square box could only be read by
-        # the word beside it, and this one is read from the corner of the eye
-        # while a game is running.
-        track_w = int(size * 1.8)
+        # The mockup's switch: a 46x24 track with radius 4 and a SQUARE 20x20
+        # knob, not a pill. A pill reads as a slider between two states; the
+        # squared track reads as a switch, and it is what the direction draws.
+        track_w = self._u(46)
+        track_h = self._u(24)
         # The switch sits at the row's right end, the label on the left -
         # the reading order every settings panel uses (label, then the
         # control at the edge), and the knob never shifts position when a
         # label changes between "on"/"off" wording (user, 14.09).
         box = pygame.Rect(item.rect.right - track_w,
-                          item.rect.centery - size // 2, track_w, size)
+                          item.rect.centery - track_h // 2, track_w, track_h)
         # A hint grows the row; the switch and the label stay on the first
         # line - only the hint is pushed under them.
         hint = item.extra.get("hint")
         if hint:
-            box.y = item.rect.y + (self._u(CTRL_H) - size) // 2
-        radius = size // 2
-        pygame.draw.rect(surface,
-                         _rgb(self.c["accent"] if on else self.c["surface"]),
-                         box, border_radius=radius)
-        if not on:
-            pygame.draw.rect(surface, _rgb(self.c["border"]), box, self._u(1),
-                             border_radius=radius)
-        knob_r = max(3, size // 2 - self._u(3))
-        knob_x = (box.right - knob_r - self._u(3)) if on else (
-            box.x + knob_r + self._u(3))
-        pygame.draw.circle(surface,
-                           _rgb(self.c["bg"] if on else self.c["muted"]),
-                           (knob_x, box.centery), knob_r)
+            box.y = item.rect.y + (self._u(CTRL_H) - track_h) // 2
+        radius = self._u(4)
+        if not segments_only:
+            # A row whose segment group carries every state has no switch of its
+            # own: the group IS the control (the mockup's FG row).
+            pygame.draw.rect(surface,
+                             _rgb(self.c["accent"] if on else self.c["surface"]),
+                             box, border_radius=radius)
+            if not on:
+                pygame.draw.rect(surface, _rgb(self.c["border"]), box,
+                                 self._u(1), border_radius=radius)
+            knob = self._u(20)
+            pad = self._u(2)
+            knob_x = (box.right - pad - knob) if on else (box.x + pad)
+            pygame.draw.rect(
+                surface,
+                _rgb(self.c["bg"] if on else self.c["muted"]),
+                pygame.Rect(knob_x, box.y + (track_h - knob) // 2, knob, knob),
+                border_radius=radius)
         text = item.extra.get("label")
         if not text:
             text = s["nr_on"] if on else s["nr_off"]
-        room = item.rect.w - 2 * self._u(12)
+        # The state square, when the SECTION carries them (PROCESSING): filled
+        # while the switch is on, hollow while it is off. It stands BEFORE the
+        # caption, so the caption moves right by exactly the square plus its gap
+        # and its clip budget shrinks by the same - drawn at the label's own x it
+        # would paint over the first letter.
+        square_shift = self._u(7) + self._u(10) if item.extra.get("square") else 0
+        if item.extra.get("square"):
+            self._draw_state_square(
+                surface, item.rect.x, item.rect.y + self._u(CTRL_H) // 2,
+                filled=on, hollow=not on)
+        room = item.rect.w - 2 * self._u(12) - square_shift
         if hint:
-            room = item.rect.w
+            room = item.rect.w - square_shift
         label = self._clip(self._font, text,
                            _rgb(self.c["text"] if on else self.c["muted"]),
                            room)
-        surface.blit(label, (item.rect.x,
+        surface.blit(label, (item.rect.x + square_shift,
                              item.rect.y + (self._u(CTRL_H) - label.get_height()) // 2))
         if hint:
             y = item.rect.y + self._u(CTRL_H) + self._u(8)
@@ -2648,12 +2883,25 @@ class OverlayMenu:
         # The value sits on the label line, right-aligned; a long localized
         # label (FR: "Résolution de traitement du réseau") would run under
         # it - clip the label to the space left of the value instead.
-        val = self._mono.render(value_text, True, _rgb(self.c["accent"]))
-        label_max = item.rect.right - val.get_width() - self._u(12) - item.rect.x
+        # The value is a NUMBER CELL - the same one every other number on the
+        # page uses (see `_draw_number_cell`). Measured through the shared helper
+        # so the label can be budgeted against it before it is drawn.
+        cell_w, _cell_h = self._number_cell_size(value_text)
+        val = self._mono.render(value_text, True, _rgb(self.c["text"]))
+        shift = self._u(7) + self._u(10) if item.extra.get("square") else 0
+        label_max = (item.rect.right - cell_w - self._u(12)
+                     - item.rect.x - shift)
+        if item.extra.get("square"):
+            self._draw_state_square(
+                surface, item.rect.x,
+                item.rect.y + self._font.get_height() // 2,
+                filled=bool(item.extra.get("state_filled")))
         label = self._clip(self._font, item.extra.get("label", item.key),
                            _rgb(self.c["text"]), label_max)
-        surface.blit(label, (item.rect.x, item.rect.y))
-        surface.blit(val, (item.rect.right - val.get_width(), item.rect.y))
+        surface.blit(label, (item.rect.x + shift, item.rect.y))
+        self._draw_number_cell(
+            surface, value_text, item.rect.right,
+            item.rect.y + self._font.get_height() // 2)
 
         track_y = item.rect.y + label_h + self._u(10)
         track = pygame.Rect(item.rect.x, track_y, item.rect.w, self._u(SLIDER_H))
@@ -2662,7 +2910,10 @@ class OverlayMenu:
         span = max(1e-6, item.hi - item.lo)
         frac = min(1.0, max(0.0, (item.value - item.lo) / span))
         fill = pygame.Rect(track.x, track.y, int(track.w * frac), track.h)
-        pygame.draw.rect(surface, _rgb(self.c["accent"]), fill,
+        # The theme's own fill: muted on dark, the border tone on cream, where
+        # an accent bar would read as "switched on". The accent stays reserved
+        # for state - the squares, the active segment, the index numbers.
+        pygame.draw.rect(surface, _rgb(self.c["slider_fill"]), fill,
                          border_radius=self._u(SLIDER_H // 2 or 1))
         # Where this value sits by default - the profile's own number, or
         # zero for a slider that runs both ways. Without it "how far have I
@@ -2672,35 +2923,39 @@ class OverlayMenu:
             mark = 0.0
         if mark is not None and item.lo <= mark <= item.hi:
             mx = int(track.x + ((mark - item.lo) / span) * track.w)
+            # TEXT, not muted: the track FILL is muted now (the mockup's
+            # colour), and a muted mark vanished inside it - exactly where it
+            # matters. Bright reads against both the fill and the empty track.
             pygame.draw.rect(
-                surface, _rgb(self.c["muted"]),
+                surface, _rgb(self.c["text"]),
                 pygame.Rect(mx - max(1, self._u(1)),
                             track.y - self._u(3),
                             max(2, self._u(2)),
                             track.h + self._u(6)),
                 border_radius=max(1, self._u(1)))
+        # The handle: a 10x16 rectangle in the TEXT colour. The mockup does not
+        # use a circle, and not the accent - the accent is the state language on
+        # this panel, and a state-coloured knob would claim the value is a state.
+        # (One piece: the old code drew a circle and then carved it with a
+        # bg-coloured one to fake a ring.)
         cx = int(track.x + frac * track.w)
-        pygame.draw.circle(surface, _rgb(self.c["accent"]), (cx, track.centery), self._u(KNOB_R))
-        # What the two ends mean. A number like 0.35 says nothing about
-        # which way is more.
-        ends = item.extra.get("ends")
-        if ends:
-            # Two captions (what the two ends mean) or three (the numeric
-            # scale, with a word in the middle for the tick).
-            left, middle, right = (ends if len(ends) == 3
-                                   else (ends[0], "", ends[1]))
-            y = track.bottom + self._u(6)
-            if left:
-                surface.blit(self._small_font.render(
-                    left, True, _rgb(self.c["muted"])), (track.x, y))
-            if right:
-                img = self._small_font.render(right, True, _rgb(self.c["muted"]))
-                surface.blit(img, (track.right - img.get_width(), y))
-            if middle:
-                img = self._small_font.render(middle, True,
-                                              _rgb(self.c["muted"]))
-                surface.blit(img, (track.centerx - img.get_width() // 2, y))
-        pygame.draw.circle(surface, _rgb(self.c["bg"]), (cx, track.centery), self._u(KNOB_R) // 2)
+        kh = self._u(16)
+        kw = self._u(10)
+        pygame.draw.rect(
+            surface, _rgb(self.c["text"]),
+            pygame.Rect(cx - kw // 2, track.centery - kh // 2, kw, kh),
+            border_radius=self._u(2))
+        # The ruler: five 1x4 ticks spread under the track (the mockup's own
+        # count). They say "this is a scale" without spending two captions on
+        # it - what the ends mean is already in the label and the value.
+        if item.extra.get("ticks", True):
+            n = 5
+            ty = track.bottom + self._u(5)
+            for i in range(n):
+                tx = int(track.x + (track.w - self._u(1)) * (i / (n - 1)))
+                pygame.draw.rect(
+                    surface, _rgb(self.c["border"]),
+                    pygame.Rect(tx, ty, max(1, self._u(1)), self._u(4)))
         item.extra["track"] = track
 
         hint = item.extra.get("hint")
@@ -2712,10 +2967,17 @@ class OverlayMenu:
         label_h = item.extra.get("label_h", self._u(LABEL_H))
         # Clipped like every other label (audit M1): "the captions are short"
         # is not a rule that survives a translation.
+        # The square, when the SECTION asked for one (see the layout).
+        shift = self._u(7) + self._u(10) if item.extra.get("square") else 0
+        if item.extra.get("square"):
+            self._draw_state_square(
+                surface, item.rect.x,
+                item.rect.y + self._font.get_height() // 2,
+                filled=bool(item.extra.get("state_filled")))
         label = self._clip(self._font,
                            str(item.extra.get("label", item.key)),
-                           _rgb(self.c["text"]), item.rect.w)
-        surface.blit(label, (item.rect.x, item.rect.y))
+                           _rgb(self.c["text"]), item.rect.w - shift)
+        surface.blit(label, (item.rect.x + shift, item.rect.y))
 
         # The field is the CONTROL, not the rest of the row. A row with a
         # hint is taller, and taking "everything under the label" drew the
@@ -2740,10 +3002,18 @@ class OverlayMenu:
         # it ran under the drop-down arrow and past the border. The arrow is
         # 16 px from the right edge and the text starts 12 px from the left.
         cur = self._clip(self._font, cur_val, _rgb(self.c["text"]),
-                         strip.w - self._u(12) - self._u(16))
+                         strip.w - self._u(12) - self._u(32))
         surface.blit(cur, (strip.x + self._u(12),
                            strip.centery - cur.get_height() // 2))
-        cx = strip.right - self._u(16)
+        # The caret sits in its own zone, separated by a rule: that is what
+        # makes a drop-down read as a control rather than as a field whose
+        # value happens to end in a triangle.
+        arrow_w = self._u(32)
+        arrow_x = strip.right - arrow_w
+        pygame.draw.line(surface, _rgb(self.c["border"]),
+                         (arrow_x, strip.y + self._u(5)),
+                         (arrow_x, strip.bottom - self._u(5)), 1)
+        cx = arrow_x + arrow_w // 2
         cy = strip.centery
         size = self._u(5)
         up = self.open_choice == item.key
@@ -2780,19 +3050,41 @@ class OverlayMenu:
             hovered = ((i < len(self.options)
                         and self.hover == f"option:{i}")
                        or self.hover == f"woption:{opt.payload}")
-            if selected:
-                fill = self.c["accent"]
-            elif highlighted or hovered:
-                fill = self.c["surface"]
+            # The windows page is a PAGE of rows the user picks from, so its
+            # selection is drawn the way this panel draws selection everywhere
+            # else: a square. An accent FILL spent the loudest colour on the
+            # page on a row whose state fits in 7 pixels, and it made the chosen
+            # row look switched on. The drop-down lists below keep their accent
+            # fill - they are menu entries, not rows.
+            page_rows = self.page == "windows"
+            if page_rows:
+                if selected:
+                    fill = self.c["surface"]
+                elif highlighted or hovered:
+                    fill = self.c["surface"]
+                else:
+                    fill = self.c["bg"]
+                edge = (self.c["accent"] if selected
+                        else self.c["focus"] if highlighted
+                        else self.c["border"])
             else:
-                fill = self.c["bg"]
+                if selected:
+                    fill = self.c["accent"]
+                elif highlighted or hovered:
+                    fill = self.c["surface"]
+                else:
+                    fill = self.c["bg"]
+                edge = self.c["focus"] if highlighted else self.c["border"]
             pygame.draw.rect(surface, _rgb(fill), opt.rect,
                              border_radius=self._u(RADIUS // 2))
-            edge = self.c["focus"] if highlighted else self.c["border"]
             pygame.draw.rect(surface, _rgb(edge), opt.rect,
-                             max(2, self._u(2)) if highlighted else self._u(1),
+                             max(2, self._u(2)) if (highlighted or
+                                                    (page_rows and selected))
+                             else self._u(1),
                              border_radius=self._u(RADIUS // 2))
-            color = self.c["bg"] if selected else self.c["text"]
+            color = (self.c["text"] if page_rows
+                     else self.c["bg"] if selected
+                     else self.c["text"])
             text = opt.extra.get("label", "")
             # The language list shows every language in its own script; the
             # CJK names (中文, 日本語, 한국어) need a CJK font - the current
@@ -2807,9 +3099,30 @@ class OverlayMenu:
                     font = self._cjk_fonts.get("yugothic") or font
                 elif any(0x4E00 <= ord(ch) <= 0x9FFF for ch in text):
                     font = self._cjk_fonts.get("microsoftyahei") or font
-            label = self._clip(font, text, _rgb(color), opt.rect.w - self._u(24))
-            surface.blit(label, (opt.rect.x + self._u(12),
+            size_text = str(opt.extra.get("size") or "") if page_rows else ""
+            size_img = None
+            if size_text:
+                size_img = self._mono_small.render(size_text, True,
+                                                   _rgb(self.c["muted"]))
+            size_room = (size_img.get_width() + self._u(12)) if size_img else 0
+            square_shift = 0
+            if page_rows:
+                # The square, then the label - and the label's budget shrinks by
+                # the same amount, or a long title runs under the size column.
+                square_shift = self._u(7) + self._u(12)
+                self._draw_state_square(
+                    surface, opt.rect.x + self._u(12), opt.rect.centery,
+                    filled=bool(selected), hollow=not selected)
+            label = self._clip(font, text, _rgb(color),
+                               opt.rect.w - self._u(24) - square_shift
+                               - size_room)
+            surface.blit(label, (opt.rect.x + self._u(12) + square_shift,
                                  opt.rect.centery - label.get_height() // 2))
+            if size_img is not None:
+                surface.blit(size_img,
+                             (opt.rect.right - self._u(12)
+                              - size_img.get_width(),
+                              opt.rect.centery - size_img.get_height() // 2))
         # The list's scrollbar (only when the list actually scrolls).
         if getattr(self, "_opt_track", None) is not None and self._opt_track.w > 0 \
                 and self._opt_max_scroll > 0:
@@ -2818,14 +3131,76 @@ class OverlayMenu:
             pygame.draw.rect(surface, _rgb(self.c["muted"]), self._opt_thumb,
                              border_radius=self._u(2))
 
+    def _draw_state_square(self, surface, x: int, cy: int, *,
+                           filled: bool = False, hollow: bool = False,
+                           danger: bool = False) -> None:
+        """The 7x7 state square, at x, vertically centred on cy.
+
+        Returns nothing: the caller keeps its own label position, so adding the
+        square cannot shift a caption that was already measured to fit (the
+        label moves right by exactly the square plus its gap).
+
+        The three tones are the direction's:
+          accent, filled   the row is on / away from neutral
+          hollow           off, but a real on/off row
+          grey, filled     a neutral setting - nothing to act on
+        """
+        size = self._u(7)
+        box = pygame.Rect(x, cy - size // 2, size, size)
+        if filled:
+            tone = self.c["danger"] if danger else self.c["accent"]
+            pygame.draw.rect(surface, _rgb(tone), box)
+        elif hollow:
+            pygame.draw.rect(surface, _rgb(self.c["muted"]), box, self._u(1))
+        else:
+            pygame.draw.rect(surface, _rgb(self.c["muted"]), box)
+
+    def _draw_segment_groups(self, surface) -> None:
+        """The frame and dividers of every segment group, once the cells are in.
+
+        The cells fill their own boxes; this draws what makes them ONE control:
+        a 1px border around the whole group and a 1px divider between neighbours.
+        Drawn after the cells because a filled cell must not paint over the
+        group's edge - the direction shows the selected cell sitting inside the
+        frame, not on top of it.
+        """
+        border = _rgb(self.c["border"])
+        for rect, cells in getattr(self, "_segment_rects", []):
+            if cells < 1 or rect.w <= 0:
+                continue
+            pygame.draw.rect(surface, border, rect, self._u(1),
+                             border_radius=self._u(4))
+            step = rect.w / float(cells)
+            for idx in range(1, cells):
+                x = int(round(rect.x + idx * step))
+                pygame.draw.line(surface, border,
+                                 (x, rect.y + self._u(1)),
+                                 (x, rect.bottom - self._u(1)), 1)
+
     def _draw_sections(self, surface) -> None:
-        """A block title: small caps and a hairline out to the right edge."""
-        for title, rect in getattr(self, "_section_rects", []):
+        """A block title: a mono index, small caps, a hairline to the right.
+
+        The index (01-05) is not decoration: with five blocks of similar-looking
+        rows the eye needs a fixed, countable anchor, and the mockup's whole
+        direction rests on it. The counters ride the sections in the order they
+        are laid out, so a new block changes nothing but its own number.
+        """
+        accent = _rgb(self.c["accent"])
+        for idx, (title, rect) in enumerate(getattr(self, "_section_rects", []), 1):
+            x = rect.x
+            if self.page == "main":
+                # Mono digits, accent - the one place the index colour is used
+                # besides state squares, exactly as the direction specifies.
+                num = self._mono_small.render(f"{idx:02d}", True, accent)
+                surface.blit(num, (x, rect.y + max(0, (self._u(SMALL_SIZE)
+                                                      - num.get_height()) // 2)))
+                x += num.get_width() + self._u(10)
             img = self._small_font.render(title.upper(), True,
-                                          _rgb(self.c["muted"]))
-            surface.blit(img, (rect.x, rect.y))
+                                          _rgb(self.c["text"] if self.page == "main"
+                                               else self.c["muted"]))
+            surface.blit(img, (x, rect.y))
             ly = rect.y + img.get_height() // 2
-            x0 = rect.x + img.get_width() + self._u(10)
+            x0 = x + img.get_width() + self._u(10)
             if x0 < rect.right:
                 pygame.draw.line(surface, _rgb(self.c["border"]),
                                  (x0, ly), (rect.right, ly), 1)
@@ -2843,6 +3218,63 @@ class OverlayMenu:
             surface.blit(img, (hint.x, hint.y))
 
 
+    #: The numeric cell's own padding, in base units. The mockup: 4px 9px.
+    NUM_CELL_PAD_X = 9
+    NUM_CELL_PAD_Y = 4
+
+    def _number_cell_size(self, text: str) -> tuple[int, int]:
+        """The size a numeric cell will take for `text`, without drawing it.
+
+        Kept separate from the drawing so a row can budget space for the cell
+        BEFORE the drawer runs - the label's clip depends on it, and measuring
+        inside the drawer would mean the label was already clipped wrong.
+        """
+        img = self._mono.render(text, True, (0, 0, 0))
+        return (img.get_width() + 2 * self._u(self.NUM_CELL_PAD_X),
+                img.get_height() + 2 * self._u(self.NUM_CELL_PAD_Y))
+
+    def _draw_number_cell(self, surface, text: str, right: int, mid_y: int,
+                          *, mono=None) -> int:
+        """Draw `text` in a bordered cell whose right edge is at `right`.
+
+        The ONE place a numeric cell is drawn: the effect values, the wipe % and
+        the resolution all go through here, so "the same pattern everywhere" is
+        a property of the code rather than a promise in a comment.
+
+        Returns the cell's left edge.
+        """
+        font = mono or self._mono
+        img = font.render(text, True, _rgb(self.c["text"]))
+        pad_x, pad_y = self._u(self.NUM_CELL_PAD_X), self._u(self.NUM_CELL_PAD_Y)
+        rect = pygame.Rect(0, 0, img.get_width() + 2 * pad_x,
+                           img.get_height() + 2 * pad_y)
+        rect.right = right
+        rect.centery = mid_y
+        pygame.draw.rect(surface, _rgb(self.c["surface"]), rect,
+                         border_radius=self._u(4))
+        pygame.draw.rect(surface, _rgb(self.c["border"]), rect, self._u(1),
+                         border_radius=self._u(4))
+        surface.blit(img, (rect.x + pad_x, rect.y + pad_y))
+        return rect.x
+
+    def _elide_path(self, path: str) -> str:
+        """A path shortened in the MIDDLE, so both ends stay readable.
+
+        The tail is what tells two folders apart (NeuralScreen vs Screenshots)
+        and the head is what tells two drives apart - the middle is what nobody
+        reads. `_clip` cuts from the right, which would hide exactly the part
+        that matters, so the shortening happens here and the result is short
+        enough to be drawn whole.
+        """
+        if not path:
+            return ""
+        limit = 34
+        if len(path) <= limit:
+            return path
+        keep_head = max(6, (limit - 3) // 3)
+        keep_tail = limit - 3 - keep_head
+        return f"{path[:keep_head]}...{path[-keep_tail:]}"
+
     def _draw_info(self, surface, item: Item, s: dict) -> None:
         """A line: what on the left, how big on the right.
 
@@ -2858,7 +3290,11 @@ class OverlayMenu:
         # width, so _clip returned an empty surface and the caption vanished as
         # well. Both now share the row: the value takes what it needs up to a
         # share of the row, the label keeps the rest with a readable floor.
-        label_floor = self._u(90) if value else 0
+        # The floor is for a caption that has to stay readable beside the
+        # value. A row with NO caption (the screenshot path) has nothing to
+        # protect, and reserving 90 units for it stole them from the value.
+        has_label = bool(item.extra.get("label"))
+        label_floor = self._u(90) if (value and has_label) else 0
         val_room = max(self._u(60),
                        item.rect.w - label_floor - self._u(12)) if value else 0
         val = (self._clip(self._mono_small, value, _rgb(self.c["muted"]),
@@ -2873,16 +3309,72 @@ class OverlayMenu:
         y = item.rect.centery
         surface.blit(label, (item.rect.x, y - label.get_height() // 2))
         if value and val is not None:
-            surface.blit(val, (item.rect.right - val.get_width(),
-                               y - val.get_height() // 2))
+            if item.extra.get("cell"):
+                # A number in a cell, the same cell every other number on the
+                # page uses (resolution, effect values, wipe %).
+                self._draw_number_cell(surface, value, item.rect.right, y)
+            else:
+                # A row with no caption is a STANDALONE value (the screenshot
+                # path): it reads from the left, with the action button beside
+                # it on the right. A captioned row keeps its value on the
+                # right, where the number lines up with every other number.
+                vx = (item.rect.x if not has_label
+                      else item.rect.right - val.get_width())
+                surface.blit(val, (vx, y - val.get_height() // 2))
 
+
+    def _draw_tab(self, surface, item: Item, s: dict) -> None:
+        """One cell of the settings tab row (see the layout for the contract).
+
+        The active cell is a raised surface with an accent SQUARE before its
+        label - the square carries "you are here", so the accent keeps meaning
+        state and a tab cannot be mistaken for a switch that is on.
+        """
+        rect = item.rect
+        active = bool(item.extra.get("active"))
+        hot = self.hover == f"tab:{item.key}"
+        if active:
+            pygame.draw.rect(surface, _rgb(self.c["surface"]), rect)
+        elif hot:
+            pygame.draw.rect(surface, _rgb(self.c["surface"]), rect)
+        shift = 0
+        if active:
+            # The square, then the label: the pair is centred together, so the
+            # square cannot hang outside the cell's optical centre.
+            small = self._small_font.render(str(item.extra.get("label", "")),
+                                            True, _rgb(self.c["text"]))
+            gap = self._u(9)
+            sq = self._u(7)
+            total = sq + gap + small.get_width()
+            left = rect.centerx - total // 2
+            self._draw_state_square(surface, left, rect.centery,
+                                    filled=True)
+            surface.blit(small, (left + sq + gap,
+                                 rect.centery - small.get_height() // 2))
+        else:
+            img = self._clip(self._small_font,
+                             str(item.extra.get("label", "")),
+                             _rgb(self.c["muted"]), rect.w - self._u(8))
+            surface.blit(img, (rect.centerx - img.get_width() // 2,
+                               rect.centery - img.get_height() // 2))
 
     def _draw_segmented(self, surface, item: Item, s: dict) -> None:
         """Two or three options side by side: the chosen one is accent-filled."""
         label = item.extra.get("label")
         if label:
-            img = self._font.render(label, True, _rgb(self.c["muted"]))
-            surface.blit(img, (self.panel_rect.x + self._u(PAD),
+            # The state square, then the caption: a segment group has no switch,
+            # so its state is read from the square. `_u(7) + _u(10)` is the
+            # square and its gap, and the caption is clipped to what is left so
+            # adding the square cannot push a long word under the control.
+            shift = self._u(7) + self._u(10) if item.extra.get("square") else 0
+            if item.extra.get("square"):
+                self._draw_state_square(
+                    surface, self.panel_rect.x + self._u(PAD),
+                    item.rect.centery,
+                    filled=bool(item.extra.get("state_filled")))
+            img = self._clip(self._font, label, _rgb(self.c["muted"]),
+                             item.rect.w - shift)
+            surface.blit(img, (self.panel_rect.x + self._u(PAD) + shift,
                                item.rect.centery - img.get_height() // 2))
         pygame.draw.rect(surface, _rgb(self.c["surface"]), item.rect,
                          border_radius=self._u(RADIUS // 2))
@@ -2898,14 +3390,36 @@ class OverlayMenu:
                              cell, item.rect.h)
             cells.append(cr)
             active = str(opt) == current
+            # The two ways a segment can say "this one is chosen". Without a
+            # square, the accent fill IS the state. With one (SOURCE), the fill
+            # drops to the raised neutral and the accent moves into the square -
+            # otherwise the square would sit invisible on an accent background.
+            celled = bool(item.extra.get("square")) and not item.extra.get("label")
             if active:
-                pygame.draw.rect(surface, _rgb(self.c["accent"]), cr,
+                fill = self.c["surface"] if celled else self.c["accent"]
+                pygame.draw.rect(surface, _rgb(fill), cr,
                                  border_radius=self._u(RADIUS // 2))
-            txt = self._small_font.render(
-                str(labels[idx]), True,
-                _rgb(self.c["bg"] if active else self.c["muted"]))
-            surface.blit(txt, (cr.centerx - txt.get_width() // 2,
-                               cr.centery - txt.get_height() // 2))
+            if celled:
+                text_col = self.c["text"] if active else self.c["muted"]
+            else:
+                text_col = self.c["bg"] if active else self.c["muted"]
+            txt = self._small_font.render(str(labels[idx]), True,
+                                          _rgb(text_col))
+            if celled:
+                # The square inside the cell: filled on the chosen one, hollow
+                # on the other. The caption is centred as the square+text PAIR,
+                # so the group reads as one centred unit.
+                gap = self._u(10)
+                sq_size = self._u(7)
+                total = sq_size + gap + txt.get_width()
+                left = cr.centerx - total // 2
+                self._draw_state_square(surface, left, cr.centery,
+                                        filled=active, hollow=not active)
+                surface.blit(txt, (left + sq_size + gap,
+                                   cr.centery - txt.get_height() // 2))
+            else:
+                surface.blit(txt, (cr.centerx - txt.get_width() // 2,
+                                   cr.centery - txt.get_height() // 2))
         item.extra["cells"] = cells
 
     def _draw_icon(self, surface, item: Item, s: dict) -> None:
@@ -2966,6 +3480,38 @@ class OverlayMenu:
                 pygame.draw.circle(surface, _rgb(col), (px, ly),
                                    max(2, self._u(2)), max(1, self._u(1)))
 
+    def _action_icon(self, surface, key: str, cx: int, cy: int) -> int:
+        """Draw the line icon for an action, centred on (cx, cy).
+
+        Returns the x where the label should start, so the caller can centre the
+        icon+label PAIR. Geometry and 1.4 px stroke from the mockup's own SVG.
+        """
+        col = _rgb(self.c["text"])
+        w = 1 if self._u(2) < 2 else 2          # 1.4 px at panel scale
+        if key == "screenshot":
+            # A camera from the front: body, finder bump, lens.
+            bw, bh = self._u(17), self._u(15)
+            x0, y0 = cx - bw // 2, cy - bh // 2
+            pygame.draw.rect(surface, col,
+                             pygame.Rect(x0, y0 + self._u(4), bw, bh - self._u(4)),
+                             w, border_radius=self._u(2))
+            pygame.draw.polygon(surface, col, [
+                (x0 + self._u(3), y0 + self._u(4)),
+                (x0 + self._u(6), y0 + self._u(1)),
+                (x0 + self._u(11), y0 + self._u(1)),
+                (x0 + self._u(14), y0 + self._u(4)),
+            ], w)
+            pygame.draw.circle(surface, col,
+                               (cx, cy + self._u(2)), self._u(3), w)
+        elif key == "record":
+            # A ring with a filled dot: the recording lamp.
+            pygame.draw.circle(surface, col, (cx, cy), self._u(6), w)
+            pygame.draw.circle(surface, _rgb(self.c["danger"]), (cx, cy),
+                               self._u(3))
+        else:
+            return cx
+        return cx + self._u(9)
+
     def _draw_action(self, surface, item: Item, s: dict) -> None:
         """A footer button: the name, the hotkey below it, and for exit a note."""
         rect = item.rect
@@ -2992,6 +3538,9 @@ class OverlayMenu:
             key_col = self.c["muted"]
         name = self._font.render(item.extra.get("label", ""), True,
                                  _rgb(name_col))
+        # The line icon, when the button carries one: the pair is centred
+        # together, so the icon cannot hang outside the button's centre.
+        icon_w = self._u(17) + self._u(9) if item.extra.get("icon") else 0
         hk = item.extra.get("hotkey")
         note = item.extra.get("note")
         if hk or note:
@@ -3004,7 +3553,27 @@ class OverlayMenu:
             # A single-line action (Back without a hotkey): centre it, the
             # top-anchored position was left over from the two-line layout
             # and looked off (user: the Back button is not centred).
-            surface.blit(name, (rect.centerx - name.get_width() // 2,
+            # The leading mark (a state square on Quit, a line icon on
+            # Screenshot/Record) and the caption are ONE group: the mark is
+            # measured with the caption and the whole group is centred, or the
+            # mark pushes the caption off the button's centre. Drawn at the
+            # caption's own x it would paint over the first letter.
+            gap = self._u(9)
+            if item.extra.get("square"):
+                lead = self._u(7) + gap
+            elif item.extra.get("icon"):
+                lead = self._u(17) + gap
+            else:
+                lead = 0
+            left = rect.centerx - (lead + name.get_width()) // 2
+            if item.extra.get("square"):
+                self._draw_state_square(
+                    surface, left, rect.centery, filled=True,
+                    danger=bool(item.extra.get("square_danger")))
+            elif item.extra.get("icon"):
+                self._action_icon(surface, str(item.extra.get("icon")),
+                                  left + self._u(17) // 2, rect.centery)
+            surface.blit(name, (left + lead,
                                 rect.centery - name.get_height() // 2))
         if hk:
             img = self._small_font.render(hk, True, _rgb(key_col))
@@ -3065,6 +3634,25 @@ class OverlayMenu:
         # multiplier was invisible, the renderer had no filled handling).
         filled = bool(item.extra.get("filled")) and not disabled
         small = bool(item.extra.get("small"))
+        if small and item.extra.get("segment"):
+            # A cell of a segment GROUP (the FG row): the group owns the outer
+            # frame, the radius and the dividers, and each cell only fills its
+            # own box. Drawn as one frame because that is what the direction
+            # shows - four separate rounded buttons read as four unrelated
+            # controls with gaps, which is exactly how the first attempt at this
+            # row looked.
+            if filled:
+                pygame.draw.rect(surface, _rgb(self.c["accent"]),
+                                 item.rect, border_radius=self._u(1))
+            label = self._clip(self._small_font,
+                               item.extra.get("label", item.key),
+                               _rgb(self.c["bg"] if filled
+                                    else self.c["accent"] if (hot and not disabled)
+                                    else self.c["muted"]),
+                               item.rect.w - self._u(8))
+            surface.blit(label, (item.rect.centerx - label.get_width() // 2,
+                                 item.rect.centery - label.get_height() // 2))
+            return
         pygame.draw.rect(surface,
                          _rgb(self.c["accent"] if filled else self.c["surface"]),
                          item.rect, border_radius=self._u(RADIUS // 2))
@@ -3072,11 +3660,22 @@ class OverlayMenu:
                          _rgb(self.c["accent"] if (hot and not disabled) or filled
                               else self.c["border"]),
                          item.rect, self._u(1), border_radius=self._u(RADIUS // 2))
+        # The line icon (Screenshot, Record) leads the caption and the two are
+        # centred as ONE group: the icon is measured with the caption, or it
+        # pushes the caption off the button's centre. `_draw_action` has the same
+        # arithmetic for the footer - two drawers, one rule, because the two
+        # kinds of button are drawn by different code.
+        icon = item.extra.get("icon") if not small else None
+        icon_w = self._u(17) + self._u(9) if icon else 0
         label = self._clip(self._small_font if small else self._font,
                            item.extra.get("label", item.key),
                            _rgb(self.c["bg"] if filled
                                 else self.c["muted"] if disabled
                                 else item.extra.get("color", self.c["text"])),
-                           item.rect.w - self._u(12 if small else 16))
-        surface.blit(label, (item.rect.centerx - label.get_width() // 2,
+                           item.rect.w - self._u(12 if small else 16) - icon_w)
+        left = item.rect.centerx - (icon_w + label.get_width()) // 2
+        if icon:
+            self._action_icon(surface, str(icon),
+                              left + self._u(17) // 2, item.rect.centery)
+        surface.blit(label, (left + icon_w,
                              item.rect.centery - label.get_height() // 2))

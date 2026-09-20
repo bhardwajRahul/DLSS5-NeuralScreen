@@ -63,6 +63,7 @@ def main() -> int:
     s = STRINGS["en"]
     accent = overlay_ui._rgb(m.c["accent"])
     muted = overlay_ui._rgb(m.c["muted"])
+    text = overlay_ui._rgb(m.c["text"])
     danger = overlay_ui._rgb(m.c["danger"])
 
     # 1. The switch: a pill whose knob changes sides with the state.
@@ -103,9 +104,11 @@ def main() -> int:
     mark_x = 10 + int((1.0 - 0.0) / 2.5 * 300)
     near = pygame.Rect(mark_x - 4, band.y, 9, band.h)
     far = pygame.Rect(10, band.y, 40, band.h)
-    if _count(surf, muted, near) < 5:
+    # The mark is TEXT-coloured, the same as the knob: the track fill is muted
+    # (the mockup's colour), so a muted mark would be invisible inside it.
+    if _count(surf, text, near) < 5:
         failures.append("no tick where the profile puts the value")
-    if _count(surf, muted, far) > 2:
+    if _count(surf, text, far) > 2:
         failures.append("a tick appeared where the profile does not put it")
 
     # 3. A slider that runs both ways marks zero without being told.
@@ -118,7 +121,8 @@ def main() -> int:
     m._draw_slider(surf, item, s)
     zero_x = 10 + int((0.0 - (-1.0)) / 3.5 * 300)
     near = pygame.Rect(zero_x - 4, band.y, 9, band.h)
-    if _count(surf, muted, near) < 5:
+    # TEXT, as in check 2: the mark is text-coloured since the fill went muted.
+    if _count(surf, text, near) < 5:
         failures.append("the bipolar slider does not mark zero")
 
     # 4. Quit: the danger tone marks the edge, the label is plain text.

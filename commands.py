@@ -108,6 +108,7 @@ def request_screenshot(st) -> None:
     if st.shot_dialog_open or st.pending_shot is not None:
         return
     st.pending_shot = SHOT_FRAME_PENDING
+    st.shot_requested_at = time.monotonic()
     print("[main] screenshot requested - capturing before Save As")
 
 
@@ -121,6 +122,12 @@ def freeze_screenshot_frame(st, rgba) -> bool:
     if st.pending_shot is not SHOT_FRAME_PENDING:
         return False
     st.pending_shot = None
+    asked = getattr(st, "shot_requested_at", None)
+    if asked is not None:
+        # The click-to-frame wait. Small here + a slow dialog means the FRAME
+        # was never the problem, and the next mark says where the time went.
+        print(f"[main] screenshot: frame in hand "
+              f"{(time.monotonic() - asked) * 1000:.0f} ms after the request")
     try:
         st.shot_rgba = rgba.copy()
     except Exception as exc:
@@ -192,6 +199,10 @@ def open_save_dialog(st) -> None:
             print(f"[main] the save dialog crashed: {exc}", file=sys.stderr)
             st.shot_paths.put(("save", None))
 
+    asked = getattr(st, "shot_requested_at", None)
+    if asked is not None:
+        print(f"[main] screenshot: opening the dialog "
+              f"{(time.monotonic() - asked) * 1000:.0f} ms after the request")
     threading.Thread(target=_run, name="save-dialog", daemon=True).start()
 
 
@@ -237,6 +248,11 @@ def drain_save_dialog(st) -> None:
                 print(f"[main] {kind} -> {shot_path}")
                 st.display.alert(message)
                 continue
+            asked = getattr(st, "shot_requested_at", None)
+            if asked is not None:
+                print(f"[main] screenshot: the dialog answered "
+                      f"{(time.monotonic() - asked) * 1000:.0f} ms after the "
+                      f"request")
             if shot_path is None:
                 st.shot_rgba = None
                 print("[main] screenshot cancelled by the user")
@@ -538,6 +554,11 @@ def apply_menu_action(st, action: tuple) -> None:
             st.display.set_lang(st.lang)
             st.display.menu.set_state({"lang": st.lang})
             print(f"[main] interface language -> {st.lang}")
+    elif kind == "refresh_windows":
+        # The windows page freezes its list while it is open, so the rows cannot
+        # shuffle under the cursor mid-click (13.09). The cache is the freeze;
+        # clearing it is a fresh reading, and the page stays where it is.
+        st.window_list = None
     elif kind == "capture":
         # While the menu waits for a keypress the global hotkeys must
         # be suspended: otherwise Num2 toggles the menu instead of
@@ -651,6 +672,27 @@ def apply_menu_action(st, action: tuple) -> None:
             # Same re-arm as the menu's multiplier buttons: a new value is
             # a new attempt.
             if st.cfg.get("frame_generation"):
+                st.fg_alerted = False
+            else:
+                # Picking a step with Frame Generation OFF turns it ON: the
+                # steps and Off are one segment group, so a click on x3 has to
+                # mean "run at x3" - otherwise the group would show a preference
+                # nobody can see and the user would need two clicks for one
+                # decision.
+                #
+                # NO tray command here. `toggle` is the NR switch, and sending
+                # it turned the neural pass off 51 ms after FG came on (seen
+                # live). The worker needs no command: it reads
+                # frame_generation/frame_multiplier from every frame and
+                # rebuilds its own resources when they change.
+                st.cfg["frame_generation"] = True
+                st.fg_alerted = False
+            settings_io.save_menu_layout(st)
+        elif name == "frame_generation:off":
+            # The Off cell of the group. Same rule as above: write the config,
+            # and the next frame carries it. `toggle` here would pause NR.
+            if st.cfg.get("frame_generation"):
+                st.cfg["frame_generation"] = False
                 st.fg_alerted = False
             settings_io.save_menu_layout(st)
         elif name == "record":

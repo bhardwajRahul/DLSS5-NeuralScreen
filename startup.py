@@ -388,6 +388,10 @@ def configure(st) -> None:
     # only if the A/B says it earns its place. Unlike Boost itself this one
     # travels with the resize, so flipping it costs no feature.
     st.nr_direct = bool(st.cfg.get("nr_direct", False))
+    #: Frames in a row the worker answered without an NGX evaluation.
+    st.nr_idle_streak = 0
+    #: The verdict the interface reads: NR is on, but nothing is processed.
+    st.nr_not_evaluating = False
     os.environ["NS_NR_RESIDUAL"] = "0" if st.nr_direct else "1"
     # The Spout2 bridge is the same story: the worker reads NS_SPOUT once
     # at startup (SpoutBridgeInit), so the config flag becomes the

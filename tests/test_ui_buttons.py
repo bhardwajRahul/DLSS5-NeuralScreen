@@ -74,6 +74,10 @@ def click(menu, item):
     click it so they exercise the same target a user does.
     """
     zone = item.extra.get("hit") or item.rect
+    if item.extra.get("hit", True) is None:
+        raise AssertionError(
+            f"{item.kind} {item.key!r} has no hit zone of its own - its cells "
+            f"carry the target, click one of those")
     pos = zone.center
     out = menu.handle_event(pygame.event.Event(
         pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1}))

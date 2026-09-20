@@ -40,7 +40,12 @@ def main() -> int:
     if payload.get("screenshot_dir") != r"C:\Shots":
         failures.append(f"the folder did not persist: {payload.get('screenshot_dir')!r}")
 
-    # 2. The settings button caption shows the configured folder.
+    # 2. The configured folder is VISIBLE on the settings page, and the button
+    #    beside it opens the picker. The direction split what used to be one
+    #    button carrying the path in its caption into a path row plus an action
+    #    ("Screenshot folder..." became path + "Change folder..."), so the folder
+    #    is asserted on the row that now owns it - the intent (the user can see
+    #    where screenshots go) is unchanged.
     import pygame
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     pygame.init()
@@ -50,14 +55,24 @@ def main() -> int:
         disp.menu.set_state({"screenshot_dir": r"C:\Shots"})
         disp.menu.page = "settings"
         disp.menu.layout(640, 360)
+        row = next((it for it in disp.menu.items
+                    if it.key == "shot_dir_path"), None)
         btn = next((it for it in disp.menu.items
                     if it.kind == "button" and it.key == "shot_dir"), None)
-        if btn is None:
-            failures.append("no shot_dir button on the settings page")
+        if row is None:
+            failures.append("no screenshot-folder row on the settings page")
         else:
-            label = btn.extra.get("label", "")
-            if "C:\\Shots" not in label:
-                failures.append(f"the button does not show the folder: {label!r}")
+            value = str(row.extra.get("value", ""))
+            if "Shots" not in value:
+                failures.append(f"the row does not show the folder: {value!r}")
+        if btn is None:
+            failures.append("no Change folder button on the settings page")
+        else:
+            label = str(btn.extra.get("label", ""))
+            if "C:\\Shots" in label:
+                failures.append(
+                    f"the button still carries the path in its caption: "
+                    f"{label!r}")
     finally:
         pygame.quit()
 

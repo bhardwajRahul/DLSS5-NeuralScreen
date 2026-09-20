@@ -27,7 +27,7 @@ from i18n import STRINGS as UI_STRINGS
 # The work caps are the worker's contract, not a setting: the same two
 # numbers size the shared motion buffer in the SHMI handshake.
 from protocol import WORK_MAX_H, WORK_MAX_W  # noqa: F401
-from winapi import list_capturable_windows
+from winapi import list_capturable_windows, window_frame_rect
 from resolution_limits import safe_processing_size
 
 
@@ -1067,8 +1067,22 @@ def _window_menu_state(windows: list[tuple[int, str]],
     HWND remains an integer through hover and selection.  Titles are display
     text only, so duplicate titles and titles containing colons are safe.
     """
-    entries = [{"hwnd": int(hwnd), "title": str(title)}
-               for hwnd, title in windows]
+    # The size travels with the row: it is what decides whether a pick makes
+    # sense (a 640x480 window upscaled to 4K is a different proposition from a
+    # fullscreen game), and the menu cannot ask Windows for it later without
+    # re-reading the list - which is the thing the freeze exists to prevent.
+    entries = []
+    for hwnd, title in windows:
+        size = ""
+        try:
+            rect = window_frame_rect(int(hwnd))
+            if rect is not None:
+                size = f"{rect[2]}\u00d7{rect[3]}"
+        except Exception:
+            # A window that closed between enumerating and measuring keeps its
+            # row and loses only the number.
+            size = ""
+        entries.append({"hwnd": int(hwnd), "title": str(title), "size": size})
     current = next((dict(entry) for entry in entries
                     if entry["hwnd"] == current_hwnd), None)
     return entries, current

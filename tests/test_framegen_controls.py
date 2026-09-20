@@ -28,7 +28,11 @@ def main():
     assert find(menu, "slider", "frame_multiplier") is None
     toggle = find(menu, "toggle", "frame_generation")
     assert toggle is not None
-    st = SimpleNamespace(cfg={})
+    # The menu reports a CLICK; what that click MEANS is decided in main.
+    # Picking a step with FG off therefore posts a tray command, so the stub
+    # needs the queue main would have.
+    import queue as _queue
+    st = SimpleNamespace(cfg={}, tray_commands=_queue.Queue())
     with patch.object(settings_io, "save_menu_layout") as save:
         # FG off, nothing chosen yet: the x2/x3/x4 group must already be
         # usable. Locking it behind the switch deadlocked a 40-series card -
@@ -41,17 +45,26 @@ def main():
         assert len(btns) == 3, [i.extra["label"] for i in btns]
         assert not any(i.extra.get("disabled") for i in btns), \
             "the multiplier must be selectable while FG is off"
+        # The group carries every state: OFF is lit while FG is off, so the row
+        # always says what is happening (the direction the mockup sets).
+        off = find(menu, "button", "frame_generation:off")
+        assert off is not None and off.extra["filled"], "Off must be the lit cell"
         active = [i for i in btns if i.extra["filled"]]
-        assert len(active) == 1 and active[0].key == "frame_multiplier:2"
+        assert not active, [i.key for i in active]
+        # Picking a step with FG off asks for FG on as well - one click instead
+        # of two, and the group cannot show a preference nobody can see.
         actions = click(menu, next(i for i in btns if i.key == "frame_multiplier:2"))
         assert actions == [("button", "frame_multiplier:2")], actions
         commands.apply_menu_action(st, actions[0])
         assert st.cfg["frame_multiplier"] == 2
 
-        actions = click(menu, toggle)
-        assert actions == [("toggle", "frame_generation")], actions
+        # The row has no switch of its own: the segment group IS the control,
+        # so FG is turned on by picking a step - the same one click a user makes.
+        actions = click(menu, next(i for i in btns if i.key == "frame_multiplier:2"))
+        assert actions == [("button", "frame_multiplier:2")], actions
         commands.apply_menu_action(st, actions[0])
-        assert st.cfg["frame_generation"]
+        assert st.cfg["frame_generation"], \
+            "picking a step with FG off turns it on"
         menu.set_state(st.cfg)
         paint(menu)
         # The multiplier rides the FG row: three small buttons beside the
@@ -88,7 +101,8 @@ def main():
         btns = [i for i in menu.items
                 if i.kind == "button" and i.key.startswith("frame_multiplier:")]
         filled = [i for i in btns if i.extra["filled"]]
-        assert len(filled) == 1 and filled[0].key == "frame_multiplier:4", filled
+        assert not filled, [i.key for i in filled]
+        assert find(menu, "button", "frame_generation:off").extra["filled"]
         assert not any(i.extra.get("disabled") for i in btns)
         assert save.call_count == 6
     # The prepared-capture flag rides the same header, independent of FG.

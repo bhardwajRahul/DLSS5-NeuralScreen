@@ -700,6 +700,10 @@ class WorkerReader:
                         raise RuntimeError(
                             f"worker answered with an error for frame {out_index}: status={status}")
                     skipped = bool(status & OUT_STATUS_SKIPPED)
+                    # The NGX result travels with every frame; the loop reads it
+                    # to tell "the pass ran" from "the pass did not run". It is
+                    # NOT an error channel on its own: 0 means "no evaluation
+                    # this frame", which is exactly the state worth surfacing.
                     # The NGX result is not a boolean: 0x00000000 means "no
                     # frame this call" (the network skipped the evaluation -
                     # a laptop on the iGPU, a driver hiccup) and is NOT a
