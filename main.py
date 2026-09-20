@@ -292,6 +292,11 @@ class _Pipeline:
         "height",
         "hotkey_bindings",
         "hotkeys",
+        # #93: the program is in the tray - the taskbar button is hidden and
+        # the tray icon is the way back. Declared here because __slots__ turns
+        # an undeclared field into an AttributeError at run time, which is its
+        # purpose.
+        "in_tray",
         "lang",
         "last_foreground",
         "window_list",

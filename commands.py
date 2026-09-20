@@ -599,6 +599,13 @@ def apply_menu_action(st, action: tuple) -> None:
         if action[1] in ("light", "dark"):
             st.cfg["theme"] = action[1]
         print(f"[main] menu theme -> {action[1]}")
+    elif kind == "tray_on_minimise" or kind == "tray_on_close":
+        st.cfg[kind] = bool(action[1])
+        tb = getattr(st, "taskbar", None)
+        if tb is not None:
+            tb.to_tray_on_minimise = bool(st.cfg.get("tray_on_minimise"))
+            tb.to_tray_on_close = bool(st.cfg.get("tray_on_close"))
+        print(f"[main] {kind} -> {bool(action[1])}")
     elif kind == "fps_overlay":
         corner = str(action[1])
         if corner not in ("off", "tl", "tr", "bl", "br"):
@@ -811,7 +818,33 @@ def drain_commands(st) -> bool:
                 print(f"[main] exit: tray or the quit hotkey "
                       f"(frames processed {st.frame_index})")
                 st.running = False
+            elif cmd == "to_tray":
+                # #93: the panel goes away, the taskbar button goes away, the
+                # tray icon stays - and the PROCESSING does not stop. That is
+                # the one thing this must not do quietly: the picture on screen
+                # is the program's output, so a "minimise" that also stopped
+                # the pass would change what the user sees without saying so.
+                # The tray menu is the way back.
+                if st.display.menu.visible:
+                    st.hotkeys.resume()
+                    st.display.menu.visible = False
+                    st.display.set_menu_opaque(False)
+                    st.display.set_menu_input(False)
+                    settings_io.save_menu_layout(st)
+                if getattr(st, "taskbar", None) is not None:
+                    st.taskbar.set_visible(False)
+                st.in_tray = True
+                print("[main] to the tray: the button is hidden, the neural "
+                      "pass keeps running")
             elif cmd in ("settings", "show_settings"):
+                # Coming back from the tray restores the button first: the
+                # menu is about to be shown, and a menu with no button in the
+                # taskbar is the state #93 is complaining about.
+                if getattr(st, "in_tray", False):
+                    if getattr(st, "taskbar", None) is not None:
+                        st.taskbar.set_visible(True)
+                    st.in_tray = False
+                    print("[main] back from the tray")
                 # Num2 and the tray keep their useful toggle semantics. The
                 # taskbar is different: Windows may deliver several activation
                 # messages for one click, so it asks only to SHOW the menu.

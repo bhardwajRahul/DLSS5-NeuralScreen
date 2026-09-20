@@ -346,6 +346,9 @@ class OverlayMenu:
             "rec_indicator": True,
             # Which corner the on-screen counter sits in, or "off" (#109).
             "fps_overlay": "off",
+            # What the taskbar's minimise and close buttons do (#93).
+            "tray_on_minimise": False,
+            "tray_on_close": False,
             "recording_dir": "",
             "screenshot_dir": "",
             "screenshot_mode": "ask",
@@ -1488,6 +1491,19 @@ class OverlayMenu:
                    bool(self.state.get("open_on_start")))
             toggle("autostart", s.get("autostart", "Autostart with Windows"),
                    bool(self.state.get("autostart")))
+            # #93: what the taskbar button's minimise and close do. Both say
+            # the same thing in their hint, because it is the thing a user is
+            # entitled to worry about: going to the tray does not stop the
+            # neural pass - the picture on screen is the program's output, and
+            # a "minimise" that changed it without saying so would be a
+            # different feature.
+            toggle("tray_on_minimise",
+                   s.get("tray_on_minimise", "Minimise to tray"),
+                   bool(self.state.get("tray_on_minimise")),
+                   hint=s.get("tray_hint", ""))
+            toggle("tray_on_close",
+                   s.get("tray_on_close", "Close to tray"),
+                   bool(self.state.get("tray_on_close")))
 
             section(s["sec_hotkeys"], "keys")
             # The remapping fields. The captions on the buttons come from these
@@ -2070,18 +2086,39 @@ class OverlayMenu:
                     # clicked (the title bar takes the press, or hit() rejects
                     # them) and could not be reached from the keyboard either -
                     # visible but unreachable (audit H4).
-                    down_room = self.panel_rect.bottom - strip.bottom - self._u(8)
+                    # BOTH edges are measured to the viewport, not to the
+                    # panel. The room above was fixed that way in audit H4 and
+                    # the room below was left as it was - to panel_rect.bottom,
+                    # which counts the footer band: the rule and the Back/Quit
+                    # button live there, outside the scroll area. A list that
+                    # took that room drew its last rows over the footer, where
+                    # hit() rejects them, so they were visible and dead - the
+                    # same fault H4 named, at the other end.
+                    down_room = self._viewport.bottom - strip.bottom - self._u(8)
                     up_room = strip.top - self._viewport.top - self._u(8)
                     open_up = (down_room < 2 * oh and up_room > down_room)
                     room = up_room if open_up else down_room
                     max_rows = max(1, room // oh)
-                    visible = min(total, max_rows)
+                    # The viewport is the hard cap, whichever way the list
+                    # opens: the room on one side can exceed the scroll area
+                    # itself (a strip near the bottom has a lot of room above
+                    # it), and a list longer than the viewport cannot be
+                    # anywhere without hanging out of it.
+                    fits_viewport = max(1, self._viewport.h // oh)
+                    visible = min(total, max_rows, fits_viewport)
                     self._opt_max_scroll = max(0, total - visible)
                     self._opt_scroll = min(max(0, self._opt_scroll),
                                            self._opt_max_scroll)
                     self._opt_index = min(max(0, self._opt_index), total - 1)
                     base_y = (strip.top - self._u(4) - visible * oh
                               if open_up else strip.bottom + self._u(4))
+                    # And clamped, because the arithmetic above assumes the
+                    # strip itself is inside the viewport - it is not, while
+                    # the page is scrolled far enough for the strip to sit
+                    # under the header or past the footer.
+                    base_y = max(self._viewport.top,
+                                 min(base_y,
+                                     self._viewport.bottom - visible * oh))
                     # The list's own scrollbar: a thin track on the right of
                     # the list, thumb proportional to the visible share.
                     self._opt_track = pygame.Rect(

@@ -592,6 +592,11 @@ def _validate_config(cfg: dict) -> dict:
     # chosen": guessing "please resize my interface" from a malformed value is
     # the worse mistake of the two.
     cfg["menu_scale_auto"] = cfg.get("menu_scale_auto") is True
+    # #93: what the taskbar's minimise and close buttons mean. Booleans, and
+    # False unless the config really says otherwise - a program that vanishes
+    # into the tray because a string was truthy would look like a crash.
+    cfg["tray_on_minimise"] = cfg.get("tray_on_minimise") is True
+    cfg["tray_on_close"] = cfg.get("tray_on_close") is True
     if cfg.get("fps_overlay") not in ("off", "tl", "tr", "bl", "br"):
         _fallback("fps_overlay", cfg.get("fps_overlay"), "off",
                   "is not one of off/tl/tr/bl/br")
@@ -770,6 +775,8 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "monitor": monitor_name if monitor_name is not None else int(monitor),
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
         "fps_overlay": str(cfg.get("fps_overlay", "off")),
+        "tray_on_minimise": bool(cfg.get("tray_on_minimise", False)),
+        "tray_on_close": bool(cfg.get("tray_on_close", False)),
         "recording_dir": cfg.get("recording_dir") or "",
         "screenshot_dir": cfg.get("screenshot_dir") or "",
         "screenshot_mode": (str(cfg.get("screenshot_mode", "ask"))
@@ -1221,6 +1228,8 @@ def menu_payload(st) -> dict:
                         if active_recorder else 0.0),
         "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
         "fps_overlay": str(st.cfg.get("fps_overlay", "off")),
+        "tray_on_minimise": bool(st.cfg.get("tray_on_minimise", False)),
+        "tray_on_close": bool(st.cfg.get("tray_on_close", False)),
         "recording_dir": st.cfg.get("recording_dir") or "",
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
         "screenshot_mode": str(st.cfg.get("screenshot_mode", "ask")),

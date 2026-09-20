@@ -80,6 +80,12 @@ class TaskbarWindow:
     itself (issue #87).
     """
 
+    #: Policy, set by main from the config. The window procedure runs on its
+    #: own thread and must not reach into the config, so the two answers are
+    #: pushed to it instead of pulled.
+    to_tray_on_minimise = False
+    to_tray_on_close = False
+
     def __init__(self, commands: queue.Queue, title: str = "NeuralScreen"):
         self._commands = commands
         self._title = title
@@ -158,6 +164,15 @@ class TaskbarWindow:
                 self._emit("show_settings")
             self._was_active = bool(wparam)
             return 0
+        if msg == WM_SYSCOMMAND and (wparam & 0xFFF0) == SC_MINIMIZE \
+                and self.to_tray_on_minimise:
+            # "Minimise to tray" (#93): the button goes away and the program
+            # lives in the tray until it is asked back. The 1x1 window still
+            # must not be minimised by the system - a minimised window keeps
+            # its taskbar button, which is the thing being removed - so it is
+            # HIDDEN instead, and the tray icon becomes the way back.
+            self._emit("to_tray")
+            return 0
         if msg == WM_SYSCOMMAND and (wparam & 0xFFF0) in (SC_MINIMIZE, SC_RESTORE):
             # The taskbar button sends these when the window is already
             # minimized (restore) or when the user asks to minimize it. The
@@ -173,11 +188,35 @@ class TaskbarWindow:
             # the 1x1 window and the taskbar button is gone for the session.
             # The user must quit through the tray (Exit) - ignore SC_CLOSE
             # (audit 10.09 F3).
+            #
+            # With "close to tray" on, the same click means something the user
+            # asked for: put the program in the tray. It still does not destroy
+            # the window - hiding it keeps the button recoverable, which
+            # destroying never was (#93).
+            if self.to_tray_on_close:
+                self._emit("to_tray")
             return 0
         if msg == WM_QUIT:
             user32.PostQuitMessage(0)
             return 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def set_visible(self, visible: bool) -> None:
+        """Show or hide the taskbar button, without destroying the window.
+
+        SW_SHOWNA rather than SW_SHOW: the button comes back without taking
+        the focus, which is the whole point of a program that draws over
+        somebody else's full-screen game.
+        """
+        hwnd = self._hwnd
+        if not hwnd:
+            return
+        SW_HIDE, SW_SHOWNA = 0, 8
+        try:
+            user32.ShowWindow(hwnd, SW_SHOWNA if visible else SW_HIDE)
+        except Exception as exc:
+            print("[main] taskbar button: cannot %s it (%s)"
+                  % ("show" if visible else "hide", exc))
 
     def _cursor_over_taskbar(self) -> bool:
         """Whether the cursor is inside a taskbar rectangle.

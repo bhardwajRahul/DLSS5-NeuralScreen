@@ -596,6 +596,12 @@ def bring_up(st) -> None:
     # the same "settings" command as a left click on the tray (user
     # rule 2026-09-09: the program must always show in the taskbar).
     st.taskbar = TaskbarWindow(st.tray_commands, "NeuralScreen")
+    # What the taskbar button's minimise and close mean (#93). The window
+    # procedure runs on its own thread and must not read the config, so the
+    # two answers are pushed into it here and again whenever they change.
+    st.taskbar.to_tray_on_minimise = bool(st.cfg.get("tray_on_minimise", False))
+    st.taskbar.to_tray_on_close = bool(st.cfg.get("tray_on_close", False))
+    st.in_tray = False
     st.taskbar.start()
     print("[main] taskbar window started")
 
