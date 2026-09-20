@@ -1003,7 +1003,23 @@ def follow_window(st) -> None:
         # Minimised: the capture goes silent (the worker hides its own
         # window for the same reason), so the HUD goes with it rather
         # than floating over whatever is underneath.
-        if st.display.is_visible():
+        #
+        # EXCEPT while the menu is open. The layer IS the menu then, and
+        # hiding it makes the app look dead: the click on the taskbar
+        # button logs "menu opened", and the very next frame hides the
+        # window it just showed, so the button appears to do nothing at
+        # all. Measured on the bench: six "overlay menu opened" against
+        # zero visible menus, with "[wgc] the window is minimised - the
+        # overlay is hidden" in between, until the captured window was
+        # restored and the menu came back by itself ("the window is back
+        # - the overlay is shown").
+        #
+        # The menu is a window of OURS and its subject is our own
+        # settings - it does not need the captured window to be alive.
+        # The picture behind it stops (there is nothing to capture) and
+        # that is correct; the panel itself must stay visible and
+        # clickable so the user can switch window mode or the source off.
+        if not st.display.menu.visible and st.display.is_visible():
             st.display.set_visible(False)
             st.follow_pos = None
         return
