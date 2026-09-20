@@ -93,6 +93,27 @@ class TaskbarWindow:
         # measured on the bench - so the state around the message is what tells
         # them apart (#96).
         self._was_active = False
+        # The previous foreground window - the discriminator #96 relies on.
+        # It cannot come from lParam: WM_NCACTIVATE carries 0 there, so the
+        # state has to be sampled while the message is NOT arriving. The same
+        # probe that solved #96 (`_work/probe_taskbar_activation.py`) samples it
+        # the same way, at 50 Hz.
+        #
+        # Why it is needed at all: on Win11 a click on our NOT-yet-active
+        # button arrives as WM_NCACTIVATE(1) with `_was_active` still False -
+        # measured on the bench, `was=False cursorTb=True fgOurs=True` - and the
+        # old guard required `_was_active`, so THE FIRST CLICK WAS DROPPED and
+        # only the second (SC_MINIMIZE, unconditional) worked. Reported as
+        # "the first click does nothing, the second expands it".
+        #
+        # The minimised previous window is what separates a real click from the
+        # fallback activation Windows sends when another window is minimised
+        # (#96: the menu opened by itself). A real click leaves that window
+        # alive; the fallback leaves it minimised.
+        self._prev_hwnd = 0
+        self._prev_iconic = False
+        self._prev_stop = threading.Event()
+        self._prev_thread: threading.Thread | None = None
 
     def _wnd_proc(self, hwnd, msg, wparam, lparam) -> int:
         if msg == WM_ACTIVATE:
@@ -120,12 +141,19 @@ class TaskbarWindow:
             # activation too, and showing our menu then is the reported
             # bug (#93).
             #
-            # AND we must have been the foreground one ALREADY: when the
-            # previous foreground window is minimised, Windows activates us
-            # as a fallback and this same message arrives - the menu opening
-            # by itself while the user only touched another program (#96).
-            # Only the already-active case is a click on our own button.
-            if wparam == 1 and self._was_active and \
+            # AND the previous window must not be MINIMISED: when the previous
+            # foreground window is minimised, Windows activates us as a
+            # fallback and this same message arrives - the menu opening by
+            # itself while the user only touched another program (#96).
+            #
+            # `_was_active` used to be the whole guard here, and it dropped the
+            # FIRST click on a not-yet-active button: measured on the bench,
+            # `msg=0x0086 wp=1 cursorTb=True fgOurs=True was=False` for the
+            # first click, with the menu staying shut, and `SC_MINIMIZE` only on
+            # the second. The previous window's state separates the two cases
+            # where `_was_active` could not: a real click leaves it alive, the
+            # fallback leaves it minimised.
+            if wparam == 1 and not self._prev_minimised() and \
                     self._cursor_over_taskbar() and self._is_foreground_ours():
                 self._emit("show_settings")
             self._was_active = bool(wparam)
@@ -190,6 +218,44 @@ class TaskbarWindow:
         except Exception:
             return False
 
+    def _sample_previous(self) -> None:
+        """Remember the last foreground window that was NOT ours.
+
+        Sampled while no message is being handled, because WM_NCACTIVATE's
+        lParam is 0 and the state around the message is the only thing that
+        separates a click on our button from the fallback activation Windows
+        hands us after another window is minimised (#96). A real click leaves
+        the previous window alive; the fallback leaves it minimised.
+        """
+        while not self._prev_stop.is_set():
+            try:
+                fg = user32.GetForegroundWindow() or 0
+                if fg and fg != self._hwnd:
+                    self._prev_hwnd = fg
+                    self._prev_iconic = bool(user32.IsIconic(fg))
+            except Exception:
+                pass
+            self._prev_stop.wait(0.02)          # 50 Hz, as in the probe
+
+    def _prev_minimised(self) -> bool:
+        """Is the previous foreground window minimised RIGHT NOW?
+
+        Read live, not from the sampler's cache. The cache is sampled at 50 Hz,
+        so for the #96 fallback it holds the state from BEFORE the minimise:
+        the user minimises a window, Windows activates us, and a cached reading
+        still says "alive" - the guard then lets the fallback through and the
+        menu opens by itself (caught by test_taskbar_foreign_minimize, step 1).
+        The window is still valid at message time, so its state is readable
+        then, and that is the moment the decision is about.
+        """
+        try:
+            hwnd = self._prev_hwnd
+            if not hwnd or not user32.IsWindow(hwnd):
+                return False
+            return bool(user32.IsIconic(hwnd))
+        except Exception:
+            return False
+
     def _is_user_click(self, wparam: int, deactivated: int = 0) -> bool:
         """Whether this activation is a click on OUR taskbar button.
 
@@ -240,6 +306,15 @@ class TaskbarWindow:
         """Create the window in its own thread (the message loop blocks)."""
         if self._thread is not None:
             return
+        # The previous-foreground sampler: WM_NCACTIVATE carries no lParam, so
+        # the state that separates a click from the #96 fallback has to be
+        # sampled continuously, not read from the message.
+        if self._prev_thread is None:
+            self._prev_stop.clear()
+            self._prev_thread = threading.Thread(
+                target=self._sample_previous, daemon=True,
+                name="taskbar-prev")
+            self._prev_thread.start()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="taskbar")
         self._thread.start()
@@ -294,6 +369,10 @@ class TaskbarWindow:
 
     def stop(self) -> None:
         """Close the window and join the thread."""
+        self._prev_stop.set()
+        if self._prev_thread is not None:
+            self._prev_thread.join(timeout=1.0)
+            self._prev_thread = None
         if self._hwnd:
             user32.PostMessageW(self._hwnd, WM_QUIT, 0, 0)
         if self._thread is not None:
