@@ -135,6 +135,16 @@ LABEL_H = 24
 CTRL_H = 26
 ROW_GAP = 16
 SECTION_GAP = 14
+#: The air above a section title, measured from the bottom of the last row
+#: before it. ONE number for every block: it used to come out as 22, 22, 14 and
+#: 40 px depending on what the preceding builder happened to add after itself,
+#: and four different gaps where the eye expects one rhythm is what reads as
+#: holes between the sections (user, 20.09).
+SECTION_TOP_GAP = 22
+#: How far under the track the ruler sits. Named because the layout reserves
+#: the room and the drawer places the ticks, and a slider whose row is shorter
+#: than what it draws puts the next control on top of its own scale.
+RULER_DROP = 5
 SLIDER_H = 6
 KNOB_R = 9
 BTN_H = 42
@@ -948,38 +958,82 @@ class OverlayMenu:
             squares = squares_here
             if not show:
                 return
-            cy += self._u(6)
+            # Measured from what is actually on the page, not from whatever the
+            # last builder left in `cy`: each of them adds its own trailing air
+            # (one adds ROW_GAP, the preset row adds 8, a hinted slider adds a
+            # caption line), and those differences landed straight in the gap
+            # before the next title. The items know where the content really
+            # ends, so ask them.
+            #
+            # The header icons are NOT content: they sit above the scroll area,
+            # and taking them as "the last row" put the first section title on
+            # top of the status line.
+            bottom = max((it.rect.bottom for it in items
+                          if it.kind != "icon"), default=None)
+            if bottom is None and self._stats_rel.h:
+                # Nothing laid out yet on the main page: the status line is what
+                # the first title follows.
+                bottom = self._stats_rel.bottom
+            if bottom is not None:
+                cy = bottom + self._u(SECTION_TOP_GAP)
+            else:
+                cy += self._u(6)
             self._sections.append((title, pygame.Rect(pad, cy, inner_w, sec_h)))
             cy += sec_h
 
         def slider(key: str, lo: float, hi: float, value: float,
                    label: str, hint: str = "", value_text: str = "",
-                   mark: float | None = None,
-                   ends: tuple | None = None) -> None:
+                   mark: float | None = None, bare: bool = False,
+                   ticks: int = 5) -> None:
             nonlocal cy
             if not show:
                 return
+            # `bare`: the track alone, with no caption line and no value cell.
+            # The ruler under it carries the position instead - for a control
+            # whose whole subject is already named by its section, those two
+            # lines of furniture said nothing the block title had not already
+            # said (user, 20.09).
+            row_label_h = 0 if bare else label_h
             item = Item("slider", key,
-                              pygame.Rect(pad, cy, inner_w, label_h + ctrl_h),
+                              pygame.Rect(pad, cy, inner_w, row_label_h + ctrl_h),
                               lo=lo, hi=hi, value=value,
                               extra={"label": label, "hint": hint,
-                                     "mark": mark, "ends": ends,
+                                     "mark": mark,
                                      "value_text": value_text,
-                                     "label_h": label_h,
-                                     "square": squares})
+                                     "label_h": row_label_h,
+                                     "bare": bare, "ticks": ticks,
+                                     "square": squares and not bare})
             # The hit zone is the TRACK, not the row: a click on the label
             # or on the blank space left of the track must not jump the
             # value (user rule 16.09). The track's rect is computed
             # exactly as _draw_slider computes it.
-            track_y = cy + label_h + self._u(10)
+            track_y = cy + row_label_h + self._u(10)
             item.extra["hit"] = pygame.Rect(
                 pad, track_y - self._u(6), inner_w,
                 self._u(SLIDER_H) + self._u(12))
+            # What is drawn UNDER the track is part of the row, and the row has
+            # to be that tall or the next control lands on it. Two things live
+            # there, in this order: the ruler, then the caption.
+            #
+            # The caption used to be reserved as exactly one line and drawn
+            # unwrapped, so a real sentence ran past the panel edge and a
+            # translated one overprinted the row below - the same defect #109
+            # named, fixed for the drop-downs and missed here.
+            below = self._u(RULER_DROP) + self._u(4)
+            if hint:
+                below += self._u(6) + self._hint_height(str(hint), inner_w)
+            item.extra["below"] = below
             items.append(item)
-            # End captions take the same line a hint would: a slider has
-            # one or the other, never both (they would overprint).
-            cy += label_h + ctrl_h + (self._u(SMALL_SIZE) + 4
-                                      if (hint or ends) else 0) + gap
+            item.rect.h = row_label_h + ctrl_h + below
+            # The air AFTER the row. A plain slider ends in its ruler, and the
+            # ruler is thin, quiet and reads as part of the track - it already
+            # does the separating that the full row gap is there for, so paying
+            # both spends the height twice. (It used to be paid once only
+            # because the row was shorter than what it drew and the ruler
+            # overhung into the next row's air.) A slider with a caption keeps
+            # the full gap: a line of text needs air under it, not beside it.
+            cy += item.rect.h + (gap if hint
+                                 else max(self._u(8), gap - below))
 
         def choice(key: str, label: str, current: str, options: list,
                    labels: list | None = None, hint: str = "") -> None:
@@ -1565,11 +1619,14 @@ class OverlayMenu:
                 # put the knob at the bottom while the label shows a
                 # different resolution.
                 lo = float(self.state.get("work_scale_min", 0.1))
-                # The ends replace the hint here: the trade is named at both
-                # ends, in the place where the choice is actually made.
+                # No caption under this one. It used to name the trade at
+                # both ends of the track; the redesign replaced the two words
+                # with the ruler and stopped drawing them, so all the pair did
+                # afterwards was reserve a blank line - the hole under this
+                # slider (user, 20.09). The value cell says the size, which is
+                # the number the choice is actually made on.
                 slider("nr_res", lo, cap, pos, s["nr_res"],
-                       value_text=value_text,
-                       ends=(s.get("nr_res_low", ""), s.get("nr_res_high", "")))
+                       value_text=value_text)
 
             # What is being processed - the first question anyone has, and
             # until now the only one answered on another page. The segment
@@ -1654,22 +1711,29 @@ class OverlayMenu:
                 items.append(Item("button", key,
                                   pygame.Rect(pad + idx * (bw + bgap),
                                               cy, bw, act_h),
+                                  # Flat: text, no box. A bordered button here
+                                  # weighed exactly as much as Screenshot and
+                                  # Record two blocks below, and saving a preset
+                                  # is not that kind of action - the hierarchy
+                                  # claimed otherwise than the page meant.
                                   extra={"label": label,
                                          "filled": False,
+                                         "flat": True,
+                                         "align": "center",
                                          "disabled": key == "delete_preset"
                                          and not self.state.get("preset_active")}))
             cy += act_h + self._u(8)
 
             section(s["sec_compare"])
             split_val = float(self.state.get("split", 0.0))
-            # The value is a NUMBER, and "off" lives in the hint. The direction
-            # the mockup sets: a word in a value cell makes the cell read as a
-            # label, and the wipe then looks like a switch rather than a
-            # position - while the cell is the one place a percentage can be
-            # read at a glance.
-            slider("split", 0.0, 1.0, split_val, s["split"], hint=s["split_hint"],
-                   value_text=(s.get("wipe_zero", "0%") if split_val <= 0.0
-                               else f"{int(round(split_val * 100))}%"))
+            # The track alone: no caption line, no percentage cell (user,
+            # 20.09). The block title already says what this is, and the wipe's
+            # subject is the picture behind the panel, not a number on it - the
+            # user is looking at the seam, not reading a percentage. The ruler
+            # carries the position: eleven ticks, so it reads in tenths rather
+            # than in the quarters five would give.
+            slider("split", 0.0, 1.0, split_val, s["split"],
+                   hint=s["split_hint"], bare=True, ticks=11)
 
             section(s["sec_actions"])
             # Two rows of two: Select window + Fullscreen on top, Screenshot
@@ -2929,22 +2993,23 @@ class OverlayMenu:
         # The value is a NUMBER CELL - the same one every other number on the
         # page uses (see `_draw_number_cell`). Measured through the shared helper
         # so the label can be budgeted against it before it is drawn.
-        cell_w, _cell_h = self._number_cell_size(value_text)
-        val = self._mono.render(value_text, True, _rgb(self.c["text"]))
+        bare = bool(item.extra.get("bare"))
+        cell_w, _cell_h = (0, 0) if bare else self._number_cell_size(value_text)
         shift = self._u(7) + self._u(10) if item.extra.get("square") else 0
         label_max = (item.rect.right - cell_w - self._u(12)
                      - item.rect.x - shift)
-        if item.extra.get("square"):
-            self._draw_state_square(
-                surface, item.rect.x,
-                item.rect.y + self._font.get_height() // 2,
-                filled=bool(item.extra.get("state_filled")))
-        label = self._clip(self._font, item.extra.get("label", item.key),
-                           _rgb(self.c["text"]), label_max)
-        surface.blit(label, (item.rect.x + shift, item.rect.y))
-        self._draw_number_cell(
-            surface, value_text, item.rect.right,
-            item.rect.y + self._font.get_height() // 2)
+        if not bare:
+            if item.extra.get("square"):
+                self._draw_state_square(
+                    surface, item.rect.x,
+                    item.rect.y + self._font.get_height() // 2,
+                    filled=bool(item.extra.get("state_filled")))
+            label = self._clip(self._font, item.extra.get("label", item.key),
+                               _rgb(self.c["text"]), label_max)
+            surface.blit(label, (item.rect.x + shift, item.rect.y))
+            self._draw_number_cell(
+                surface, value_text, item.rect.right,
+                item.rect.y + self._font.get_height() // 2)
 
         track_y = item.rect.y + label_h + self._u(10)
         track = pygame.Rect(item.rect.x, track_y, item.rect.w, self._u(SLIDER_H))
@@ -2991,20 +3056,34 @@ class OverlayMenu:
         # The ruler: five 1x4 ticks spread under the track (the mockup's own
         # count). They say "this is a scale" without spending two captions on
         # it - what the ends mean is already in the label and the value.
-        if item.extra.get("ticks", True):
-            n = 5
-            ty = track.bottom + self._u(5)
+        # The ruler under the track. On an ordinary slider it says "this is a
+        # scale" and nothing more. On a BARE one it is also the readout: every
+        # tick the knob has passed is drawn in the text tone and the rest in the
+        # border tone, so the position is legible with no caption and no value
+        # cell at all. That is why a bare slider asks for a denser ruler - five
+        # ticks resolve to a quarter of the range, which is not a reading.
+        n = int(item.extra.get("ticks", 5) or 0)
+        if n >= 2:
+            ty = track.bottom + self._u(RULER_DROP)
             for i in range(n):
                 tx = int(track.x + (track.w - self._u(1)) * (i / (n - 1)))
+                passed = bare and tx <= cx
                 pygame.draw.rect(
-                    surface, _rgb(self.c["border"]),
+                    surface,
+                    _rgb(self.c["text"] if passed else self.c["border"]),
                     pygame.Rect(tx, ty, max(1, self._u(1)), self._u(4)))
         item.extra["track"] = track
 
         hint = item.extra.get("hint")
         if hint:
-            h = self._small_font.render(hint, True, _rgb(self.c["muted"]))
-            surface.blit(h, (item.rect.x, track.bottom + self._u(6)))
+            # Under the ruler, wrapped and clipped through the one shared
+            # implementation - drawn at +6 it overprinted the ticks, and
+            # rendered in one piece it ran off the panel in any language whose
+            # sentence is longer than the English one.
+            self._draw_hint_lines(
+                surface, item, hint, item.rect.x,
+                track.bottom + self._u(RULER_DROP) + self._u(4) + self._u(6),
+                item.rect.w)
 
     def _draw_choice(self, surface, item: Item, s: dict) -> None:
         label_h = item.extra.get("label_h", self._u(LABEL_H))
@@ -3700,14 +3779,21 @@ class OverlayMenu:
         hot = self.hover == f"button:{item.key}"
         disabled = bool(item.extra.get("disabled"))
         if item.extra.get("flat"):
-            # Text only, right-aligned, in the accent: this is a link in
-            # weight, and a bordered box here would compete with the two
-            # real buttons under the sliders.
+            # Text only, in the accent: this is a link in weight, and a bordered
+            # box here would compete with the real buttons elsewhere on the
+            # page. Right-aligned by default (the revert link sits under the
+            # profile picker); centred when the item owns a slot of its own, as
+            # the two preset buttons do.
+            tone = (self.c["muted"] if disabled
+                    else self.c["focus"] if hot
+                    else self.c["accent"])
             img = self._clip(self._small_font,
                              item.extra.get("label", item.key),
-                             _rgb(self.c["accent"]), item.rect.w)
-            surface.blit(img, (item.rect.right - img.get_width(),
-                               item.rect.centery - img.get_height() // 2))
+                             _rgb(tone), item.rect.w)
+            x = (item.rect.centerx - img.get_width() // 2
+                 if item.extra.get("align") == "center"
+                 else item.rect.right - img.get_width())
+            surface.blit(img, (x, item.rect.centery - img.get_height() // 2))
             return
         # "filled": the active choice inside an inline group (the FG
         # multiplier) reads as a selected segment - accent background, the

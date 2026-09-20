@@ -145,42 +145,6 @@ def main() -> int:
     print(f"    widest segment caption: {widest_seg[1]} at "
           f"{widest_seg[0] * 100:.0f}% of its cell")
 
-    # The captions under a slider track are the third thing that truncates
-    # in silence: left at the edge, right at the edge, and since the
-    # parameter sliders carry their scale, a word centred between them. They
-    # collide rather than clip, which reads as one run-on caption.
-    widest_ends = (0.0, "")
-    for lang in STRINGS:
-        menu = OverlayMenu(1.0, lambda size=14, mono=False, bold=False, L=lang:
-                           fonts.load(size, mono=mono, bold=bold, lang=L))
-        menu.lang = lang
-        menu.set_state(dict(STATE, lang=lang))
-        menu.visible = True
-        for page, tab in [("main", None)] + [("settings", t)
-                                            for t in SETTINGS_TABS]:
-            menu.page = page
-            if tab is not None:
-                menu.settings_tab = tab
-            menu.layout(3840, 2160)
-            for item in menu.items:
-                ends = item.extra.get("ends")
-                if not ends:
-                    continue
-                parts = (ends if len(ends) == 3 else (ends[0], "", ends[1]))
-                used = sum(menu._small_font.size(str(p))[0] for p in parts)
-                used += menu._u(14) * 2          # the gaps that keep them apart
-                share = used / item.rect.w
-                if share > widest_ends[0]:
-                    widest_ends = (share, f"{lang} {page}/{item.key}")
-                if share > ROOM:
-                    failures.append(
-                        f"{lang} {page}/{item.key}: the scale captions take "
-                        f"{share * 100:.0f}% of the row ({used} of "
-                        f"{item.rect.w} px) and run into each other: "
-                        f"{list(parts)}")
-    print(f"    widest slider scale: {widest_ends[1]} at "
-          f"{widest_ends[0] * 100:.0f}% of its row")
-
     # The controls that carry a hint at all. If a page stops laying one of
     # these out, this test would go quiet about it - and the quiet would
     # look like a pass.
