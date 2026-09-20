@@ -1998,6 +1998,7 @@ STRINGS['ko'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multip
 for _strings in STRINGS.values():
     _strings.update({
         "frame_limit": "Frame limit",
+        "frame_limit_hint": "caps the source frames; generated ones are extra",
         "frame_limit_30": "30 fps",
         "frame_limit_60": "60 fps",
         "frame_limit_custom": "Custom",
@@ -2029,6 +2030,7 @@ for _strings in STRINGS.values():
     })
 STRINGS["ru"].update({
     "frame_limit": "Ограничение кадров",
+    "frame_limit_hint": "ограничивает исходные кадры; сгенерированные сверх них",
     "frame_limit_custom": "Своё",
     "frame_limit_unlimited": "Без ограничений",
     "frame_limit_custom_value": "Свой предел",
@@ -2059,6 +2061,7 @@ STRINGS["ru"].update({
 STRINGS["fr"].update({
     'fg_fail': "La génération de trames n'a pas pu démarrer sur ce GPU - l'interrupteur est revenu sur arrêt",
     'frame_limit': 'Limite de trames',
+    'frame_limit_hint': 'limite les images source ; les generees viennent en plus',
     'frame_limit_custom': 'Personnalisé',
     'frame_limit_custom_value': 'Limite personnalisée',
     'frame_limit_unlimited': 'Illimité',
@@ -2093,6 +2096,7 @@ STRINGS["fr"].update({
 STRINGS["de"].update({
     'fg_fail': 'Frame Generation konnte auf dieser GPU nicht starten - der Schalter ist wieder aus',
     'frame_limit': 'Bildratenlimit',
+    'frame_limit_hint': 'begrenzt die Quellbilder; generierte kommen dazu',
     'frame_limit_custom': 'Eigene',
     'frame_limit_custom_value': 'Eigenes Limit',
     'frame_limit_unlimited': 'Unbegrenzt',
@@ -2127,6 +2131,7 @@ STRINGS["de"].update({
 STRINGS["es"].update({
     'fg_fail': 'La generación de fotogramas no pudo iniciarse en esta GPU - el interruptor volvió a apagarse',
     'frame_limit': 'Límite de fotogramas',
+    'frame_limit_hint': 'limita los fotogramas de origen; los generados van aparte',
     'frame_limit_custom': 'Personalizado',
     'frame_limit_custom_value': 'Límite personalizado',
     'frame_limit_unlimited': 'Sin límite',
@@ -2161,6 +2166,7 @@ STRINGS["es"].update({
 STRINGS["it"].update({
     'fg_fail': "La generazione di frame non è partita su questa GPU - l'interruttore è tornato su off",
     'frame_limit': 'Limite di frame',
+    'frame_limit_hint': 'limita i fotogrammi sorgente; i generati sono in piu',
     'frame_limit_custom': 'Personalizzato',
     'frame_limit_custom_value': 'Limite personalizzato',
     'frame_limit_unlimited': 'Illimitato',
@@ -2195,6 +2201,7 @@ STRINGS["it"].update({
 STRINGS["pt"].update({
     'fg_fail': 'A geração de quadros não iniciou nesta GPU - o interruptor voltou a desligado',
     'frame_limit': 'Limite de quadros',
+    'frame_limit_hint': 'limita os quadros de origem; os gerados sao extra',
     'frame_limit_custom': 'Personalizado',
     'frame_limit_custom_value': 'Limite personalizado',
     'frame_limit_unlimited': 'Ilimitado',
@@ -2229,6 +2236,7 @@ STRINGS["pt"].update({
 STRINGS["pl"].update({
     'fg_fail': 'Generowanie klatek nie wystartowało na tej karcie - przełącznik wrócił na wyłączony',
     'frame_limit': 'Limit klatek',
+    'frame_limit_hint': 'ogranicza klatki zrodlowe; generowane sa dodatkowo',
     'frame_limit_custom': 'Własny',
     'frame_limit_custom_value': 'Własny limit',
     'frame_limit_unlimited': 'Bez limitu',
@@ -2263,6 +2271,7 @@ STRINGS["pl"].update({
 STRINGS["uk"].update({
     'fg_fail': 'Генерація кадрів не запустилася на цій відеокарті - перемикач повернувся у вимкнено',
     'frame_limit': 'Обмеження кадрів',
+    'frame_limit_hint': 'обмежує вихідні кадри; згенеровані понад них',
     'frame_limit_custom': 'Своє',
     'frame_limit_custom_value': 'Свій ліміт',
     'frame_limit_unlimited': 'Без обмежень',
@@ -2297,6 +2306,7 @@ STRINGS["uk"].update({
 STRINGS["zh"].update({
     'fg_fail': '此 GPU 无法启动帧生成 - 开关已回到关闭状态',
     'frame_limit': '帧率限制',
+    'frame_limit_hint': '限制源帧；生成的帧额外叠加',
     'frame_limit_custom': '自定义',
     'frame_limit_custom_value': '自定义上限',
     'frame_limit_unlimited': '不限制',
@@ -2331,6 +2341,7 @@ STRINGS["zh"].update({
 STRINGS["ja"].update({
     'fg_fail': 'この GPU ではフレーム生成を開始できません - スイッチはオフに戻りました',
     'frame_limit': 'フレーム制限',
+    'frame_limit_hint': '元フレームを制限；生成分はさらに上乗せ',
     'frame_limit_custom': 'カスタム',
     'frame_limit_custom_value': 'カスタム上限',
     'frame_limit_unlimited': '無制限',
@@ -2365,6 +2376,7 @@ STRINGS["ja"].update({
 STRINGS["ko"].update({
     'fg_fail': '이 GPU에서 프레임 생성을 시작할 수 없습니다 - 스위치가 꺼짐으로 돌아갔습니다',
     'frame_limit': '프레임 제한',
+    'frame_limit_hint': '원본 프레임을 제한하고 생성분은 추가됩니다',
     'frame_limit_custom': '사용자 지정',
     'frame_limit_custom_value': '사용자 지정 한도',
     'frame_limit_unlimited': '무제한',

@@ -992,10 +992,12 @@ class OverlayMenu:
             if hint:
                 extra["hint"] = hint
                 line_h = self._small_font.get_height() + self._u(4)
-                # The last line carries no trailing space of its own: with it
-                # a hinted control sat further from its neighbour than two
-                # plain ones did.
-                hint_h = (self._u(8) + (str(hint).count("\n") + 1) * line_h
+                # The height comes from the hint AS IT WILL BE DRAWN: the hint
+                # is wrapped now, so counting "\n" reserved one line for a
+                # sentence that needs three and the next control was drawn over
+                # its tail.
+                hint_h = (self._u(8)
+                          + self._hint_height(str(hint), inner_w)
                           - self._u(4))
             item = Item("choice", key,
                               pygame.Rect(pad, cy, inner_w, label_h + ctrl_h + hint_h),
@@ -1493,12 +1495,18 @@ class OverlayMenu:
             off_btn.extra["filled"] = not fg
 
             limit_mode = str(self.state.get("frame_limit_mode", "unlimited"))
+            # The hint is not decoration: the cap paces how often a frame is
+            # taken from the worker, so it counts SOURCE frames. Frame
+            # Generation runs inside the worker and reports its own rate, which
+            # is why a 60 cap and a 170 fps counter are both true at once. The
+            # reporter had to work that out from the numbers (#109).
             choice("frame_limit_mode", s.get("frame_limit", "Frame limit"),
                    limit_mode, ["30", "60", "custom", "unlimited"],
                    labels=[s.get("frame_limit_30", "30 fps"),
                            s.get("frame_limit_60", "60 fps"),
                            s.get("frame_limit_custom", "Custom"),
-                           s.get("frame_limit_unlimited", "Unlimited")])
+                           s.get("frame_limit_unlimited", "Unlimited")],
+                   hint=s.get("frame_limit_hint", ""))
             if limit_mode == "custom":
                 custom = int(self.state.get("frame_limit_custom", 90))
                 slider("frame_limit_custom", 15, 240, custom,
@@ -3024,12 +3032,10 @@ class OverlayMenu:
         item.extra["strip"] = strip
         hint = item.extra.get("hint")
         if hint:
-            y = strip.bottom + self._u(8)
-            for line in str(hint).split("\n"):
-                img = self._clip(self._small_font, line, _rgb(self.c["muted"]),
-                                 item.rect.w)
-                surface.blit(img, (item.rect.x, y))
-                y += self._small_font.get_height() + self._u(4)
+            # Wrapped as well as clipped: clipping alone still loses the end of
+            # a sentence (the Frame limit hint was cut at the panel edge, #109).
+            self._draw_hint_lines(surface, item, hint, item.rect.x,
+                                  strip.bottom + self._u(8), item.rect.w)
 
     def _draw_options(self, surface) -> None:
         """The entries of the expanded list - above the rest of the content.
@@ -3232,6 +3238,46 @@ class OverlayMenu:
         img = self._mono.render(text, True, (0, 0, 0))
         return (img.get_width() + 2 * self._u(self.NUM_CELL_PAD_X),
                 img.get_height() + 2 * self._u(self.NUM_CELL_PAD_Y))
+
+    def _wrap_hint(self, text: str, width: int) -> list[str]:
+        """Break a hint into lines that fit `width`, on its own words."""
+        out: list[str] = []
+        for para in str(text).split("\n"):
+            words = para.split()
+            if not words:
+                out.append("")
+                continue
+            line = words[0]
+            for word in words[1:]:
+                trial = f"{line} {word}"
+                if self._small_font.size(trial)[0] <= width:
+                    line = trial
+                else:
+                    out.append(line)
+                    line = word
+            out.append(line)
+        return out
+
+    def _draw_hint_lines(self, surface, item: Item, hint: str,
+                         x: int, y: int, width: int) -> int:
+        """Draw a wrapped, clipped hint; return the height it used.
+
+        One implementation for every drawer: the drop-down drew its hint as a
+        single unclipped line while the slider clipped and wrapped, and a sentence
+        of real explanation was cut at the panel edge in the first case.
+        """
+        used = 0
+        for line in self._wrap_hint(hint, width):
+            img = self._clip(self._small_font, line, _rgb(self.c["muted"]),
+                             width)
+            surface.blit(img, (x, y + used))
+            used += self._small_font.get_height() + self._u(4)
+        return used
+
+    def _hint_height(self, hint: str, width: int) -> int:
+        """How tall the wrapped hint will be - the layout needs this."""
+        lines = len(self._wrap_hint(hint, width))
+        return lines * (self._small_font.get_height() + self._u(4))
 
     def _draw_number_cell(self, surface, text: str, right: int, mid_y: int,
                           *, mono=None) -> int:
