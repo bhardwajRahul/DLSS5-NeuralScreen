@@ -114,28 +114,16 @@ on it, red when it is not.
 - **Model** — *which* network produces the picture, as opposed to how
   strongly. Three of them, and they are three different outputs rather than
   three strengths: **Default** suits a desktop, **Natural** and **Cinematic**
-  are tuned for games and soften photographs and small text. Measured on a
-  desktop capture, fine detail against the untouched frame: Default
-  **+18.7%**, Natural **−11.4%**, Cinematic **−23.4%**. A saved preset keeps
-  the model it was saved with.
+  are tuned for games and soften photographs and small text (measured in
+  TECHNICAL.md). A saved preset keeps the model it was saved with.
 - **Before / after wipe** — leaves the left part of the screen unprocessed so
   you can see what the effect is doing. Back to 0 when done.
 - **Boost** — on by default. The network runs at a reduced resolution and a
   slider under the switch chooses which: measured on a 5070 Ti at 4K,
-  **45.7 → 72.6 frames** at the default step and **83.4** at the lowest.
-  The picture stays sharp — the network's result is composed onto your
-  original frame, so text and edges keep full resolution. Turn it off to
-  compare.
-- **NR passes** — under the Boost slider, and an experiment rather than a
-  finished control. It runs the network over the same frame more than once,
-  each pass a feature of its own with its own temporal history. It is priced
-  like what it is: measured on the bench at 2496x1404, one pass held about
-  **62 frames** and two about **43** - the second pass costs roughly a third
-  of the frame rate, and every pass carries its own model of about 440 MB.
-  Whether it is worth that is a question for your own eyes; leave it at 1 if
-  you cannot see the difference. Boost only - outside it the network writes
-  the full-resolution output directly and a second pass would need a
-  full-resolution scratch buffer, which is a different trade.
+  **45.7 → 72.6 frames** at the default step and **83.4** at the lowest. The
+  picture stays sharp — the result is composed onto your original frame, so
+  text and edges keep full resolution. Turn it off to compare. **NR passes**
+  under the slider repeats the pass: an experiment, priced in TECHNICAL.md.
 - **DLSS 4.5 FG** — Frame Generation, off by default, with a ×2 / ×3 / ×4
   multiplier beside the switch (and on **Num7**). DLSS-G's own desktop
   build: the depth is flat and the motion is estimated, there is no engine
@@ -146,30 +134,11 @@ on it, red when it is not.
   flips back off with a short notice** — no silent ON. Validated on RTX
   50-series; adapters beyond it are unconfirmed.
 
-**Scale** sits at the bottom of the main page, above Quit: five steps from
-80% to 130% for the panel itself. A first launch picks the largest step that
-fits the screen it landed on - at 100% the main page is taller than a 1080p
-desktop, and a panel whose last controls sit under the taskbar cannot be
-reached. It fits once; the moment you pick a step yourself it stops choosing
-for you. Dragging the panel and the resize corner both stay.
-
 Everything else is behind the sliders icon: monitor/GPU, a 30/60/custom/off
-frame limiter, HDR, media folders, Spout2, the recording indicator, static
-frame skipping, key assignments, keyboard navigation, theme and **12** languages.
-Three more live there:
-
-- **Frame counter** — the rate on screen with the panel closed, in the corner
-  you pick (or off, which is the default). It shows what the panel's header
-  shows and nothing more: with Frame Generation on, the pair `FG 167 (55.1)`
-  is the presented rate and the network's rate it is built on. It is drawn
-  into recordings and screenshots, like everything else on the overlay.
-- **Minimise to tray** and **Close to tray** — what the taskbar button's two
-  buttons do. Off by default, and neither stops the neural pass: the picture
-  on screen is this program's output, so a minimise that also stopped
-  processing would change what you see without saying so. The window is
-  hidden, not destroyed, and the tray icon brings it back - as does the
-  settings hotkey. If the tray icon is not there, the button is not hidden
-  and the program says so rather than disappearing with no way back.
+frame limiter, HDR, media folders, Spout2, the recording indicator, an
+on-screen frame counter, minimise/close to tray, static frame skipping, key
+assignments, keyboard navigation, theme and **12** languages, and **Scale**
+above Quit, which sizes the panel.
 
 ## Swapping a runtime
 

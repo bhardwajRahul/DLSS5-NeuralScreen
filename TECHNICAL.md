@@ -180,6 +180,10 @@ a maintainer's GPU, paths or experimental switches cannot leak into a release.
 | `theme` | `light` / `dark` |
 | `open_menu_on_start` | open the menu on launch; `false` — a short alert instead |
 | `hotkeys` | `{"toggle": "Num1", ...}` — see README, "Using it". Names: `Num0`-`Num9`, `Numdot`, `Numplus`, `Numminus`, `Nummul`, `Numdiv`, `F1`-`F12`, `Insert`, `Home`, letters, digits, with `Ctrl+`/`Alt+`/`Shift+` |
+| `nr_passes` | 1-4, how many passes the network makes over one frame (Boost only). An experiment; the second pass costs about a third of the frame rate and every pass carries its own ~440 MB feature |
+| `fps_overlay` | `off` / `tl` / `tr` / `bl` / `br` - the on-screen frame counter and the corner it sits in |
+| `tray_on_minimise`, `tray_on_close` | what the taskbar button's minimise and close do; both off by default, and neither stops the neural pass |
+| `menu_scale_auto` | the panel size is still the automatic fit; cleared for good the moment a scale step is chosen by hand |
 | `menu_offset`, `menu_scale`, `menu_height` | where the menu sits, its scale and height. Written by the app, not meant to be edited by hand (`menu_height: null` — fit the content) |
 
 ## Architecture
@@ -499,6 +503,79 @@ shadows ever misbehave - a delta that is linear in code is not linear in
 light, and the error is largest in the darkest pixels. Moving the composite to
 linear would change the look of every scene, so it is a deliberate choice, not
 an oversight.
+
+
+### The NR cascade: more than one pass over a frame
+
+An experiment, reachable only in Boost mode, and off (one pass) by default.
+`nr_passes` 1-4 runs the network over the same frame that many times before
+anything is composed.
+
+Each pass gets its **own NGX feature**. Calling one feature twice inside a
+frame hands it two evaluations with no motion in between, which is a lie to
+its temporal history; separate features each keep their own. That is also
+what makes it expensive - a feature costs about 440 MB, so four passes carry
+four of them.
+
+The passes ping-pong between two work-resolution scratch buffers, `nr_out`
+and `nr_alt`, and `nr_in` - the composite's anchor - is never written. Which
+buffer pass 0 starts on is chosen by the **parity** of the pass count, so the
+last pass always lands in `nr_out`, which is the name everything downstream
+reads. The alternative, letting it land anywhere and swapping the two
+pointers afterwards, costs the same nothing per frame and is wrong: it
+changes which resource `nr_out` is from one frame to the next, and both
+composites cache their descriptors on that pointer. An even pass count would
+then rewrite a shader-visible descriptor heap every frame while up to two
+earlier frames are still reading it.
+
+Measured on the bench at 2496x1404, Boost on:
+
+```
+passes   NR fps
+1        58.3 / 64.7 / 63.3   (~62)
+2        42.9 / 43.1 / 43.3   (~43)
+```
+
+**The second pass costs about a third of the frame rate.** Whether it buys
+anything visible is not settled, and the control exists to answer that.
+
+The count rides in bits 2-4 of the RNSZ flags word, so changing it costs no
+teardown once the features exist. The stream header has no field for it - the
+worker always starts at one pass, and the saved value is sent as soon as the
+stream is running.
+
+### Outside the panel: the counter, the tray and the scale
+
+`fps_overlay` draws the same reading the panel's header shows - `NR 55.1`, or
+`FG 167 (55.1)` with Frame Generation on - in one of the four corners, with
+the panel closed. One implementation produces both (`status_readings`),
+because a second copy of "which numbers appear when" would drift. It is drawn
+into recordings and screenshots like the rest of the overlay, which is why it
+is off by default.
+
+`tray_on_minimise` and `tray_on_close` decide what the taskbar button's two
+buttons do. Neither stops the neural pass: this program's output is the
+picture on the screen, so a minimise that also stopped it would change what
+the user sees without saying so. The 1x1 window that carries the button is
+hidden, never minimised and never destroyed - either would lose the button
+for the rest of the session (#93). Going to the tray is refused, with a
+notice, when the tray icon is not actually running: it is the only way back.
+
+`menu_scale` is one of five steps - 80, 90, 100, 115, 130% - and
+`menu_scale_auto` says whether the user has picked one yet. While it is set,
+a launch lays the main page out at each step and takes the largest that needs
+no scrolling on the work area (the desktop minus the taskbar). At 100% that
+page is 1165 px of content, which does not fit a 1080p desktop: it came up
+scrolled, with its last controls behind the taskbar. The fit never grows the
+panel above 100%, and it stops running for good the moment a step is chosen
+by hand.
+
+### Which model changes what
+
+Measured on a desktop capture, fine detail against the untouched frame:
+Default **+18.7%**, Natural **-11.4%**, Cinematic **-23.4%**. Three different
+outputs rather than three strengths, which is why a saved preset keeps the
+model it was saved with.
 
 
 ## Before / after wipe

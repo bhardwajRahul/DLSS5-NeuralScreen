@@ -641,6 +641,22 @@ class Display:
                 # pre-multi-monitor behaviour (no move at all) stays intact.
                 flags |= 0x0002  # SWP_NOMOVE
             ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, 0, 0, flags)
+            # The worker needs this handle, and this is the one place that
+            # runs after every creation AND every recreation of the window
+            # (__init__, the layer resize, the fullscreen layer all end
+            # here). Published through the environment because the worker is
+            # a child process started later - and re-published on every move,
+            # because a set_mode can hand us a different window and a stale
+            # handle would silently put the picture back on top.
+            #
+            # Why the worker wants it: it reveals its picture window on the
+            # first real frame, and ShowWindow puts a topmost window ABOVE
+            # this one. Measured on a reporter's machine (#89): nine reveals,
+            # nine losses of the top, each corrected 10-55 ms later - one to
+            # three refreshes with no panel on screen. With the handle it
+            # inserts the picture directly below this window instead, in one
+            # operation, and there is no moment to catch.
+            os.environ["NS_HUD_HWND"] = str(int(hwnd))
         except Exception:
             pass
 
