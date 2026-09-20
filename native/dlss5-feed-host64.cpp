@@ -1502,14 +1502,20 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
     h.params->Set("CreationNodeMask", 1u);
     h.params->Set("VisibilityNodeMask", 1u);
     h.params->Set("DLSSNR.Width", w); h.params->Set("DLSSNR.Height", h_);
-    h.params->Set("DLSSNR.InputWidth", upscale ? full_w : w);
-    h.params->Set("DLSSNR.InputHeight", upscale ? full_h : h_);
-    h.params->Set("DLSSNR.OutputWidth", upscale ? full_w : w);
-    h.params->Set("DLSSNR.OutputHeight", upscale ? full_h : h_);
-    h.params->Set("DLSSNR.Output.Width", upscale ? full_w : w);
-    h.params->Set("DLSSNR.Output.Height", upscale ? full_h : h_);
-    h.params->Set("DLSSNR.Upscaling", upscale ? 1u : 0u);
-    h.params->Set("DLSSNR.Scale", upscale ? static_cast<float>(w) / static_cast<float>(full_w) : 1.0f);
+    // Eight more size parameters used to be Set here - InputWidth/Height,
+    // OutputWidth/Height, Output.Width/Height, Upscaling and Scale - and the
+    // runtime reads NONE of them. An NGX parameter block is a map keyed by the
+    // name string, so a name that does not appear in the runtime cannot be
+    // looked up: scanned nvngx_dlssnr.dll (165 840 496 bytes) for every
+    // "DLSSNR.*" literal, 20.09.2026, and it carries 61 of them - Width,
+    // Height, ScalingRatio and Hint.Render.Preset among them, and not one of
+    // the eight. tests/test_ngx_params_exist.py keeps it that way.
+    //
+    // What survives is what the network is actually told: its own working
+    // size, and the ratio. There is no "input size" to give it, which is the
+    // same fact TECHNICAL.md reports from the other end - the network
+    // enhances, it does not upscale, and the upscale mode is our composite
+    // rather than something the feature does.
     h.params->Set("DLSSNR.ScalingRatio", upscale ? static_cast<float>(w) / static_cast<float>(full_w) : 1.0f);
     h.params->Set("DLSSNR.Hint.Render.Preset", NrPresetHint());
     h.params->Set("DLSS.Feature.Create.Flags", 0u);
