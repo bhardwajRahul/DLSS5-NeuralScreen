@@ -228,6 +228,32 @@ def monitor_origin(devicename: str) -> tuple[int, int] | None:
     return found[0] if found else None
 
 
+def monitor_work_size(devicename: str) -> tuple[int, int] | None:
+    """The monitor's WORK area - the desktop minus the taskbar - or None.
+
+    The panel is sized to fit the screen, and "the screen" for something the
+    user has to reach with a mouse is the work area: a panel that ends under
+    the taskbar has its last control behind it. rcWork is what Windows itself
+    uses to place a maximised window.
+    """
+    found: list[tuple[int, int]] = []
+
+    def _cb(hmon, _hdc, _lprect, _lparam) -> bool:
+        info = _MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(_MONITORINFOEXW)
+        if ctypes.windll.user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
+            if "".join(info.szDevice).rstrip("\x00") == devicename:
+                r = info.rcWork
+                found.append((r.right - r.left, r.bottom - r.top))
+        return True
+
+    MONITORENUMPROC = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+        ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    ctypes.windll.user32.EnumDisplayMonitors(0, 0, MONITORENUMPROC(_cb), 0)
+    return found[0] if found else None
+
+
 def monitor_size(devicename: str) -> tuple[int, int] | None:
     """The CURRENT size of one monitor, by DXGI devicename, or None.
 

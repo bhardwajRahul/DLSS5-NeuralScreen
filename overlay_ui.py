@@ -141,6 +141,13 @@ SECTION_GAP = 14
 #: and four different gaps where the eye expects one rhythm is what reads as
 #: holes between the sections (user, 20.09).
 SECTION_TOP_GAP = 22
+#: The interface scale the user can pick, and the ladder the first launch
+#: fits from. Five steps rather than a slider: the panel already speaks in
+#: segments, five cells are easier to hit than a knob is to drag, and the
+#: same ladder is what the automatic fit chooses from - one set of sizes,
+#: not two (user, 20.09).
+SCALE_STEPS = (0.8, 0.9, 1.0, 1.15, 1.3)
+
 #: How far under the track the ruler sits. Named because the layout reserves
 #: the room and the drawer places the ticks, and a slider whose row is shorter
 #: than what it draws puts the next control on top of its own scale.
@@ -457,6 +464,37 @@ class OverlayMenu:
     def _u(self, base: float) -> int:
         """1440p base units -> screen pixels."""
         return max(1, int(round(base * self.scale * self.user_scale)))
+
+    def fit_user_scale(self, width: int, height: int) -> float:
+        """The largest ladder step whose main page needs no scrolling.
+
+        Laid out for real at each step rather than estimated: the page's height
+        depends on which rows are present (Boost hides the resolution slider, a
+        custom frame cap adds one), and an estimate that is wrong by one row is
+        wrong by more than a step.
+
+        Never above 1.0: the fit exists to bring a panel that does not fit
+        DOWN onto the screen, and a big desktop is not a request for a big
+        panel - the per-monitor density is already handled a level up, by
+        display.ui_scale_for. The steps above 1.0 are there to be chosen.
+
+        The caller's scale is restored before returning - this measures, it
+        does not decide.
+        """
+        saved = self.user_scale
+        saved_page, saved_scroll = self.page, self.scroll
+        best = SCALE_STEPS[0]
+        try:
+            for step in (v for v in SCALE_STEPS if v <= 1.0):
+                self.set_user_scale(step)
+                self.page = "main"
+                self.layout(int(width), int(height))
+                if self._max_scroll <= 0:
+                    best = step
+        finally:
+            self.set_user_scale(saved)
+            self.page, self.scroll = saved_page, saved_scroll
+        return best
 
     def set_user_scale(self, value: float) -> None:
         """Manual panel stretching. The fonts have to be recreated."""
@@ -1781,6 +1819,18 @@ class OverlayMenu:
         if self.page == "settings" and not getattr(self, "_measuring", False):
             cy = max(cy, self._settings_content_h - self._u(14) - self._u(6)
                      - self._u(ACTION_H) - self._u(PAD))
+        if self.page == "main":
+            # The interface scale, above Quit (user, 20.09). It lives on the
+            # main page rather than behind the gear because it is the answer
+            # to "everything is too big", and somebody asking that question is
+            # looking at this page, not hunting through settings.
+            scale_now = float(getattr(self, "user_scale", 1.0))
+            step_now = min(SCALE_STEPS,
+                           key=lambda v: abs(v - scale_now))
+            segmented("menu_scale", s.get("ui_scale", "Scale"),
+                      f"{step_now:g}", [f"{v:g}" for v in SCALE_STEPS],
+                      labels=[f"{int(round(v * 100))}%" for v in SCALE_STEPS])
+            items[-1].extra["state_default"] = "1"
         cy += self._u(6)
         self._rule_rel = pygame.Rect(pad, cy, inner_w, 1)
         cy += self._u(14)
@@ -2370,6 +2420,15 @@ class OverlayMenu:
                 self.state["screenshot_format"] = value
                 return [("screenshot_format", value)]
             return []
+        if key == "menu_scale":
+            # Applied at once so the click is answered by the thing the click
+            # is about; main persists it and marks the automatic fit as spent.
+            try:
+                step = float(value)
+            except (TypeError, ValueError):
+                return []
+            self.set_user_scale(step)
+            return [("menu_scale", step)]
         if key == "frame_multiplier":
             # Optimistic like style: the segment highlights at once, main
             # applies the new multiplier to the worker. Turning Frame Generation

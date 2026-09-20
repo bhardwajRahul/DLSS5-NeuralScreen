@@ -599,6 +599,23 @@ def apply_menu_action(st, action: tuple) -> None:
         if action[1] in ("light", "dark"):
             st.cfg["theme"] = action[1]
         print(f"[main] menu theme -> {action[1]}")
+    elif kind == "menu_scale":
+        # The menu has already applied it to itself. It lands in st.cfg here
+        # for the same reason the theme does: a rebuild between now and the
+        # next file write recreates the menu from st.cfg, and a size the user
+        # just picked must survive that.
+        try:
+            step = round(float(action[1]), 2)
+        except (TypeError, ValueError):
+            print(f"[main] invalid interface scale: {action[1]!r}",
+                  file=sys.stderr)
+            return
+        st.cfg["menu_scale"] = step
+        # The automatic fit is spent the moment the user picks a size: it is a
+        # starting point for a first launch, not a preference that keeps
+        # correcting them.
+        st.cfg["menu_scale_auto"] = False
+        print(f"[main] interface scale -> {step:g}")
     elif kind == "gpu":
         # The value arrives as "N: NVIDIA GeForce ..." - the index is the
         # identity here (it is what NS_GPU takes), the name is the label.

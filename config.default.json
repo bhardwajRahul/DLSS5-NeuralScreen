@@ -37,6 +37,7 @@
   "gpu": 0,
   "gpu_no_nr": [],
   "menu_scale": 1.0,
+  "menu_scale_auto": true,
   "menu_height": null,
   "menu_offset": [
     0,

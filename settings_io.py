@@ -389,6 +389,19 @@ def _migrate_config(cfg: dict, defaults: dict) -> tuple[dict, bool]:
     # is replaced.
     merged = deepcopy(defaults)
     merged.update(migrated)
+    if "menu_scale_auto" not in migrated:
+        # A config written before the automatic fit existed. Whether it wants
+        # one is answered by the size it carries: still at the shipped 1.0
+        # means nobody ever adjusted it, and the fit is exactly what that
+        # install is missing. Any other value was put there by hand or by the
+        # old drag-the-corner resize, and belongs to the user - the fit must
+        # not argue with it. Taking the default's `true` here would have
+        # resized every existing install on its next launch.
+        try:
+            scale = float(merged.get("menu_scale", 1.0))
+        except (TypeError, ValueError):
+            scale = 1.0
+        merged["menu_scale_auto"] = abs(scale - 1.0) < 1e-6
     if merged != migrated:
         changed = True
     return merged, changed
@@ -573,6 +586,12 @@ def _validate_config(cfg: dict) -> dict:
     if menu_scale != menu_scale or menu_scale in (float("inf"), float("-inf")):
         menu_scale = 1.0
     cfg["menu_scale"] = min(3.0, max(0.5, menu_scale))
+    # Whether menu_scale is still the automatic choice. True until the user
+    # picks a step; from then on their size is theirs and the fit never runs
+    # again. Anything that is not a real boolean is treated as "already
+    # chosen": guessing "please resize my interface" from a malformed value is
+    # the worse mistake of the two.
+    cfg["menu_scale_auto"] = cfg.get("menu_scale_auto") is True
 
     menu_height = cfg.get("menu_height")
     if menu_height is not None:
@@ -724,6 +743,9 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
     monitor_name = devicename_for_output_idx(int(monitor))
     return {
         "menu_scale": round(menu.user_scale, 2),
+        # Written from the config, not from the menu: the menu has no opinion
+        # about whether its size was chosen or fitted.
+        "menu_scale_auto": bool(cfg.get("menu_scale_auto", False)),
         "menu_height": (None if menu.user_height is None
                         else int(menu.user_height)),
         "open_menu_on_start": startup_menu,

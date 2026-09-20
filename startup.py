@@ -33,7 +33,8 @@ import time
 import numpy as np
 
 from capture import (ScreenCapture, list_adapters, list_monitors,
-                     monitor_origin, resolve_output_idx)
+                     monitor_origin, monitor_work_size,
+                     resolve_output_idx)
 from display import Display
 from gpuinfo import describe as gpu_describe, probe as gpu_probe
 from guides import TemporalGuideGenerator
@@ -537,6 +538,33 @@ def bring_up(st) -> None:
     st.split_pos = min(1.0, max(0.0, float(st.cfg.get("split", 0.0))))
     # The menu size, position and theme - exactly as the user left them.
     st.display.menu.set_user_scale(float(st.cfg.get("menu_scale", 1.0)))
+    # A first launch sizes the panel to the screen it landed on. At the
+    # shipped 1.0 the main page is 1165 px of content, which does not fit a
+    # 1080p desktop: the panel came up scrolled, with its last controls under
+    # the taskbar (measured, and seen in a reporter's video - #107). The fit
+    # runs ONLY while menu_scale_auto is set, so it can never argue with a
+    # size the user picked.
+    if st.cfg.get("menu_scale_auto") is True:
+        work = None
+        try:
+            work = monitor_work_size(getattr(st, "monitor_devicename", "") or "")
+        except Exception:
+            work = None
+        # The work area is the desktop minus the taskbar; without it, the
+        # monitor's own height minus a taskbar's worth is a better guess than
+        # the full height.
+        fit_w, fit_h = (work if work else (st.width, max(1, st.height - 48)))
+        try:
+            step = st.display.menu.fit_user_scale(fit_w, fit_h)
+        except Exception as exc:
+            print(f"[main] the interface fit failed ({exc}) - keeping "
+                  f"{st.cfg.get('menu_scale', 1.0)}", file=sys.stderr)
+        else:
+            if abs(step - float(st.cfg.get("menu_scale", 1.0))) > 0.001:
+                print(f"[main] interface scale fitted to {step:g} for a "
+                      f"{fit_w}x{fit_h} desktop")
+            st.display.menu.set_user_scale(step)
+            st.cfg["menu_scale"] = round(step, 2)
     saved_theme = st.cfg.get("theme")
     if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
         st.display.menu.set_state({"theme": saved_theme})
