@@ -2710,12 +2710,8 @@ class OverlayMenu:
             # do not inflate it. It is meaningless while the pass is off, so it
             # is not drawn then: "NR 0.0" would read as a broken network rather
             # than a switched-off one.
-            if not paused:
-                fps = st.get("fps")
-                readings.append(
-                    f"{s.get('nr_short', 'NR')} {fps:.1f}"
-                    if isinstance(fps, (int, float)) else
-                    f"{s.get('nr_short', 'NR')} —")
+            fps = st.get("fps")
+            nr_text = (f"{fps:.1f}" if isinstance(fps, (int, float)) else "—")
             # Frame Generation reports its own rate whether or not the neural
             # pass is on (v1.16.0), and with NR off it is the ONLY reading
             # there is. It must not sit behind `not paused`: that hid the
@@ -2723,7 +2719,19 @@ class OverlayMenu:
             # the report was "with only Frame Generation on, no frame counter"
             # (#107, second half).
             shown = st.get("display_fps")
-            if isinstance(shown, (int, float)) and shown > 0:
+            has_fg = isinstance(shown, (int, float)) and shown > 0
+            if not paused and has_fg:
+                # Both numbers, AS A PAIR: the output rate with the rate it is
+                # built on in brackets (the mockup's `120 (60)`). Two separate
+                # readings state both numbers but not their relation, and the
+                # relation is what the pair means - 178 out of 60 is a different
+                # picture from 178 alone (#109).
+                readings.append(f"{s.get('fg_short', 'FG')} {shown:.0f} "
+                                f"({nr_text})")
+            elif not paused:
+                readings.append(f"{s.get('nr_short', 'NR')} {nr_text}")
+            if has_fg and paused:
+                # FG alone: one number, and it is the only one there is.
                 readings.append(f"{s.get('fg_short', 'FG')} {shown:.0f}")
 
         gap = self._u(14)

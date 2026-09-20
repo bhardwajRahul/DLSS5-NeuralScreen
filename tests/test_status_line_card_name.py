@@ -44,7 +44,10 @@ SIZES = ((1920, 1080), (2560, 1440), (3840, 2160))
 LANGS = ("en", "de", "ru")
 #: What the line must show, left to right. FG is last so it lands on the right
 #: edge.
-WANT = ("NR 98.8", "FG 167")
+# The pair: the output rate with the rate it is built on in brackets. Both
+# numbers are asserted - as ONE string, so going back to two separate readings
+# fails here (#109).
+WANT = ("FG 167 (98.8)",)
 
 
 def _state(width: int, height: int, lang: str, card: str) -> dict:
@@ -318,12 +321,12 @@ def main() -> int:
         edge_cases += 1
         mono_sorted = sorted(placed["mono"], key=lambda p: p[1])
         labels = [label for label, _x, _y in mono_sorted]
-        if "NR 98.8" not in labels:
+        if "FG 167 (98.8)" not in labels:
             failures.append(
                 f"scale {scale}: NR was dropped to make room for something "
                 f"else - the rate is the last thing that may go. Drawn: "
                 f"{labels}")
-        if labels and labels[-1] != "FG 167":
+        if labels and labels[-1] != "FG 167 (98.8)":
             failures.append(
                 f"scale {scale}: FG is not the rightmost value ({labels}) - "
                 f"it is anchored to the edge by design")
