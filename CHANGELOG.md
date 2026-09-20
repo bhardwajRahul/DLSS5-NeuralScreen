@@ -30,6 +30,55 @@ Scope and honesty notes:
 
 ---
 
+## v1.17.0 - 2026-09-20 - the panel redesign, and fixes from the tracker
+
+This is a **pre-release for testing**: the panel was rebuilt to the new mockup and
+this package carries the first reports from the tracker. It is published as a
+normal release so everyone can reach it - read the known limits below before
+filing anything.
+
+* **The panel was redesigned** to the approved mockup, section by section:
+  numbered sections, the value plate on every slider, the tabbed Settings page,
+  the ACTIONS icons, and a tighter vertical rhythm. The Frame Generation row is
+  now one control - `off / x2 / x3 / x4` - with no separate switch, so one click
+  on a multiplier turns it on.
+* **The generated rate is shown with the rate it is built on** (#109): the line
+  reads `FG 178 (60.0)` instead of two separate readings. Two numbers side by
+  side stated both values but not their relation, and the relation is what the
+  pair means. With Frame Generation running alone the single `FG` reading is
+  unchanged.
+* **Frame limit now says what it counts** (#109): it caps the SOURCE frames the
+  network processes, and Frame Generation rides on top of them - which is why a
+  60 cap and a 170 counter can both be true. The row carries a hint saying so, in
+  all twelve languages.
+* **Hints wrap and fit their row.** The drop-down rendered a hint as one
+  unclipped line while the slider already wrapped, so a real sentence was cut at
+  the panel edge. Both now share one implementation, and the layout reserves the
+  height the wrapped text needs.
+* **The first click on the taskbar button opens the menu again.** A click on a
+  not-yet-active button arrives as `WM_NCACTIVATE(1)`, which the guard rejected as
+  a duplicate; only the second click worked, by a different route. The previous
+  window's state now separates a real click (its window is alive) from the
+  fallback activation that follows another window being minimised, so the #96
+  behaviour is kept while the first click works.
+* **The menu no longer disappears with the captured window** (one-window mode):
+  the layer was hidden whenever the source window was minimised, taking the menu
+  with it - the taskbar button then looked dead. The picture correctly stops when
+  there is nothing to capture; the panel stays visible.
+* **The menu in a saved screenshot is placed where it is on screen** (#107): in
+  one-window mode the panel was composited at the frame's coordinates and landed
+  up to 524 px away from where the user sees it.
+* **Clicking Screenshot crashed the program** - `_Pipeline` uses `__slots__` and
+  two diagnostic fields were never declared. A test now presses every control on
+  every page (94 actions) against the real pipeline, so an undeclared field fails
+  in the suite instead of on the user's first click.
+
+Known limits in this build (unchanged): the network works up to 2560x1440, the
+overlay is invisible to external recorders, and exclusive-fullscreen games are not
+covered - see the README section "Limits".
+
+---
+
 ## v1.16.1 - 2026-09-19 - the status line told the truth about Frame Generation
 
 * Frame Generation was reported as "not processing" while Neural Rendering was
