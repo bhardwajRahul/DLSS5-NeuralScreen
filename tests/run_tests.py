@@ -82,6 +82,7 @@ ABOUT = {
     "test_audio_limiter.py": "the soft limiter keeps the recording from clipping",
     "test_audio_pack.py": "the audio format structs are byte-packed, truncated formats rejected",
     "test_bake_menu.py": "an open menu is baked into the file, a closed one is not",
+    "test_bake_menu_position.py": "the baked menu lands where the user saw it, not at the frame centre",
     "test_adaptive_exposure.py": "adaptive exposure brightens dark scenes, lit scenes untouched",
     "test_capture_visibility.py": "outside capture sees the overlay only without WDA",
     "test_config.py": "the config loader validates, clamps and resolves",
