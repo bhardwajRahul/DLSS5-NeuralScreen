@@ -311,6 +311,9 @@ class _Pipeline:
         "next_auto_revive",
         "nr_direct",
         "nr_passes",
+        # Which worker has been told the pass count: the cascade has to be
+        # re-sent to every new one (see the main loop).
+        "nr_passes_pid",
         "nr_small",
         # The "NR ON but nothing is being processed" verdict: a streak of frames
         # the worker answered without evaluating, and the flag the HUD reads.
@@ -1197,20 +1200,30 @@ def main() -> int:
                     print("[main] menu opened at startup")
                 else:
                     st.display.alert(UI_STRINGS[st.lang]["started"], 3.5)
-                # The NR cascade is the one saved setting the worker cannot
-                # be told at birth: the stream header has no field for a pass
-                # count (that slot is frame_count), so the worker always
-                # starts at one pass and the count travels with the next
-                # RNSZ. Without this, a config asking for two passes showed
-                # "2" in the panel while one pass ran, until the user
-                # happened to move some other control (audit 20.09). Sent
-                # here rather than before the first frame because that is
-                # where the stream is known to be running.
-                if int(getattr(st, "nr_passes", 1)) > 1:
-                    print(f"[main] NR cascade: sending the saved "
-                          f"{st.nr_passes} passes to the worker")
-                    pipeline.request_apply(st, st.work_scale,
-                                           st.cfg["profile"], st.params)
+            # The NR cascade has to be told to EVERY worker, not just the
+            # first. The stream header has no field for a pass count (that
+            # slot is frame_count), so a worker always starts at one pass and
+            # the count travels with an RNSZ. Sending it once at startup
+            # covered the config case and missed every restart: a revive
+            # after a crash, a manual revive, a pipeline rebuild - the worker
+            # comes back at ONE pass while the panel still says four, and
+            # nothing says so. Measured 20.09: killing the worker of a
+            # four-pass session took the rate from 28 to 91 fps with no line
+            # about it.
+            #
+            # Keyed on the worker's pid, so it is one compare per frame and
+            # fires exactly once per worker, whatever brought that worker up.
+            # Not before the stream is running: `startup_pending` is cleared
+            # on the second displayed frame, and an apply before that would
+            # race the first RNSZ.
+            if (not startup_pending and int(getattr(st, "nr_passes", 1)) > 1
+                    and st.worker is not None
+                    and getattr(st, "nr_passes_pid", None) != st.worker.pid):
+                st.nr_passes_pid = st.worker.pid
+                print(f"[main] NR cascade: telling worker {st.worker.pid} "
+                      f"about the saved {st.nr_passes} passes")
+                pipeline.request_apply(st, st.work_scale,
+                                       st.cfg["profile"], st.params)
             st.work_frame = next_frame  # None -> grab at the start of the next iteration
 
             log_now = time.monotonic()

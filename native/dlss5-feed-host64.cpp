@@ -6305,9 +6305,11 @@ static int RunVideo()
         (v.nr_small || !upscale) ? 0 : vh.full_w,
         (v.nr_small || !upscale) ? 0 : vh.full_h);
     // The cascade's extra features, if the header asked for more than one
-    // pass. Done here rather than lazily on the first frame: a feature costs
-    // about 440 MB and 60 ms, and paying that inside a frame is a stutter the
-    // user would read as a fault.
+    // pass. Done here rather than lazily on the first frame: a feature is
+    // expensive to make - measured at 2560x1440, each extra one added about
+    // 640 MB and some 70 ms - and paying that inside a frame is a stutter the
+    // user would read as a fault. (An earlier comment here said 440 MB; that
+    // was an estimate written before any of this ran.)
     // One pass at creation, always: the stream header has no room for a pass
     // count (that slot is frame_count), and the client sends an RNSZ with the
     // profile before the first frame anyway. The cascade is built there.

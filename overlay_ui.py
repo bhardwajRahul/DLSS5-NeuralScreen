@@ -1749,9 +1749,11 @@ class OverlayMenu:
                 # that mode - outside it the network writes the full-res
                 # output directly and a second pass would need a full-res
                 # scratch. An experiment, and priced like one: each extra
-                # pass is another full evaluation, so two cost about half the
-                # frame rate and four about a quarter, and every pass carries
-                # its own feature of roughly 440 MB.
+                # pass is another full evaluation. Measured: the second
+                # pass costs about a THIRD of the frame rate (not the half
+                # this comment used to claim), and each extra pass carries its
+                # own network - about 640 MB at a 2560x1440 work size, scaling
+                # with that size. Four passes took the worker to 3 GB.
                 passes_now = int(self.state.get("nr_passes", 1) or 1)
                 segmented("nr_passes", s.get("nr_passes", "NR passes"),
                           str(max(1, min(4, passes_now))),

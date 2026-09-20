@@ -135,6 +135,20 @@ def main() -> int:
     if not re.search(r"nr_passes[^\n]*>\s*1", mainsrc):
         failures.append("main.py never sends the saved pass count: the worker "
                         "starts at one pass and the panel would show another")
+    # And to EVERY worker, not only the first. Sending it once at startup left
+    # every restart - a revive after a crash, a manual revive, a rebuild -
+    # running one pass while the panel still said four, with no line about it.
+    # Measured 20.09.2026: killing the worker of a four-pass session took the
+    # rate from 28 to 91 fps and the log said nothing at all. The hand-off has
+    # to be keyed on the worker's identity, not fired once.
+    if "nr_passes_pid" not in mainsrc:
+        failures.append(
+            "main.py does not key the cascade hand-off on the worker: a "
+            "restarted worker comes back at one pass and nothing says so")
+    if not re.search(r"nr_passes_pid[^\n]*!=\s*st\.worker\.pid", mainsrc):
+        failures.append(
+            "the hand-off is not compared against the live worker's pid, so "
+            "it cannot notice a new worker")
 
     # 5. The parity, not a swap. Read as source because no Python test can see
     # a D3D12 descriptor being rewritten under a frame that is still running.

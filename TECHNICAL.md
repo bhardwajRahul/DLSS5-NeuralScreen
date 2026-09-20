@@ -180,7 +180,7 @@ a maintainer's GPU, paths or experimental switches cannot leak into a release.
 | `theme` | `light` / `dark` |
 | `open_menu_on_start` | open the menu on launch; `false` — a short alert instead |
 | `hotkeys` | `{"toggle": "Num1", ...}` — see README, "Using it". Names: `Num0`-`Num9`, `Numdot`, `Numplus`, `Numminus`, `Nummul`, `Numdiv`, `F1`-`F12`, `Insert`, `Home`, letters, digits, with `Ctrl+`/`Alt+`/`Shift+` |
-| `nr_passes` | 1-4, how many passes the network makes over one frame (Boost only). An experiment; the second pass costs about a third of the frame rate and every pass carries its own ~440 MB feature |
+| `nr_passes` | 1-4, how many passes the network makes over one frame (Boost only). An experiment; the second pass costs about a third of the frame rate and every extra pass carries its own network - about 640 MB at a 2560x1440 work size, and it scales with that size |
 | `fps_overlay` | `off` / `tl` / `tr` / `bl` / `br` - the on-screen frame counter and the corner it sits in |
 | `tray_on_minimise`, `tray_on_close` | what the taskbar button's minimise and close do; both off by default, and neither stops the neural pass |
 | `menu_scale_auto` | the panel size is still the automatic fit; cleared for good the moment a scale step is chosen by hand |
@@ -514,8 +514,22 @@ anything is composed.
 Each pass gets its **own NGX feature**. Calling one feature twice inside a
 frame hands it two evaluations with no motion in between, which is a lie to
 its temporal history; separate features each keep their own. That is also
-what makes it expensive - a feature costs about 440 MB, so four passes carry
-four of them.
+what makes it expensive. Measured at a work resolution of 2560x1440, the
+worker's video memory after each create:
+
+```
+pass 1   845 MB
+pass 2  1738 MB   (+893)
+pass 3  2375 MB   (+637)
+pass 4  3012 MB   (+637)
+```
+
+So roughly **640 MB per extra pass** here, and four passes take the worker
+from 845 MB to 3 GB. The figure scales with the work resolution - it is the
+network's own working set, not a constant - so treat it as the shape of the
+cost rather than a number to quote. An earlier draft of this document said
+"about 440 MB", which came from the same estimate that said two passes would
+cost half the frame rate; both were guesses, and both were wrong.
 
 The passes ping-pong between two work-resolution scratch buffers, `nr_out`
 and `nr_alt`, and `nr_in` - the composite's anchor - is never written. Which
