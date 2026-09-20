@@ -22,12 +22,12 @@
 
 <table>
 <tr>
-<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-main-light.png" alt="Меню, светлая тема" width="400"></td>
-<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-main-dark.png" alt="Меню, тёмная тема" width="400"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/NeuralScreen/main/docs/screenshot-main-light.png" alt="Меню, светлая тема" width="400"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/NeuralScreen/main/docs/screenshot-main-dark.png" alt="Меню, тёмная тема" width="400"></td>
 </tr>
 <tr>
-<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-settings.png" alt="Настройки" width="400"></td>
-<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-windows.png" alt="Список окон" width="400"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/NeuralScreen/main/docs/screenshot-settings.png" alt="Настройки" width="400"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/NeuralScreen/main/docs/screenshot-windows.png" alt="Список окон" width="400"></td>
 </tr>
 </table>
 
@@ -57,7 +57,7 @@
 
 ## Установка
 
-1. Скачайте архив из [Releases](https://github.com/perseval-BLR/DLSS5-NeuralScreen/releases)
+1. Скачайте архив из [Releases](https://github.com/perseval-BLR/NeuralScreen/releases)
    и распакуйте куда угодно. Внутри уже всё, включая рантайм NVIDIA.
 2. Запустите **`NeuralScreen.exe`**.
 
@@ -164,7 +164,7 @@ Windows, скорее всего, предупредит о неизвестно
 
 ## Если что-то не работает
 
-**После запуска ничего не появляется.** v1.13 сначала прогоняет три
+**После запуска ничего не появляется.** Программа сначала прогоняет три
 синтетических кадра без захвата рабочего стола. Ошибка, неподдерживаемый режим
 или карантин блокируют оверлей вместо цикла перезапусков. Создайте пакет кнопкой
 **Создать диагностический пакет** на вкладке «Программа» (либо возьмите путь из
@@ -178,20 +178,20 @@ Windows, скорее всего, предупредит о неизвестно
 
 **Всё слишком яркое, и ползунки не помогают.** На этом дисплее включён HDR.
 Выключите его (Win+Alt+B) или попробуйте **Совместимость с HDR** в настройках,
-в разделе ЗАХВАТ — это эксперимент; см. [настройку HDR](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
+в разделе ЗАХВАТ — это эксперимент; см. [настройку HDR](https://github.com/perseval-BLR/NeuralScreen/blob/main/docs/HDR.md).
 
 **Клавиша не работает.** Её занял кто-то другой; переназначьте в меню.
 
 ## Известные ограничения
 
 - **Настоящий полноэкранный режим** не позволяет рисовать поверх — только окно без рамки.
-- **HDR-дисплеи:** эксперимент, и он выключен, пока не включите **Совместимость с HDR** (настройки, ЗАХВАТ). Запись и экспорт Spout остаются SDR. См. [настройку и ограничения HDR](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
+- **HDR-дисплеи:** эксперимент, и он выключен, пока не включите **Совместимость с HDR** (настройки, ЗАХВАТ). Запись и экспорт Spout остаются SDR. См. [настройку и ограничения HDR](https://github.com/perseval-BLR/NeuralScreen/blob/main/docs/HDR.md).
 - **Windows 10 и системы с несколькими GPU — экспериментально:** выбор адаптера/выхода покрыт регрессиями, но не проверен на местной multi-GPU системе.
 - **Повёрнутый экран:** поворот на 180° разворачивается обратно при захвате; 90° и 270° пока не обрабатываются — стороны выходят переставленными.
 - **Задержка конвейера** 40–60 мс (17-20 мс с Boost Mode) — для интерактива нормально, для соревновательной игры нет; **разрешение обработки ограничено 2560×1440**, на выходе всегда ваше полное родное разрешение.
-- **Восстановление окна/меню:** v1.13 заново показывает, поднимает и перерисовывает меню после активации через панель задач, смены монитора или GPU; полный сброс драйвера зависит от железа.
+- **Восстановление окна/меню:** меню заново показывается, поднимается и перерисовывается после активации через панель задач, смены монитора или GPU; полный сброс драйвера зависит от железа.
 - **Lossless Scaling:** поддерживаемой прямой передачи нет; режим одного окна использует отдельный presenter, поэтому LS всё ещё может выбрать исходный HWND и показать два окна.
-- **Генерация кадров на RTX 20/30:** в v1.13 нет backend FSR FG; это кандидат для исследования, а не обещанный режим совместимости.
+- **Генерация кадров на RTX 20/30:** backend FSR FG нет; это кандидат для исследования, а не обещанный режим совместимости.
 
 ## Лицензия
 

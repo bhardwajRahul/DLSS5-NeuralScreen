@@ -21,12 +21,12 @@ same neural network that DLSS 5 games use, and comes back sharper.
 
 <table>
 <tr>
-<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-main-light.png" alt="Menu, light theme" width="400"></td>
-<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-main-dark.png" alt="Menu, dark theme" width="400"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/NeuralScreen/main/docs/screenshot-main-light.png" alt="Menu, light theme" width="400"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/NeuralScreen/main/docs/screenshot-main-dark.png" alt="Menu, dark theme" width="400"></td>
 </tr>
 <tr>
-<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-settings.png" alt="Settings" width="400"></td>
-<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-windows.png" alt="Window list" width="400"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/NeuralScreen/main/docs/screenshot-settings.png" alt="Settings" width="400"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/NeuralScreen/main/docs/screenshot-windows.png" alt="Window list" width="400"></td>
 </tr>
 </table>
 
@@ -55,7 +55,7 @@ window list - and the **Before / after wipe** slider that splits the screen.*
 
 ## Install
 
-1. Download the archive from [Releases](https://github.com/perseval-BLR/DLSS5-NeuralScreen/releases)
+1. Download the archive from [Releases](https://github.com/perseval-BLR/NeuralScreen/releases)
    and unpack it anywhere. Everything is inside, including NVIDIA's runtime.
 2. Run **`NeuralScreen.exe`**.
 
@@ -164,9 +164,9 @@ saving, plus PNG or JPEG, in settings. The open menu appears in both.
 
 ## If something is not working
 
-**Nothing appears after launch.** v1.13 first runs three synthetic frames
-without desktop capture. A failed, unsupported or quarantined result blocks
-the overlay instead of entering a restart loop. Use **Create diagnostic
+**Nothing appears after launch.** The program first runs three synthetic
+frames without desktop capture. A failed, unsupported or quarantined result
+blocks the overlay instead of entering a restart loop. Use **Create diagnostic
 package** on the Program tab (or the path in the failure dialog), then check
 `NeuralScreen.log`.
 
@@ -178,20 +178,20 @@ cursor, and the overlay only shows that one. Borderless fixes it.
 
 **Everything is too bright and the sliders do nothing.** HDR is on for that
 display. Turn it off (Win+Alt+B), or try **HDR compatibility** in the
-settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
+settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR/NeuralScreen/blob/main/docs/HDR.md).
 
 **A key does nothing.** Something else claimed it; reassign it in the menu.
 
 ## Known limitations
 
 - **True fullscreen games** cannot have an overlay drawn over them — borderless or windowed only.
-- **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
+- **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](https://github.com/perseval-BLR/NeuralScreen/blob/main/docs/HDR.md).
 - **Windows 10 and multi-GPU systems are experimental** — adapter/output selection is covered by regression tests, but not by local multi-GPU hardware.
 - **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
-- **Window/menu recovery:** v1.13 re-shows, raises and redraws the menu after taskbar, monitor or GPU reactivation; a full driver reset remains hardware-dependent.
+- **Window/menu recovery:** the menu is re-shown, raised and redrawn after taskbar, monitor or GPU reactivation; a full driver reset remains hardware-dependent.
 - **Lossless Scaling:** there is no supported direct hand-off; one-window mode uses a separate presenter, so LS can still select the source HWND and show two windows.
-- **Frame generation on RTX 20/30:** v1.13 has no FSR FG backend; it is a research candidate, not a promised compatibility mode.
+- **Frame generation on RTX 20/30:** there is no FSR FG backend; it is a research candidate, not a promised compatibility mode.
 
 ## License
 
