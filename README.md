@@ -188,7 +188,7 @@ settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR
 - **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](https://github.com/perseval-BLR/NeuralScreen/blob/main/docs/HDR.md).
 - **Windows 10 and multi-GPU systems are experimental** — adapter/output selection is covered by regression tests, but not by local multi-GPU hardware.
 - **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
-- **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
+- **Pipeline latency** is 25–30 ms (10-15ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
 - **Window/menu recovery:** the menu is re-shown, raised and redrawn after taskbar, monitor or GPU reactivation; a full driver reset remains hardware-dependent.
 - **Lossless Scaling:** there is no supported direct hand-off; one-window mode uses a separate presenter, so LS can still select the source HWND and show two windows.
 - **Frame generation on RTX 20/30:** there is no FSR FG backend; it is a research candidate, not a promised compatibility mode.
