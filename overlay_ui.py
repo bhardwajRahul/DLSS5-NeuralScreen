@@ -250,6 +250,44 @@ class Item:
     extra: dict = field(default_factory=dict)
 
 
+
+def status_readings(state: dict, stats: dict, s: dict) -> list[str]:
+    """The rate readings, as the status line and the on-screen badge show them.
+
+    ONE implementation because there are now two places that draw them, and a
+    second copy of this rule would drift: the pair `FG 178 (60.0)` is not two
+    numbers side by side, it is the output rate with the rate it is built on,
+    and which of the two is shown depends on what is actually running.
+
+    - the neural pass on, Frame Generation reporting a rate -> the pair;
+    - the neural pass on, no FG -> the NR rate alone;
+    - the pass off (bypass), FG running -> the FG rate alone, because it is
+      the only rate there is (#107);
+    - nothing running, or the card cannot run the pass -> nothing. "NR 0.0"
+      reads as a broken network rather than a switched-off one.
+    """
+    # TWO sources, and they are not interchangeable: the rates arrive with
+    # every frame through set_stats, while "is the pass on" and "can this card
+    # run it" are menu state. Reading a rate out of `state` finds nothing and
+    # reading `nr` out of `stats` finds nothing - both silently, which is how
+    # this was wrong the first time.
+    if not bool(state.get("gpu_ok", True)):
+        return []
+    paused = not bool(state.get("nr", True))
+    out: list[str] = []
+    fps = stats.get("fps")
+    nr_text = f"{fps:.1f}" if isinstance(fps, (int, float)) else "\u2014"
+    shown = stats.get("display_fps")
+    has_fg = isinstance(shown, (int, float)) and shown > 0
+    if not paused and has_fg:
+        out.append(f"{s.get('fg_short', 'FG')} {shown:.0f} ({nr_text})")
+    elif not paused:
+        out.append(f"{s.get('nr_short', 'NR')} {nr_text}")
+    if has_fg and paused:
+        out.append(f"{s.get('fg_short', 'FG')} {shown:.0f}")
+    return out
+
+
 class OverlayMenu:
     """The overlay menu: visibility, state, layout, drawing."""
 
@@ -306,6 +344,8 @@ class OverlayMenu:
             "theme": "light",
             "rec_seconds": 0.0,
             "rec_indicator": True,
+            # Which corner the on-screen counter sits in, or "off" (#109).
+            "fps_overlay": "off",
             "recording_dir": "",
             "screenshot_dir": "",
             "screenshot_mode": "ask",
@@ -1394,6 +1434,28 @@ class OverlayMenu:
                    hint=s.get("spout_hint", ""))
             toggle("rec_indicator", s.get("rec_indicator", "Recording indicator"),
                    bool(self.state.get("rec_indicator", True)))
+            # The frame counter on screen and the corner it sits in (#109).
+            # The corners are ARROWS, not words: four translated corner names
+            # would not fit a five-cell segment in any of the long languages,
+            # and an arrow needs no translation at all. Measured: every
+            # bundled face carries U+2196..U+2199.
+            segmented("fps_overlay",
+                      s.get("fps_overlay", "Frame counter"),
+                      str(self.state.get("fps_overlay", "off")),
+                      ["off", "tl", "tr", "bl", "br"],
+                      # Five GLYPHS, including the off cell. The word did not
+                      # fit: es "desactivado" measured 112% of a fifth of the
+                      # row, it 99%, pt 101% - and a five-cell group has no
+                      # width to give. A cross beside four corner arrows reads
+                      # as "nowhere", the row label says what is being placed,
+                      # and none of the five needs translating.
+                      #
+                      # The dash, not a cross: U+2715 came out as tofu in the
+                      # panel's own face, and the dash is already this app's
+                      # word for "no reading" - the status line prints it when
+                      # there is no rate.
+                      labels=["—", "↖", "↗",
+                              "↙", "↘"])
             rec_status = str(self.state.get("recording_status") or "")
             rec_details = str(self.state.get("recording_details") or "")
             rec_path = str(self.state.get("recording_path") or "")
@@ -2420,6 +2482,11 @@ class OverlayMenu:
                 self.state["screenshot_format"] = value
                 return [("screenshot_format", value)]
             return []
+        if key == "fps_overlay":
+            if value in ("off", "tl", "tr", "bl", "br"):
+                self.state["fps_overlay"] = value
+                return [("fps_overlay", value)]
+            return []
         if key == "menu_scale":
             # Applied at once so the click is answered by the thing the click
             # is about; main persists it and marks the automatic fit as spent.
@@ -2856,35 +2923,7 @@ class OverlayMenu:
         # not inflate it. FG is the worker presenter's reported output rate,
         # not an inferred display refresh. The frame counter is not shown at
         # all: it was asked for once, then dropped again (19.09).
-        readings: list[str] = []
-        if not failed:
-            # NR is the rate of real neural evaluations - idle acknowledgements
-            # do not inflate it. It is meaningless while the pass is off, so it
-            # is not drawn then: "NR 0.0" would read as a broken network rather
-            # than a switched-off one.
-            fps = st.get("fps")
-            nr_text = (f"{fps:.1f}" if isinstance(fps, (int, float)) else "—")
-            # Frame Generation reports its own rate whether or not the neural
-            # pass is on (v1.16.0), and with NR off it is the ONLY reading
-            # there is. It must not sit behind `not paused`: that hid the
-            # counter in exactly the mode where the presenter runs alone, and
-            # the report was "with only Frame Generation on, no frame counter"
-            # (#107, second half).
-            shown = st.get("display_fps")
-            has_fg = isinstance(shown, (int, float)) and shown > 0
-            if not paused and has_fg:
-                # Both numbers, AS A PAIR: the output rate with the rate it is
-                # built on in brackets (the mockup's `120 (60)`). Two separate
-                # readings state both numbers but not their relation, and the
-                # relation is what the pair means - 178 out of 60 is a different
-                # picture from 178 alone (#109).
-                readings.append(f"{s.get('fg_short', 'FG')} {shown:.0f} "
-                                f"({nr_text})")
-            elif not paused:
-                readings.append(f"{s.get('nr_short', 'NR')} {nr_text}")
-            if has_fg and paused:
-                # FG alone: one number, and it is the only one there is.
-                readings.append(f"{s.get('fg_short', 'FG')} {shown:.0f}")
+        readings = status_readings(self.state, st, s)
 
         gap = self._u(14)
         right = line.right - pad

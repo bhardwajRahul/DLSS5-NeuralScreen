@@ -200,7 +200,8 @@ import pygame
 
 import fonts
 import vdesk
-from overlay_ui import OverlayMenu, palette as ui_palette
+from overlay_ui import (OverlayMenu, palette as ui_palette,
+                        status_readings)
 
 from i18n import STRINGS
 
@@ -1834,6 +1835,7 @@ class Display:
         self.screen.fill(CHROMA_KEY)
         self._draw_alerts()
         self._draw_rec_indicator()
+        self._draw_fps_badge()
         self.menu.set_stats(self._hud)
         self.menu.draw(self.screen)
         self._draw_window_highlight()
@@ -2020,6 +2022,64 @@ class Display:
         pygame.quit()
 
     # -- HUD --------------------------------------------------------------
+
+    #: Where a corner badge goes, and how the config spells it.
+    BADGE_CORNERS = ("tl", "tr", "bl", "br")
+
+    def _badge_origin(self, corner: str, w: int, h: int, row: int = 0) -> tuple[int, int]:
+        """The top-left of a badge of size (w, h) in `corner`, `row` badges down.
+
+        The margin is the same on every side, so two corners never look
+        differently inset, and `row` stacks a second badge under the first
+        instead of on top of it - REC and the counter can be asked for the
+        same corner.
+        """
+        m = int(round(14 * self.ui_scale))
+        step = (h + int(round(8 * self.ui_scale))) * row
+        x = m if corner in ("tl", "bl") else self.width - w - m
+        y = (m + step if corner in ("tl", "tr")
+             else self.height - h - m - step)
+        return x, y
+
+    def _draw_fps_badge(self) -> None:
+        """The rate on screen, with the menu closed (#109).
+
+        The panel says it too, but the panel is not open while anything is
+        being watched, and the reading is exactly what somebody watching wants
+        to see. Off by default: an overlay nobody asked for is one more thing
+        burned into a recording.
+
+        The text is built by the SAME function the status line uses - the rule
+        for which numbers appear is not a thing to have two copies of.
+        """
+        corner = str(self._hud.get("fps_overlay") or "off")
+        if corner not in self.BADGE_CORNERS:
+            return
+        if self.menu.visible:
+            return      # the panel is showing the same numbers, one line up
+        readings = status_readings(self.menu.state, self._hud,
+                                   STRINGS.get(self._lang, STRINGS["en"]))
+        if not readings:
+            return
+        text = "   ".join(readings)
+        surf = self._font.render(text, True, self._rgb(self.theme["text"]))
+        pad_x = int(round(10 * self.ui_scale))
+        pad_y = int(round(6 * self.ui_scale))
+        w = surf.get_width() + pad_x * 2
+        h = surf.get_height() + pad_y * 2
+        # Under the REC badge when both want the top-right: a recording that
+        # hides the counter would be the one moment the counter matters most.
+        row = 1 if (corner == "tr" and self._hud.get("recording")
+                    and self._hud.get("rec_indicator", True)) else 0
+        x, y = self._badge_origin(corner, w, h, row)
+        rect = pygame.Rect(x, y, w, h)
+        radius = int(round(8 * self.ui_scale))
+        pygame.draw.rect(self.screen, self._rgb(self.theme["bg"]), rect,
+                         border_radius=radius)
+        pygame.draw.rect(self.screen, self._rgb(self.theme["border"]), rect,
+                         max(1, int(round(self.ui_scale))),
+                         border_radius=radius)
+        self.screen.blit(surf, (x + pad_x, y + pad_y))
 
     def _draw_rec_indicator(self) -> None:
         """The recording indicator outside the menu: a red dot + timer.

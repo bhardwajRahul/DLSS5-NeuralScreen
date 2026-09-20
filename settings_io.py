@@ -592,6 +592,10 @@ def _validate_config(cfg: dict) -> dict:
     # chosen": guessing "please resize my interface" from a malformed value is
     # the worse mistake of the two.
     cfg["menu_scale_auto"] = cfg.get("menu_scale_auto") is True
+    if cfg.get("fps_overlay") not in ("off", "tl", "tr", "bl", "br"):
+        _fallback("fps_overlay", cfg.get("fps_overlay"), "off",
+                  "is not one of off/tl/tr/bl/br")
+        cfg["fps_overlay"] = "off"
 
     menu_height = cfg.get("menu_height")
     if menu_height is not None:
@@ -765,6 +769,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "style": int(params.get("style", 1)),
         "monitor": monitor_name if monitor_name is not None else int(monitor),
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
+        "fps_overlay": str(cfg.get("fps_overlay", "off")),
         "recording_dir": cfg.get("recording_dir") or "",
         "screenshot_dir": cfg.get("screenshot_dir") or "",
         "screenshot_mode": (str(cfg.get("screenshot_mode", "ask"))
@@ -1215,6 +1220,7 @@ def menu_payload(st) -> dict:
         "rec_seconds": ((active_recorder.duration_ms / 1000.0)
                         if active_recorder else 0.0),
         "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
+        "fps_overlay": str(st.cfg.get("fps_overlay", "off")),
         "recording_dir": st.cfg.get("recording_dir") or "",
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
         "screenshot_mode": str(st.cfg.get("screenshot_mode", "ask")),

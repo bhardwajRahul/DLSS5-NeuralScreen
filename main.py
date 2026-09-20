@@ -1174,6 +1174,8 @@ def main() -> int:
                 "recording": st.recorder is not None,
                 "rec_seconds": (st.recorder.duration_ms / 1000.0) if st.recorder else 0.0,
                 "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
+                # Which corner the counter sits in, or "off" (#109).
+                "fps_overlay": str(st.cfg.get("fps_overlay", "off")),
             })
 
             st.frame_index += 1

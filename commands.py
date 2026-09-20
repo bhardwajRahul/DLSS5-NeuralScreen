@@ -599,6 +599,14 @@ def apply_menu_action(st, action: tuple) -> None:
         if action[1] in ("light", "dark"):
             st.cfg["theme"] = action[1]
         print(f"[main] menu theme -> {action[1]}")
+    elif kind == "fps_overlay":
+        corner = str(action[1])
+        if corner not in ("off", "tl", "tr", "bl", "br"):
+            print(f"[main] invalid counter corner: {action[1]!r}",
+                  file=sys.stderr)
+            return
+        st.cfg["fps_overlay"] = corner
+        print(f"[main] on-screen frame counter -> {corner}")
     elif kind == "menu_scale":
         # The menu has already applied it to itself. It lands in st.cfg here
         # for the same reason the theme does: a rebuild between now and the
