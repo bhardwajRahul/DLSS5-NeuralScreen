@@ -229,7 +229,19 @@ class RuntimeAdapterTests(unittest.TestCase):
                     continue
                 # restart_worker's own tail calls start_worker after its
                 # caller's guard and is not a production call site itself.
-                if name == "pipeline.py" and index < 210:
+                #
+                # Found by WHICH FUNCTION IT IS IN, not by line number. This
+                # used to read `index < 210`, and adding a comment near the
+                # top of pipeline.py pushed that tail call to line 211 and
+                # failed a release on correct code. A magic line number is a
+                # landmine under every edit above it.
+                enclosing = ""
+                for back in range(index, -1, -1):
+                    stripped = source[back]
+                    if stripped.startswith("def ") or stripped.startswith("async def "):
+                        enclosing = stripped
+                        break
+                if name == "pipeline.py" and enclosing.startswith("def restart_worker"):
                     continue
                 window = "\n".join(source[max(0, index - 14):index])
                 self.assertRegex(
