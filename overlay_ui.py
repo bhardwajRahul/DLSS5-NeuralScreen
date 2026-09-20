@@ -925,9 +925,10 @@ class OverlayMenu:
         #: Segment groups built by toggle(..., inline_right=...): the outer frame
         #: and the dividers, drawn after the cells so the cells can fill their
         #: own boxes first. (rect, cell count)
-        self._segment_groups: list[tuple[pygame.Rect, int]] = []
+        #: (rect, divider offsets from the rect's left edge).
+        self._segment_groups: list[tuple[pygame.Rect, tuple[int, ...]]] = []
         #: The same groups in SCREEN coordinates (derived at the end of layout).
-        self._segment_rects: list[tuple[pygame.Rect, int]] = []
+        self._segment_rects: list[tuple[pygame.Rect, tuple[int, ...]]] = []
         sec_h = self._u(SMALL_SIZE) + self._u(10)
 
         # Which tab the rows being built belong to. section() sets it and
@@ -1114,27 +1115,42 @@ class OverlayMenu:
                 # touching, with the group frame and dividers drawn by
                 # `_draw_segment_groups` after the cells.
                 cell_h = self._u(CTRL_H)
-                cell_w = max(self._u(44),
-                             max(self._small_font.size(lbl)[0]
-                                 for _, lbl in inline_right) + self._u(20))
+                # Each cell takes the width ITS OWN label needs. Sizing them all
+                # to the widest was the tidier rule and it does not survive
+                # translation: "off" is three characters in English and eleven
+                # in Spanish ("desactivado"), so three two-character steps were
+                # each given 95 px, the group took 380 of the row's 488, and the
+                # control's own name - "DLSS 4.5 FG", 94 px - was clipped in the
+                # 91 px left over. Measured with the product's fonts: es was the
+                # one that clipped, pt and it cleared it by under 33 px. Per-cell
+                # widths bring the same group down to 227 px in every locale.
+                widths = [max(self._u(44),
+                              self._small_font.size(lbl)[0] + self._u(20))
+                          for _, lbl in inline_right]
+                group_w = sum(widths)
                 right = pad + inner_w
-                bx = right - len(inline_right) * cell_w
-                for (opt_key, opt_label) in inline_right:
+                bx = right - group_w
+                group_x, group_y = bx, cy + (ctrl_h - cell_h) // 2
+                #: Where each divider goes, measured from the group's left edge:
+                #: the cells are no longer equal, so an even split would draw the
+                #: lines away from the boundaries they mark.
+                splits = []
+                for (opt_key, opt_label), cell_w in zip(inline_right, widths):
                     items.append(Item("button", opt_key,
-                                      pygame.Rect(bx, cy + (ctrl_h - cell_h) // 2,
+                                      pygame.Rect(bx, group_y,
                                                   cell_w, cell_h),
                                       extra={"label": opt_label,
                                              "filled": False,
                                              "small": True,
                                              "segment": True}))
                     bx += cell_w
+                    if bx < right:
+                        splits.append(bx - group_x)
                 # Content coordinates, like every other rect here: the screen
                 # rect is derived at the end of the layout (see `_segment_rects`).
                 self._segment_groups.append((
-                    pygame.Rect(right - len(inline_right) * cell_w,
-                                cy + (ctrl_h - cell_h) // 2,
-                                len(inline_right) * cell_w, cell_h),
-                    len(inline_right)))
+                    pygame.Rect(group_x, group_y, group_w, cell_h),
+                    tuple(splits)))
             cy += ctrl_h + hint_h + gap
 
         # The windows page: the full list of capturable windows, one row per
@@ -1808,8 +1824,8 @@ class OverlayMenu:
         # frames stayed at the content origin while their cells moved with the
         # items - the group's border and dividers drawn a panel-width to the
         # LEFT of the cells they belong to (user: "the FG strip went left").
-        self._segment_rects = [(r.move(x, sy), n)
-                               for r, n in self._segment_groups]
+        self._segment_rects = [(r.move(x, sy), splits)
+                               for r, splits in self._segment_groups]
         if self._max_scroll > 0:
             bar_w = max(2, self._u(3))
             view_h = self._viewport.h
@@ -2017,6 +2033,18 @@ class OverlayMenu:
             else:
                 self.hover = None
                 for it in self.items:
+                    if it.extra.get("hit", True) is None:
+                        # The row declares no zone of its own - its cells
+                        # carry them (the segments_only FG row). Falling
+                        # back to `it.rect` here let the row swallow the
+                        # hover for its own cells: the toggle is built
+                        # before them and its rect spans the panel, so the
+                        # cursor over x3 matched the toggle first and broke
+                        # out of the loop. No cell ever highlighted, and the
+                        # row itself draws no ring - the whole row gave no
+                        # feedback at all. The click path and the focus ring
+                        # already skip this case; this loop did not.
+                        continue
                     # "info" is in the list for one row: the captured
                     # window, which opens the picker.
                     # The hover follows the same CONTROL zone the click uses
@@ -2027,8 +2055,7 @@ class OverlayMenu:
                                     "toggle", "slider", "choice")
                         or (it.kind == "info"
                             and it.key == "source_now")) and \
-                            ((it.extra.get("hit") or it.rect) if it.extra.get("hit") is not None
-                             else it.rect).collidepoint(event.pos):
+                            (it.extra.get("hit") or it.rect).collidepoint(event.pos):
                         self.hover = f"{it.kind}:{it.key}"
                         break
             # The windows page rows: the row itself is highlighted too, like
@@ -3179,14 +3206,15 @@ class OverlayMenu:
         frame, not on top of it.
         """
         border = _rgb(self.c["border"])
-        for rect, cells in getattr(self, "_segment_rects", []):
-            if cells < 1 or rect.w <= 0:
+        for rect, splits in getattr(self, "_segment_rects", []):
+            if rect.w <= 0:
                 continue
             pygame.draw.rect(surface, border, rect, self._u(1),
                              border_radius=self._u(4))
-            step = rect.w / float(cells)
-            for idx in range(1, cells):
-                x = int(round(rect.x + idx * step))
+            # The offsets the layout measured, not an even split: the cells
+            # are as wide as their own labels need.
+            for off in splits:
+                x = rect.x + int(off)
                 pygame.draw.line(surface, border,
                                  (x, rect.y + self._u(1)),
                                  (x, rect.bottom - self._u(1)), 1)
