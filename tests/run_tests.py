@@ -108,6 +108,7 @@ ABOUT = {
     "test_shot_dir_exists_check.py": "the save dialog opens in a folder that exists",
     "test_status_line_card_name.py": "the status line always says which card runs",
     "test_nr_truthful_state.py": "the state cell does not claim processing while the worker is not processing",
+    "test_every_control_clickable.py": "every control on every page survives a real click on the real state object",
     "test_i18n_translated.py": "every user-facing string is really translated",
     "test_capture_deep_scanout.py": "a 10-bit display cannot flip the capture format per frame",
     "test_dda_output5_released.py": "the DXGI output reference is released on every path",

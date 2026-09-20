@@ -319,6 +319,12 @@ class _Pipeline:
         "pending_apply",
         "pending_shot",
         "shot_rgba",
+        # The screenshot timing marks. Declared here because __slots__ turns an
+        # undeclared field into an AttributeError at run time - which is its
+        # purpose, and which is how the missing declaration crashed the app on
+        # the first Screenshot click.
+        "shot_requested_at",
+        "shot_dialog_started_at",
         "skipped_static_frames",
         "perf",
         "present_attempted",
