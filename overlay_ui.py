@@ -1853,12 +1853,13 @@ class OverlayMenu:
 
             section(s["sec_compare"])
             split_val = float(self.state.get("split", 0.0))
-            # The track alone: no caption line, no percentage cell (user,
+            # The track alone: no row label, no percentage cell (user,
             # 20.09). The block title already says what this is, and the wipe's
             # subject is the picture behind the panel, not a number on it - the
             # user is looking at the seam, not reading a percentage. The ruler
             # carries the position: eleven ticks, so it reads in tenths rather
-            # than in the quarters five would give.
+            # than in the quarters five would give. The one-line hint under it
+            # stays - it says what the wipe is FOR, which no tick can.
             slider("split", 0.0, 1.0, split_val, s["split"],
                    hint=s["split_hint"], bare=True, ticks=11)
 
@@ -3947,21 +3948,21 @@ class OverlayMenu:
         hot = self.hover == f"button:{item.key}"
         disabled = bool(item.extra.get("disabled"))
         if item.extra.get("flat"):
-            # Text only, in the accent: this is a link in weight, and a bordered
-            # box here would compete with the real buttons elsewhere on the
-            # page. Right-aligned by default (the revert link sits under the
-            # profile picker); centred when the item owns a slot of its own, as
-            # the two preset buttons do.
+            # Text only, right-aligned, in the accent: this is a link in
+            # weight, and a bordered box here would compete with the real
+            # buttons elsewhere on the page. One alignment, because there is
+            # one user - the revert link under the profile picker. A centring
+            # branch was written here for the preset buttons and never reached
+            # them: they became a strip instead, and nothing has set `align`
+            # since (audit 20.09).
             tone = (self.c["muted"] if disabled
                     else self.c["focus"] if hot
                     else self.c["accent"])
             img = self._clip(self._small_font,
                              item.extra.get("label", item.key),
                              _rgb(tone), item.rect.w)
-            x = (item.rect.centerx - img.get_width() // 2
-                 if item.extra.get("align") == "center"
-                 else item.rect.right - img.get_width())
-            surface.blit(img, (x, item.rect.centery - img.get_height() // 2))
+            surface.blit(img, (item.rect.right - img.get_width(),
+                               item.rect.centery - img.get_height() // 2))
             return
         # "filled": the active choice inside an inline group (the FG
         # multiplier) reads as a selected segment - accent background, the

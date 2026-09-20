@@ -592,9 +592,6 @@ def _validate_config(cfg: dict) -> dict:
     # chosen": guessing "please resize my interface" from a malformed value is
     # the worse mistake of the two.
     cfg["menu_scale_auto"] = cfg.get("menu_scale_auto") is True
-    # #93: what the taskbar's minimise and close buttons mean. Booleans, and
-    # False unless the config really says otherwise - a program that vanishes
-    # into the tray because a string was truthy would look like a crash.
     # The NR cascade: how many passes run over one frame. An experiment, off
     # (that is, one pass) unless asked for - each extra pass is another full
     # evaluation, so two passes cost about half the frame rate.
@@ -607,6 +604,9 @@ def _validate_config(cfg: dict) -> dict:
         _fallback("nr_passes", cfg.get("nr_passes"), 1, "is not 1-4")
         passes = 1
     cfg["nr_passes"] = passes
+    # #93: what the taskbar's minimise and close buttons mean. Booleans, and
+    # False unless the config really says otherwise - a program that vanishes
+    # into the tray because a string was truthy would look like a crash.
     cfg["tray_on_minimise"] = cfg.get("tray_on_minimise") is True
     cfg["tray_on_close"] = cfg.get("tray_on_close") is True
     if cfg.get("fps_overlay") not in ("off", "tl", "tr", "bl", "br"):

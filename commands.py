@@ -847,11 +847,34 @@ def drain_commands(st) -> bool:
                 # is the program's output, so a "minimise" that also stopped
                 # the pass would change what the user sees without saying so.
                 # The tray menu is the way back.
+                # The tray icon is the ONLY way back once the button is
+                # hidden, so it is checked first. It runs in a daemon thread
+                # whose death is silent; hiding the button on the strength of
+                # that would leave Task Manager as the way out.
+                tray = getattr(st, "tray", None)
+                if tray is None or not tray.alive():
+                    print("[main] to the tray refused: there is no tray icon "
+                          "to come back from", file=sys.stderr)
+                    st.display.alert(UI_STRINGS[st.lang].get(
+                        "tray_missing", "The tray icon is not available"))
+                    continue
                 if st.display.menu.visible:
                     st.hotkeys.resume()
                     st.display.menu.visible = False
                     st.display.set_menu_opaque(False)
                     st.display.set_menu_input(False)
+                    # Everything the ordinary close does, because this IS a
+                    # close: the HUD layer goes back onto the captured window
+                    # (in one-window mode it was stretched to the whole
+                    # monitor while the menu was up), and the remap field is
+                    # dropped - a menu left in `capturing` swallows the first
+                    # keydown of the next open as a remap, and in the tray
+                    # that next open can be hours away.
+                    if st.window_hwnd is not None:
+                        rect = window_frame_rect(st.window_hwnd)
+                        if rect is not None:
+                            st.display.set_window_layer(*rect)
+                    st.display.menu.capturing = None
                     settings_io.save_menu_layout(st)
                 if getattr(st, "taskbar", None) is not None:
                     st.taskbar.set_visible(False)

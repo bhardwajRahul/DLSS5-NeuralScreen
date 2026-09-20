@@ -5580,14 +5580,51 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
     unsigned passes = (v.nr_small && v.nr_alt != nullptr) ? v.passes_live : 1u;
     if (passes < 1u) passes = 1u;
     if (passes > NR_MAX_PASSES) passes = NR_MAX_PASSES;
+    // The count is settled BEFORE the first pass writes anything, because the
+    // parity below depends on it: a cascade that ends early mid-loop would
+    // leave the result in the buffer nothing downstream reads. Pass 0 is
+    // h.feature, which the caller has already checked - a null one takes the
+    // bypass path and never reaches here.
+    {
+        unsigned have = 1u;
+        while (have < passes && g_nr_pass[have] != nullptr) ++have;
+        // Said once per change, not once per frame: this sits on the frame
+        // path, and a line that repeats sixty times a second buries the log
+        // it is meant to explain.
+        static unsigned reported_asked = 0u, reported_have = 0u;
+        if (have != passes && (passes != reported_asked || have != reported_have))
+        {
+            reported_asked = passes; reported_have = have;
+            Log("[video] NR cascade short: %u pass(es) asked for, %u built",
+                passes, have);
+        }
+        passes = have;
+    }
     ID3D12Resource *src = v.nr_small ? v.nr_in : v.color.tex;
-    ID3D12Resource *dst = v.nr_small ? v.nr_out : v.output;
+    // Where pass 0 writes. The LAST pass has to land in v.nr_out: that is the
+    // name the residual composite, the scale-up and the present all use. So
+    // the ping-pong starts on whichever of the two scratch buffers makes the
+    // parity come out right, and v.nr_in - the composite's anchor - is never
+    // a destination.
+    //
+    // The other way to arrive there is to let the last pass land wherever it
+    // lands and swap the two pointers afterwards. It costs the same nothing
+    // per frame, and it is wrong: it changes WHICH resource v.nr_out is from
+    // one frame to the next, and both composites cache their descriptors on
+    // exactly that pointer (BindResidualDescriptors, BindScale4Descriptors).
+    // An even pass count would then rewrite a shader-visible descriptor heap
+    // on every single frame while up to two earlier frames are still reading
+    // it - the same hazard the two scale slots exist to avoid, and the one
+    // that showed up as a blank frame the last time it was hit. Parity is
+    // free and leaves every pointer where it was.
+    ID3D12Resource *dst = v.nr_small
+        ? (((passes & 1u) != 0u) ? v.nr_out : v.nr_alt)
+        : v.output;
     DWORD code = 0;
     NVSDK_NGX_Result result = static_cast<NVSDK_NGX_Result>(0x7FFFFFFF);
     for (unsigned pass = 0; pass < passes; ++pass)
     {
         NVSDK_NGX_Handle *feature = (pass == 0) ? h.feature : g_nr_pass[pass];
-        if (feature == nullptr) { passes = pass; break; }   // latched short
         if (pass > 0)
         {
             // The previous pass's output is this pass's input: NGX reads the
@@ -5623,14 +5660,6 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
             dst = (dst == v.nr_out) ? v.nr_alt : v.nr_out;
             src = next_src;
         }
-    }
-    // The last pass has to land where everything downstream reads it -
-    // the residual composite, the scale-up, the present all name v.nr_out.
-    // The two scratch buffers are identical, so saying that costs a pointer
-    // swap rather than a copy of the whole work-res texture.
-    if (v.nr_small && dst == v.nr_alt)
-    {
-        ID3D12Resource *t = v.nr_out; v.nr_out = v.nr_alt; v.nr_alt = t;
     }
     if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 3);
     if (v.nr_small)
@@ -6987,6 +7016,10 @@ static void CleanupVideoNgx()
     }
     CloseNvofa();
     CloseFgResources();
+    // The cascade first, and unconditionally: passes 2..4 are features like
+    // any other, and the line below used to say "feature released" while up
+    // to three of them were still alive.
+    ReleasePassFeatures();
     if (h.feature != nullptr)
     {
         SafeReleaseFeature(h.feature);

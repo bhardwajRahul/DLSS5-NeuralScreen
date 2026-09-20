@@ -125,6 +125,18 @@ class TrayController:
         self._thread = threading.Thread(target=self._icon.run, daemon=True)
         self._thread.start()
 
+    def alive(self) -> bool:
+        """Whether the icon is really in the tray.
+
+        Asked before the taskbar button is hidden (#93): the icon runs in a
+        daemon thread and pystray reports its failures there, where nothing
+        sees them. Hiding the button on the strength of a thread that may have
+        died leaves the program with no visible way back at all - the user's
+        only exit would be Task Manager.
+        """
+        return (self._icon is not None and self._thread is not None
+                and self._thread.is_alive())
+
     def stop(self) -> None:
         if self._icon is not None:
             try:

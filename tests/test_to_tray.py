@@ -101,10 +101,21 @@ def main() -> int:
         def set_visible(self, visible):
             self.visible = bool(visible)
 
+    class FakeTray:
+        """The tray icon, and whether it is really there."""
+
+        def __init__(self, alive=True):
+            self._alive = bool(alive)
+
+        def alive(self):
+            return self._alive
+
     class FakeMenu:
         def __init__(self):
             self.visible = True
             self.state = {}
+            # The remap field: set while the menu waits for a key.
+            self.capturing = None
 
         def set_state(self, payload):
             self.state.update(payload or {})
@@ -116,6 +127,10 @@ def main() -> int:
     class FakeDisplay:
         def __init__(self):
             self.menu = FakeMenu()
+            self.window_layer = None
+
+        def set_window_layer(self, *rect):
+            self.window_layer = tuple(rect)
 
         def set_menu_opaque(self, *a):
             pass
@@ -155,7 +170,7 @@ def main() -> int:
 
     st = types.SimpleNamespace(
         tray_commands=queue.Queue(), display=FakeDisplay(),
-        taskbar=FakeTaskbar(), in_tray=False, paused=False,
+        taskbar=FakeTaskbar(), tray=FakeTray(), in_tray=False, paused=False,
         hotkeys=types.SimpleNamespace(resume=lambda: None,
                                       suspend=lambda: None),
         cfg={}, running=True, frame_index=0, menu_opened_at=0.0,
@@ -171,8 +186,17 @@ def main() -> int:
     commands.settings_io.save_menu_layout = lambda _st: True
     commands.settings_io.menu_payload = lambda _st: {}
     try:
+        # A remap field waiting for a key, and a captured window under the
+        # menu: the two pieces of state the ordinary close puts back and this
+        # path did not (audit 20.09).
+        st.display.menu.capturing = "nr"
         st.tray_commands.put("to_tray")
         commands.drain_commands(st)
+        if st.display.menu.capturing is not None:
+            failures.append(
+                "to_tray left the menu waiting for a key: the next open - "
+                "hours later, from the tray - would swallow the first "
+                "keydown as a remap")
         if st.display.menu.visible:
             failures.append("to_tray left the panel open")
         if st.taskbar.visible:
@@ -199,7 +223,63 @@ def main() -> int:
         commands.settings_io.save_menu_layout = real_save
         commands.settings_io.menu_payload = real_payload
 
-    # 4. The click itself. A switch arrives as ("toggle", name) - written as
+    # 4. In one-window mode the HUD layer is stretched to the whole monitor
+    # while the menu is up. Going to the tray is a close, so it has to be put
+    # back on the captured window - or the layer stays monitor-sized for as
+    # long as the program sits in the tray.
+    st_w = types.SimpleNamespace(
+        tray_commands=queue.Queue(), display=FakeDisplay(),
+        taskbar=FakeTaskbar(), tray=FakeTray(), in_tray=False, paused=False,
+        hotkeys=types.SimpleNamespace(resume=lambda: None,
+                                      suspend=lambda: None),
+        cfg={}, running=True, frame_index=0, menu_opened_at=0.0,
+        window_hwnd=0x1234, lang="en", paused_by_user=False,
+    )
+    real_save3 = commands.settings_io.save_menu_layout
+    real_rect = commands.window_frame_rect
+    commands.settings_io.save_menu_layout = lambda _st: True
+    commands.window_frame_rect = lambda _hwnd: (10, 20, 300, 400)
+    try:
+        st_w.tray_commands.put("to_tray")
+        commands.drain_commands(st_w)
+        if st_w.display.window_layer != (10, 20, 300, 400):
+            failures.append(
+                "to_tray left the HUD layer where the open menu put it "
+                f"({st_w.display.window_layer!r}) - in one-window mode that "
+                "is the whole monitor, for as long as the program is away")
+    finally:
+        commands.settings_io.save_menu_layout = real_save3
+        commands.window_frame_rect = real_rect
+
+    # 5. No tray icon, no hiding. The icon runs in a daemon thread whose death
+    # is silent; hiding the taskbar button on the strength of it would leave
+    # Task Manager as the only way out.
+    st_n = types.SimpleNamespace(
+        tray_commands=queue.Queue(), display=FakeDisplay(),
+        taskbar=FakeTaskbar(), tray=FakeTray(alive=False), in_tray=False,
+        paused=False,
+        hotkeys=types.SimpleNamespace(resume=lambda: None,
+                                      suspend=lambda: None),
+        cfg={}, running=True, frame_index=0, menu_opened_at=0.0,
+        window_hwnd=None, lang="en", paused_by_user=False,
+    )
+    real_save4 = commands.settings_io.save_menu_layout
+    commands.settings_io.save_menu_layout = lambda _st: True
+    try:
+        st_n.tray_commands.put("to_tray")
+        commands.drain_commands(st_n)
+        if not st_n.taskbar.visible:
+            failures.append(
+                "the button was hidden with no tray icon to come back from - "
+                "the program would be reachable only through Task Manager")
+        if st_n.in_tray:
+            failures.append("a refused to_tray still recorded being in the tray")
+        if not st_n.running:
+            failures.append("a refused to_tray stopped the program")
+    finally:
+        commands.settings_io.save_menu_layout = real_save4
+
+    # 6. The click itself. A switch arrives as ("toggle", name) - written as
     # its own `kind`, both of these fell into the generic toggle branch and
     # were dropped in silence, so the cells did not react at all (user,
     # 20.09). Driven through the same entry point the menu uses.
