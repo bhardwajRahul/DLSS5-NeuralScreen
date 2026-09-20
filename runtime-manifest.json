@@ -1,5 +1,5 @@
 {
-  "expected_tag": "v1.17.0",
+  "expected_tag": "v2.0.0",
   "package": {
     "file_count": 1360,
     "files": [
@@ -48,7 +48,7 @@
       {
         "origin": "generated",
         "path": "NeuralScreen.exe",
-        "sha256": "6252079208cb799985c9556e9e7209e8fd5ba39d6c4e0657f00b186d0bad14d6",
+        "sha256": "d2c2b5785eccb447882d9cc9c92c6cabd3f3d18263b3b439d8203a51585435d0",
         "size": 167424
       },
       {
@@ -227,10 +227,10 @@
         "size": 18845
       },
       {
-        "git_blob": "4111b1dd3f967ac54c19ff18da3d4d5147593246",
+        "git_blob": "64b8fd0a08e1ef92b79ad7ff6d552e2861e19bdc",
         "origin": "git",
         "path": "i18n.py",
-        "sha256": "6cd3245e2e80886c05b36c26ea90a52abd28c7af97080573ec7ed37b6d0ba60d",
+        "sha256": "8b2728fdfd49154dc45d3fd52590d527a5793034f8dfe8498bac18a780b4c0b7",
         "size": 121767
       },
       {
@@ -8173,11 +8173,11 @@
         "size": 31968
       },
       {
-        "git_blob": "808ff52448abada49d4bec5642d3e4ed7da605e8",
+        "git_blob": "2fbfa6d85717fec331e1e839e270ee64025724e2",
         "origin": "git",
         "path": "settings_io.py",
-        "sha256": "d183cd541b9dfda0bb8d128ce973f42a9d424a8acdcb9fcb9836e40ba82c3a55",
-        "size": 62270
+        "sha256": "0a0d3b42bf0a42638d12341c79da4d0a8cbed161de00c4a452616ae877bc6d56",
+        "size": 62269
       },
       {
         "git_blob": "84910fcb330af4f441aa9d66717192ece37ca20f",
@@ -8215,14 +8215,14 @@
         "size": 7258
       }
     ],
-    "tree_sha256": "5b66e1ab45d2ecd6f8a54e4784077b5c086e6344c21ba8805a4b0585fc543467"
+    "tree_sha256": "10aae030d27ca78809ccd5d7dd1d579f3ce211e77fd9f1f13164d1384fa16d6c"
   },
   "product": "NeuralScreen",
   "runtime": {
     "artifacts": [
       {
         "path": "NeuralScreen.exe",
-        "sha256": "6252079208cb799985c9556e9e7209e8fd5ba39d6c4e0657f00b186d0bad14d6",
+        "sha256": "d2c2b5785eccb447882d9cc9c92c6cabd3f3d18263b3b439d8203a51585435d0",
         "size": 167424
       },
       {
@@ -14894,11 +14894,11 @@
       "size": 17006
     },
     {
-      "git_blob": "ce80a3159f85ffd2892399fe3f024a14f6f1cf45",
+      "git_blob": "8d558534ec1f42c926926c121d8e00cf8d14f02d",
       "path": "build_release_zip.py",
       "role": "version-source",
-      "sha256": "b37cd71b22f1c2120aa1a19426622c35a9e9d3c21be31959effab38da9da5b35",
-      "size": 35456
+      "sha256": "ce65e112d4fc30c54834a0a870dce288ab25b0bcdca350890c2162ff460d1a2b",
+      "size": 35455
     },
     {
       "git_blob": "16fd338c48e70547c3fd94d9926942943716d756",
@@ -15027,10 +15027,10 @@
       "size": 18845
     },
     {
-      "git_blob": "4111b1dd3f967ac54c19ff18da3d4d5147593246",
+      "git_blob": "64b8fd0a08e1ef92b79ad7ff6d552e2861e19bdc",
       "path": "i18n.py",
       "role": "shipped-resource",
-      "sha256": "6cd3245e2e80886c05b36c26ea90a52abd28c7af97080573ec7ed37b6d0ba60d",
+      "sha256": "8b2728fdfd49154dc45d3fd52590d527a5793034f8dfe8498bac18a780b4c0b7",
       "size": 121767
     },
     {
@@ -15328,11 +15328,11 @@
       "size": 5312
     },
     {
-      "git_blob": "2a54027bad3468a316e07a2eb5a7546e7e16139a",
+      "git_blob": "43dff684ec1d6ed9740566e5b37853ebdac79f8f",
       "path": "native/launcher.rc",
       "role": "native-source",
-      "sha256": "90cddd1a310c2b047e718eb043cc4b61917888f4a8f5fba1944f14c155a9b7ea",
-      "size": 878
+      "sha256": "bc5368611b871cb5383342c2f5b0260b137633e52c82a1dab22d07a7b31f4ffa",
+      "size": 874
     },
     {
       "git_blob": "e2a64c959547463d5653353dca4d9a91a4508143",
@@ -15475,11 +15475,11 @@
       "size": 654
     },
     {
-      "git_blob": "808ff52448abada49d4bec5642d3e4ed7da605e8",
+      "git_blob": "2fbfa6d85717fec331e1e839e270ee64025724e2",
       "path": "settings_io.py",
       "role": "version-source",
-      "sha256": "d183cd541b9dfda0bb8d128ce973f42a9d424a8acdcb9fcb9836e40ba82c3a55",
-      "size": 62270
+      "sha256": "0a0d3b42bf0a42638d12341c79da4d0a8cbed161de00c4a452616ae877bc6d56",
+      "size": 62269
     },
     {
       "git_blob": "84910fcb330af4f441aa9d66717192ece37ca20f",
@@ -15531,39 +15531,39 @@
       "size": 7258
     }
   ],
-  "version": "1.17.0",
+  "version": "2.0.0",
   "version_sources": [
     {
-      "git_blob": "ce80a3159f85ffd2892399fe3f024a14f6f1cf45",
+      "git_blob": "8d558534ec1f42c926926c121d8e00cf8d14f02d",
       "path": "build_release_zip.py",
       "role": "version-source",
-      "sha256": "b37cd71b22f1c2120aa1a19426622c35a9e9d3c21be31959effab38da9da5b35",
-      "size": 35456,
+      "sha256": "ce65e112d4fc30c54834a0a870dce288ab25b0bcdca350890c2162ff460d1a2b",
+      "size": 35455,
       "values": {
-        "VERSION": "1.17.0"
+        "VERSION": "2.0.0"
       }
     },
     {
-      "git_blob": "808ff52448abada49d4bec5642d3e4ed7da605e8",
+      "git_blob": "2fbfa6d85717fec331e1e839e270ee64025724e2",
       "path": "settings_io.py",
       "role": "version-source",
-      "sha256": "d183cd541b9dfda0bb8d128ce973f42a9d424a8acdcb9fcb9836e40ba82c3a55",
-      "size": 62270,
+      "sha256": "0a0d3b42bf0a42638d12341c79da4d0a8cbed161de00c4a452616ae877bc6d56",
+      "size": 62269,
       "values": {
-        "APP_VERSION": "1.17.0"
+        "APP_VERSION": "2.0.0"
       }
     },
     {
-      "git_blob": "2a54027bad3468a316e07a2eb5a7546e7e16139a",
+      "git_blob": "43dff684ec1d6ed9740566e5b37853ebdac79f8f",
       "path": "native/launcher.rc",
       "role": "version-source",
-      "sha256": "90cddd1a310c2b047e718eb043cc4b61917888f4a8f5fba1944f14c155a9b7ea",
-      "size": 878,
+      "sha256": "bc5368611b871cb5383342c2f5b0260b137633e52c82a1dab22d07a7b31f4ffa",
+      "size": 874,
       "values": {
-        "FILEVERSION": "1.17.0.0",
-        "FileVersion": "1.17.0.0",
-        "PRODUCTVERSION": "1.17.0.0",
-        "ProductVersion": "1.17.0"
+        "FILEVERSION": "2.0.0.0",
+        "FileVersion": "2.0.0.0",
+        "PRODUCTVERSION": "2.0.0.0",
+        "ProductVersion": "2.0.0"
       }
     }
   ]
