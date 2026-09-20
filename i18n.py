@@ -26,7 +26,7 @@ DEFAULT_LANG = "en"
 # --- Localization: EVERY UI + HUD/alert string ---------------------------
 STRINGS = {
     "en": {
-        "theme": "Тема",
+        "theme": "Theme",
         "monitor": "Monitor",
         "gpu": "GPU",
         "gpu_switched": "GPU switched - the worker restarted",
@@ -189,7 +189,7 @@ STRINGS = {
         "lang_ko": "한국어",
     },
     "ru": {
-        "theme": "Theme",
+        "theme": "Тема",
         "monitor": "Монитор",
         "gpu": "Видеокарта",
         "gpu_switched": "Видеокарта переключена - воркер перезапущен",
