@@ -60,7 +60,12 @@ class _FakeDisplay(display.Display):
         self._zlog_sig = None
         self._zlog_t = 0.0
 
-    def _top_real_window(self):
+    def _top_real_window(self, ours: tuple = ()):
+        # `ours` is what the real walk stops on - our own two windows. The
+        # scripted stack decides the answer here, but the signature has to
+        # match or the caller's TypeError is swallowed by the guard's
+        # try/except and every case silently takes the same wrong branch.
+        self._walk_exhausted = False
         return self.__dict__["_fake"].top
 
 

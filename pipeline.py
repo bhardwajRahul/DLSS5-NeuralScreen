@@ -55,7 +55,21 @@ from winapi import window_frame_rect
 #: Always let through: the pipeline diagnostics. NS_PHASE=1 adds the
 #: per-frame profiler lines ([phase]/[pw]) on top of these.
 _LOG_ALWAYS = ("[host]", "[pure]", "[arch]", "[cap]", "[dda]", "[present]",
-               "[spout]", "[wgc]", "[video]", "[skip]", "[hdr]", "[nvofa]", "[fg]")
+               "[spout]", "[wgc]", "[video]", "[skip]", "[hdr]", "[nvofa]", "[fg]",
+               # Added in 2.0.1. These nine prefixes were emitted by the
+               # worker and dropped HERE - not by the worker, which filters
+               # nothing. Nine of them, and they are not decoration:
+               # `[failure]` is the failure report itself; `[scale]`,
+               # `[gray]`, `[residual]` and `[outs]` are every shader and
+               # pipeline setup failure in the worker; `[nr]` carries
+               # "working textures failed - staying at full resolution",
+               # which is Boost silently not happening. None of it had ever
+               # reached a log or a diagnostic package, and three packages
+               # were read in this project without anyone noticing, because
+               # a line that is never printed looks exactly like a line that
+               # was never reached.
+               "[nr]", "[scale]", "[gray]", "[residual]", "[outs]",
+               "[failure]", "[reset]", "[live]", "[test]")
 #: [video] lines that are a heartbeat rather than a diagnostic: the "delivered
 #: frame N" line is printed every 30 frames and would bury the log.
 _LOG_SKIP = ("delivered frame",)

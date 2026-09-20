@@ -52,6 +52,13 @@ user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.COLORREF,
 user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
 user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
 user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+#: How far the z-order walk may go before it gives up. The old bound was 16
+#: and it was the bug behind #96: helper windows are skipped but still spend
+#: steps, and on a busy desktop our own windows sit deeper than that. 512 is
+#: far past any real stack and still microseconds - the walk stops at the
+#: first window that matters, which is normally one of ours.
+WALK_LIMIT = 512
+
 # The z-order walkers used by raise_topmost's guard (flicker audit 15.09).
 user32.GetTopWindow.argtypes = [wintypes.HWND]
 user32.GetTopWindow.restype = wintypes.HWND
@@ -1095,12 +1102,16 @@ class Display:
             hud = pygame.display.get_wm_info()["window"]
         except Exception:
             hud = None
+        # Read once per decision, before anything is raised, so the line says
+        # what the state WAS when the verdict was made.
+        self._hud_state_last = self._hud_state(hud) if hud else "hud=none"
         present = None
         top = None
         top_is_foreign = False
         try:
             present = user32.FindWindowW("NeuralScreenPresent", "NeuralScreen")
-            top = self._top_real_window()
+            top = self._top_real_window(
+                tuple(w for w in (hud, present) if w))
             # "Foreign" is decided by HWND, not by the window class: a game
             # or test helper built on SDL/pygame IS class "pygame" too, and
             # the old class check read it as our own HUD and skipped the
@@ -1126,7 +1137,14 @@ class Display:
                 # and chose wrong" - and telling those apart is the whole
                 # point of the decision log.
                 self._zlog("hud-on-top", f"top={describe_window(top)}")
-            elif top == present:
+            elif present is not None and top == present:
+                # `present is not None` is load-bearing: the walk and the
+                # FindWindow above share one try/except, and when it fires
+                # BOTH end up None - `None == None` then read as "the picture
+                # is above the panel" and raised a window that may not even
+                # exist. Exposed by the decision-log test the moment the walk
+                # started taking an argument (audit 20.09).
+                #
                 # The picture took the band (a worker restart re-asserts it
                 # HWND_TOPMOST): bring the HUD back above it. NO SWP_NOZORDER
                 # here - that flag makes SetWindowPos ignore hWndInsertAfter,
@@ -1149,14 +1167,56 @@ class Display:
                                     0x0001 | 0x0002 | 0x0010)
                 self._zlog("foreign-above-hud", f"top={describe_window(top)}")
             else:
-                # top is None (the walk found nothing that can cover us) or
-                # the HUD is already above. Both are the healthy steady state
-                # and are worth one line each so a log proves they were seen
-                # rather than never reached.
-                self._zlog("hud-on-top" if top == hud else "nothing-covers",
+                # top is None or the HUD is already above. "Nothing is above
+                # us" and "the walk gave up before it got to us" used to print
+                # the SAME line, and that is what made three packages from #96
+                # look healthy while the guard was blind. They are two
+                # different facts and they are two different words now.
+                if top == hud:
+                    decision = "hud-on-top"
+                elif getattr(self, "_walk_exhausted", False):
+                    decision = "walk-exhausted"
+                else:
+                    decision = "nothing-covers"
+                self._zlog(decision,
                            f"top={describe_window(top) if top else 'none'}")
         except Exception:
             pass
+
+    def _hud_state(self, hud) -> str:
+        """Where our own panel is and what it looks like, as one field list.
+
+        The guard could always name the window that took the top and never
+        said a word about OUR window. Three different faults - the panel under
+        the picture, the panel on the monitor the user is not watching, and
+        the panel at alpha 0 - are the same log from here, which is how #96
+        survived three diagnostic packages.
+
+        The alpha and the key are READ BACK from the window rather than
+        printed from what we last wrote: the layer's attributes have been
+        disturbed from outside before, and a value we remember writing is not
+        evidence that it is in effect.
+        """
+        try:
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hud, ctypes.byref(rect)):
+                return "hud=?"
+            visible = 1 if user32.IsWindowVisible(hud) else 0
+            ex = user32.GetWindowLongW(hud, -20)          # GWL_EXSTYLE
+            topmost = 1 if (ex & 0x00000008) else 0       # WS_EX_TOPMOST
+            key = wintypes.COLORREF()
+            alpha = ctypes.c_ubyte(0)
+            flags = wintypes.DWORD(0)
+            got = user32.GetLayeredWindowAttributes(
+                hud, ctypes.byref(key), ctypes.byref(alpha),
+                ctypes.byref(flags))
+            attrs = (f"alpha={alpha.value} lwa=0x{flags.value:X}" if got
+                     else "alpha=? lwa=?")
+            return (f"hud=({rect.left},{rect.top},{rect.right},{rect.bottom}) "
+                    f"visible={visible} topmost={topmost} "
+                    f"layer={self._layer_state} {attrs}")
+        except Exception:
+            return "hud=?"
 
     def _zlog(self, decision: str, detail: str) -> None:
         """One throttled line per z-order decision.
@@ -1170,17 +1230,22 @@ class Display:
         """
         try:
             now = time.monotonic()
-            sig = (decision, detail)
+            # The panel's own state is part of the signature: a panel that
+            # moves to another monitor or loses its alpha is a CHANGE worth a
+            # line, even when the verdict about other windows is unchanged.
+            self._hud_state_cached = getattr(self, "_hud_state_last", "hud=?")
+            sig = (decision, detail, self._hud_state_cached)
             if sig == self._zlog_sig and now - self._zlog_t < 5.0:
                 return
             changed = sig != self._zlog_sig
             self._zlog_sig = sig
             self._zlog_t = now
-            print(f"[z] {decision}{' (changed)' if changed else ''} {detail}")
+            print(f"[z] {decision}{' (changed)' if changed else ''} "
+                  f"{detail} | {self._hud_state_cached}")
         except Exception:
             pass
 
-    def _top_real_window(self) -> int | None:
+    def _top_real_window(self, ours: tuple = ()) -> int | None:
         """The first VISIBLE window in the z-order walk that can COVER us.
 
         The old guard took GetTopWindow() at face value - and on this
@@ -1195,6 +1260,21 @@ class Display:
         ReassertPresentTopmost skips zero-sized windows, the client guard
         never did).
 
+        `ours` are the HWNDs of our own pair: the walk stops on them too,
+        because "is the picture above the panel" cannot be answered by a walk
+        that only looks for strangers.
+
+        THE BOUND USED TO BE SIXTEEN STEPS, and that was the bug behind #96.
+        Helper windows are skipped but still spend steps, and on a busy
+        desktop our windows sit deeper than that. Measured on the dev machine
+        (20.09.2026): walking 200 entries, the first window that could cover
+        anything was the SIXTEENTH and the next the forty-seventh - fifteen of
+        the first sixteen were helpers. The walk ended exactly at the boundary
+        and returned "found nothing", on which the guard does nothing at all.
+        In the reporter's packages the healthy verdict `hud-on-top` appears
+        ZERO times in two sessions, against 63 on a machine where the same
+        code works.
+
         A window counts only if it can actually be covering our layer:
         visible, at least HELPER_MIN_PX in both dimensions, and its rect
         intersecting the VIRTUAL desktop - not the primary screen. On a
@@ -1208,13 +1288,23 @@ class Display:
         with the virtual bounds.
         """
         HELPER_MIN_PX = 16
+        self._walk_exhausted = False
         try:
             hwnd = user32.GetTopWindow(None)
-            for _ in range(16):        # bounded walk - the stack is shallow
+            for _ in range(WALK_LIMIT):
                 if not hwnd:
                     return None
+                visible = bool(user32.IsWindowVisible(hwnd))
+                # OUR two windows end the walk as themselves, before the size
+                # test: which of them is higher is the whole question this
+                # guard exists to answer, and a picture window sized to a
+                # small captured window could otherwise be skipped as a
+                # helper. An INVISIBLE one is not a stopping point - the thing
+                # above us is then whatever is above IT.
+                if visible and hwnd in ours:
+                    return hwnd
                 ok = False
-                if user32.IsWindowVisible(hwnd):
+                if visible:
                     rect = wintypes.RECT()
                     if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
                         ok = window_can_cover(rect, self._virtual_screen(),
@@ -1222,6 +1312,9 @@ class Display:
                 if ok:
                     return hwnd
                 hwnd = user32.GetWindow(hwnd, 2)   # GW_HWNDNEXT
+            # The chain outlasted the limit. NOT the same answer as "nothing
+            # is above us", and it used to be logged as if it were.
+            self._walk_exhausted = True
         except Exception:
             pass
         return None

@@ -553,6 +553,24 @@ _SETTINGS_KEYS = (
     "frame_limit_custom", "skip_static", "hdr", "spout",
     "monitor", "gpu", "gpu_no_nr", "theme", "lang",
     "nr_dll",
+    # Everything below shipped AFTER this list was written, and every one of
+    # them was invisible in a report until 2.0.1: a package from a 2.0 user
+    # could not say whether the cascade was running, where the on-screen
+    # counter was, or how big the panel had been made. The section exists to
+    # answer "how was the program configured" and had quietly stopped
+    # answering it for anything new (found in a reporter's package, #96).
+    "nr_direct", "nr_passes", "fps_overlay",
+    "tray_on_minimise", "tray_on_close",
+    "menu_scale", "menu_scale_auto",
+    # The four switches that decide WHICH pipeline ran. Without them a report
+    # is ambiguous about the code path it came from, and `worker_present` in
+    # particular decides whether the picture is the worker's own window or
+    # ours - which is the difference between two entirely different classes
+    # of overlay bug.
+    "worker_present", "capture_in_worker", "pixels_in_shm", "motion_on_gpu",
+    "fullscreen", "warmup", "split", "record_audio",
+    "rec_indicator", "open_menu_on_start",
+    "screenshot_format", "screenshot_mode",
 )
 _MAX_SETTINGS_VALUE = 120
 
