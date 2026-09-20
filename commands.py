@@ -447,6 +447,21 @@ def apply_menu_action(st, action: tuple) -> None:
                 "Autostart ON" if new_state else "Autostart OFF"))
         else:
             st.display.alert(UI_STRINGS[st.lang].get("autostart_err", "Autostart failed"))
+    elif kind == "toggle" and action[1] in ("tray_on_minimise", "tray_on_close"):
+        # A switch arrives as ("toggle", name) - the name is action[1], never
+        # the kind. Written as its own `kind` at first, these two clicks fell
+        # into the generic toggle branch and were dropped in silence: the
+        # cells simply did not react (user, 20.09).
+        name = action[1]
+        st.cfg[name] = not bool(st.cfg.get(name, False))
+        # The window procedure runs on its own thread and must not read the
+        # config, so both answers are pushed to it on every change.
+        tb = getattr(st, "taskbar", None)
+        if tb is not None:
+            tb.to_tray_on_minimise = bool(st.cfg.get("tray_on_minimise", False))
+            tb.to_tray_on_close = bool(st.cfg.get("tray_on_close", False))
+        settings_io.save_menu_layout(st)
+        print(f"[main] {name}: {'on' if st.cfg[name] else 'off'}")
     elif kind == "toggle" and action[1] == "rec_indicator":
         # The recording indicator outside the menu: a config flag,
         # the HUD reads it on every redraw.
@@ -599,13 +614,6 @@ def apply_menu_action(st, action: tuple) -> None:
         if action[1] in ("light", "dark"):
             st.cfg["theme"] = action[1]
         print(f"[main] menu theme -> {action[1]}")
-    elif kind == "tray_on_minimise" or kind == "tray_on_close":
-        st.cfg[kind] = bool(action[1])
-        tb = getattr(st, "taskbar", None)
-        if tb is not None:
-            tb.to_tray_on_minimise = bool(st.cfg.get("tray_on_minimise"))
-            tb.to_tray_on_close = bool(st.cfg.get("tray_on_close"))
-        print(f"[main] {kind} -> {bool(action[1])}")
     elif kind == "nr_passes":
         try:
             passes = int(action[1])

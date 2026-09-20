@@ -95,6 +95,8 @@ def main() -> int:
     class FakeTaskbar:
         def __init__(self):
             self.visible = True
+            self.to_tray_on_minimise = False
+            self.to_tray_on_close = False
 
         def set_visible(self, visible):
             self.visible = bool(visible)
@@ -196,6 +198,38 @@ def main() -> int:
     finally:
         commands.settings_io.save_menu_layout = real_save
         commands.settings_io.menu_payload = real_payload
+
+    # 4. The click itself. A switch arrives as ("toggle", name) - written as
+    # its own `kind`, both of these fell into the generic toggle branch and
+    # were dropped in silence, so the cells did not react at all (user,
+    # 20.09). Driven through the same entry point the menu uses.
+    import types as _types
+    st2 = _types.SimpleNamespace(
+        cfg={"tray_on_minimise": False, "tray_on_close": False},
+        taskbar=FakeTaskbar(), display=FakeDisplay(), lang="en",
+        tray_commands=queue.Queue(), running=True, frame_index=0,
+    )
+    real_save2 = commands.settings_io.save_menu_layout
+    commands.settings_io.save_menu_layout = lambda _st: True
+    try:
+        for name in ("tray_on_minimise", "tray_on_close"):
+            commands.apply_menu_action(st2, ("toggle", name))
+            if st2.cfg.get(name) is not True:
+                failures.append(
+                    f"clicking {name} left the config at "
+                    f"{st2.cfg.get(name)!r} - the switch does not react")
+            commands.apply_menu_action(st2, ("toggle", name))
+            if st2.cfg.get(name) is not False:
+                failures.append(f"{name} does not switch back off")
+        # And the policy reaches the window procedure, which cannot read the
+        # config itself.
+        commands.apply_menu_action(st2, ("toggle", "tray_on_close"))
+        if not st2.taskbar.to_tray_on_close:
+            failures.append(
+                "the taskbar window was not told about tray_on_close - it "
+                "runs on its own thread and only knows what it is pushed")
+    finally:
+        commands.settings_io.save_menu_layout = real_save2
 
     for f in failures:
         print("FAIL:", f)

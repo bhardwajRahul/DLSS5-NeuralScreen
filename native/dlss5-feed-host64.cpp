@@ -1724,11 +1724,11 @@ static unsigned EnsurePassFeatures(UINT w, UINT h_, int flags, UINT full_w,
         if (!ok || g_nr_pass[i] == nullptr)
         {
             g_nr_pass[i] = nullptr;
-            Log("[nr] pass %u could not be created (0x%08X) - the cascade runs "
+            Log("[video] NR pass %u could not be created (0x%08X) - the cascade runs "
                 "%u pass(es)", i + 1u, static_cast<unsigned>(r), i);
             return i;
         }
-        Log("[nr] pass %u ready: its own feature, its own temporal history",
+        Log("[video] NR pass %u ready: its own feature, its own temporal history",
             i + 1u);
     }
     return want;
@@ -6362,6 +6362,12 @@ static int RunVideo()
                 // cost nothing at all - the extra features stay, unused, and
                 // are there the moment the user moves the control back.
                 const unsigned want = NrPassesFromFlags(rc.flags);
+                // Said on EVERY parameter apply, not only when it changes:
+                // the first attempt at this went quiet, and a quiet cascade
+                // is indistinguishable from one that was never asked for.
+                Log("[video] NR cascade: flags=0x%08X asked=%u have=%u live=%u "
+                    "small=%d", rc.flags, want, v.passes, v.passes_live,
+                    v.nr_small ? 1 : 0);
                 if (want != v.passes || v.passes_live < want)
                 {
                     v.passes = want;
@@ -6369,7 +6375,7 @@ static int RunVideo()
                         v.w, v.hgt, flags,
                         (v.nr_small || !rup) ? 0 : rc.full_w,
                         (v.nr_small || !rup) ? 0 : rc.full_h, want);
-                    Log("[nr] cascade: %u pass(es) asked for, %u live",
+                    Log("[video] NR cascade built: %u pass(es) asked for, %u live",
                         v.passes, v.passes_live);
                 }
                 v.residual = v.nr_small && !g_nr_direct;
