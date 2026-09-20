@@ -1765,7 +1765,14 @@ class Display:
         drawing onto the frame would lay it out for the frame again.
         """
         sw, sh = int(screen[0]), int(screen[1])
-        ox, oy = int(origin[0]), int(origin[1])
+        # The layer's own corner, subtracted exactly as show() subtracts it.
+        # `_window_layer` is in VIRTUAL-DESKTOP pixels while the layer starts at
+        # this monitor's corner, so on any monitor but the primary the raw
+        # number is the origin too large: a window at desktop x=4000 on a
+        # monitor starting at 3840 would push the menu 3840 px off the frame and
+        # out of the file altogether.
+        lx, ly = getattr(self, "_origin", (0, 0))
+        ox, oy = int(origin[0]) - int(lx), int(origin[1]) - int(ly)
         scratch = pygame.Surface((sw, sh), pygame.SRCALPHA)
         scratch.fill((0, 0, 0, 0))
         saved = list(self.menu.offset)

@@ -37,6 +37,9 @@ from display import Display  # noqa: E402
 SCREEN = (2560, 1600)
 WINDOW = (349, 0, 1513, 1522)          # origin x, origin y, w, h - from the log
 FRAME_RGB = 17
+#: A second monitor's corner on the virtual desktop. Every other case here
+#: runs at (0, 0), which is exactly where the origin mistake cannot show.
+MONITOR_ORIGIN = (3840, 0)
 
 
 def state() -> dict:
@@ -111,12 +114,53 @@ def main() -> int:
             f"on a full-screen frame the panel is at {got2}, not {want2} - the "
             f"zero-offset case regressed")
 
+    # The third case: the same window, on a monitor that does not start at
+    # (0, 0). `_window_layer` is in VIRTUAL-DESKTOP pixels while the layer
+    # starts at this monitor's corner, so the corner has to come off the offset
+    # exactly as show() takes it off. Without that the panel is pushed a whole
+    # monitor to the left and misses the frame entirely - and every other case
+    # here runs at origin (0, 0), where the mistake is invisible.
+    d3 = Display(*SCREEN, fullscreen=False)
+    d3.menu.set_state(state())
+    d3.menu.visible = True
+    d3.menu.page = "main"
+    d3.set_origin(*MONITOR_ORIGIN)
+    d3.set_window_layer(MONITOR_ORIGIN[0] + ox, MONITOR_ORIGIN[1] + oy, w, h)
+    frame3 = np.zeros((h, w, 4), dtype=np.uint8)
+    frame3[..., :3] = FRAME_RGB
+    frame3[..., 3] = 255
+    frame3 = np.ascontiguousarray(frame3)
+    surf3 = pygame.image.frombuffer(frame3, (w, h), "RGBX")
+    before3 = frame3.copy()
+    d3.draw_capture_overlay(surf3)
+    changed3 = (frame3[..., :3] != before3[..., :3]).any(axis=2)
+    if not changed3.any():
+        failures.append(
+            f"on a monitor at {MONITOR_ORIGIN} the panel never reached the "
+            f"frame - the window's desktop coordinates were used as the "
+            f"offset, so the menu was blitted a monitor's width off the file")
+    else:
+        ys3, xs3 = np.where(changed3)
+        got3 = (int(xs3.min()), int(ys3.min()), int(xs3.max()), int(ys3.max()))
+        p3 = d3.menu.panel_rect
+        # The same expectation as the first case: the panel is laid out against
+        # the layer, and the layer's corner is the monitor's.
+        want3 = (max(0, p3.x - ox), max(0, p3.y - oy),
+                 min(w - 1, p3.right - 1 - ox), min(h - 1, p3.bottom - 1 - oy))
+        print(f"panel in the frame, monitor at {MONITOR_ORIGIN}: {got3}")
+        if got3 != want3:
+            failures.append(
+                f"on a monitor at {MONITOR_ORIGIN} the baked panel is at "
+                f"{got3}, not at {want3} - the layer's own corner was not "
+                f"subtracted from the window's desktop position")
+
     for f in failures:
         print("FAIL:", f)
     if failures:
         return 1
-    print("OK: the panel lands where the user saw it, on a window-sized frame "
-          "and on a full-screen one")
+    print("OK: the panel lands where the user saw it - on a window-sized "
+          "frame, on a full-screen one, and on a monitor that does not start "
+          "at (0, 0)")
     return 0
 
 
