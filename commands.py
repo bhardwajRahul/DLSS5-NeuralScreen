@@ -606,6 +606,20 @@ def apply_menu_action(st, action: tuple) -> None:
             tb.to_tray_on_minimise = bool(st.cfg.get("tray_on_minimise"))
             tb.to_tray_on_close = bool(st.cfg.get("tray_on_close"))
         print(f"[main] {kind} -> {bool(action[1])}")
+    elif kind == "nr_passes":
+        try:
+            passes = int(action[1])
+        except (TypeError, ValueError):
+            print(f"[main] invalid pass count: {action[1]!r}", file=sys.stderr)
+            return
+        passes = min(4, max(1, passes))
+        st.nr_passes = passes
+        st.cfg["nr_passes"] = passes
+        print(f"[main] NR cascade -> {passes} pass(es)")
+        # The count travels with the parameters, so the ordinary apply carries
+        # it - no teardown, no warm-up, no frozen picture. request_apply is
+        # the one way to ask; pending_apply is a tuple it builds, not a flag.
+        pipeline.request_apply(st, st.work_scale, st.cfg["profile"], st.params)
     elif kind == "fps_overlay":
         corner = str(action[1])
         if corner not in ("off", "tl", "tr", "bl", "br"):

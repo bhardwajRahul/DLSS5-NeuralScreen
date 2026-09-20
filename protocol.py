@@ -385,6 +385,12 @@ RESIZE_FLAG_NR_SMALL = 0x1   # run the network at the work size, scale the resul
 # onto the native frame. Only means anything with NR_SMALL on. Travels with
 # the resize so that flipping it costs no feature - it is an A/B switch.
 RESIZE_FLAG_NR_DIRECT = 0x2
+#: How many NR passes run over one frame, 1-4, in bits 2-4 of the same flags
+#: word. Zero reads as one pass on the worker, so the field can be absent.
+#: Each pass is its own NGX feature with its own temporal history - one
+#: feature called twice gets two evaluations with no motion between them.
+RESIZE_FLAG_NR_PASSES_SHIFT = 2
+NR_MAX_PASSES = 4
 RACK_FMT = "<4Iq"         # magic, ok, ngx_result, reserved, pts (24 bytes)
 
 # DDA1: the worker captures the screen itself (Desktop Duplication) - the
@@ -503,7 +509,8 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
 
 def send_resize(worker: subprocess.Popen, params: dict, width: int, height: int,
                 warmup: int, full_w: int = 0, full_h: int = 0,
-                nr_small: bool = False, nr_direct: bool = False) -> None:
+                nr_small: bool = False, nr_direct: bool = False,
+                nr_passes: int = 1) -> None:
     """Send RNSZ - change the work resolution/parameters on the fly.
 
     The worker recreates the NGX feature at the new sizes (ReleaseFeature ->
@@ -515,7 +522,9 @@ def send_resize(worker: subprocess.Popen, params: dict, width: int, height: int,
         RESIZE_FMT,
         RESIZE_MAGIC, width, height, int(warmup),
         (RESIZE_FLAG_NR_SMALL if nr_small else 0)
-        | (RESIZE_FLAG_NR_DIRECT if nr_direct else 0),
+        | (RESIZE_FLAG_NR_DIRECT if nr_direct else 0)
+        | (min(NR_MAX_PASSES, max(1, int(nr_passes)))
+           << RESIZE_FLAG_NR_PASSES_SHIFT),
         # profile, preset and ui_correction: sent, and sent as zero. All
         # three are dead in the 310.8.0 runtime - every value gives a
         # byte-identical frame - so they are not carried in the profiles

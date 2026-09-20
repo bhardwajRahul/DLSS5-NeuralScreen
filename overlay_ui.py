@@ -328,6 +328,8 @@ class OverlayMenu:
             # parameter slider (see _draw_slider).
             # (low, high) per parameter, from settings_io.
             "param_ranges": {},
+            # The NR cascade: how many passes run over one frame (experiment).
+            "nr_passes": 1,
             # version / windows / driver / gpu, from the log header.
             "about": {},
             "compatibility_status": "not_run",
@@ -1743,6 +1745,18 @@ class OverlayMenu:
                 # the number the choice is actually made on.
                 slider("nr_res", lo, cap, pos, s["nr_res"],
                        value_text=value_text)
+                # The cascade. It lives under Boost because it only runs in
+                # that mode - outside it the network writes the full-res
+                # output directly and a second pass would need a full-res
+                # scratch. An experiment, and priced like one: each extra
+                # pass is another full evaluation, so two cost about half the
+                # frame rate and four about a quarter, and every pass carries
+                # its own feature of roughly 440 MB.
+                passes_now = int(self.state.get("nr_passes", 1) or 1)
+                segmented("nr_passes", s.get("nr_passes", "NR passes"),
+                          str(max(1, min(4, passes_now))),
+                          ["1", "2", "3", "4"], labels=["1", "2", "3", "4"])
+                items[-1].extra["state_default"] = "1"
 
             # What is being processed - the first question anyone has, and
             # until now the only one answered on another page. The segment
@@ -2519,6 +2533,15 @@ class OverlayMenu:
                 self.state["screenshot_format"] = value
                 return [("screenshot_format", value)]
             return []
+        if key == "nr_passes":
+            try:
+                step = int(value)
+            except (TypeError, ValueError):
+                return []
+            if not 1 <= step <= 4:
+                return []
+            self.state["nr_passes"] = step
+            return [("nr_passes", step)]
         if key == "fps_overlay":
             if value in ("off", "tl", "tr", "bl", "br"):
                 self.state["fps_overlay"] = value

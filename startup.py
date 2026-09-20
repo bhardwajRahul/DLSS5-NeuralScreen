@@ -389,6 +389,9 @@ def configure(st) -> None:
     # only if the A/B says it earns its place. Unlike Boost itself this one
     # travels with the resize, so flipping it costs no feature.
     st.nr_direct = bool(st.cfg.get("nr_direct", False))
+    #: How many NR passes run over one frame (the cascade). Travels with every
+    #: RNSZ, so changing it costs no rebuild once the features exist.
+    st.nr_passes = int(st.cfg.get("nr_passes", 1))
     #: Frames in a row the worker answered without an NGX evaluation.
     st.nr_idle_streak = 0
     #: The verdict the interface reads: NR is on, but nothing is processed.

@@ -595,6 +595,18 @@ def _validate_config(cfg: dict) -> dict:
     # #93: what the taskbar's minimise and close buttons mean. Booleans, and
     # False unless the config really says otherwise - a program that vanishes
     # into the tray because a string was truthy would look like a crash.
+    # The NR cascade: how many passes run over one frame. An experiment, off
+    # (that is, one pass) unless asked for - each extra pass is another full
+    # evaluation, so two passes cost about half the frame rate.
+    try:
+        passes = int(cfg.get("nr_passes", 1))
+    except (TypeError, ValueError):
+        _fallback("nr_passes", cfg.get("nr_passes"), 1, "is not a whole number")
+        passes = 1
+    if passes < 1 or passes > 4:
+        _fallback("nr_passes", cfg.get("nr_passes"), 1, "is not 1-4")
+        passes = 1
+    cfg["nr_passes"] = passes
     cfg["tray_on_minimise"] = cfg.get("tray_on_minimise") is True
     cfg["tray_on_close"] = cfg.get("tray_on_close") is True
     if cfg.get("fps_overlay") not in ("off", "tl", "tr", "bl", "br"):
@@ -775,6 +787,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "monitor": monitor_name if monitor_name is not None else int(monitor),
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
         "fps_overlay": str(cfg.get("fps_overlay", "off")),
+        "nr_passes": int(cfg.get("nr_passes", 1)),
         "tray_on_minimise": bool(cfg.get("tray_on_minimise", False)),
         "tray_on_close": bool(cfg.get("tray_on_close", False)),
         "recording_dir": cfg.get("recording_dir") or "",
@@ -1228,6 +1241,7 @@ def menu_payload(st) -> dict:
                         if active_recorder else 0.0),
         "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
         "fps_overlay": str(st.cfg.get("fps_overlay", "off")),
+        "nr_passes": int(st.cfg.get("nr_passes", 1)),
         "tray_on_minimise": bool(st.cfg.get("tray_on_minimise", False)),
         "tray_on_close": bool(st.cfg.get("tray_on_close", False)),
         "recording_dir": st.cfg.get("recording_dir") or "",

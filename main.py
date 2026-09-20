@@ -310,6 +310,7 @@ class _Pipeline:
         "motion_small",
         "next_auto_revive",
         "nr_direct",
+        "nr_passes",
         "nr_small",
         # The "NR ON but nothing is being processed" verdict: a streak of frames
         # the worker answered without evaluating, and the flag the HUD reads.

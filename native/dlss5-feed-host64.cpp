@@ -1492,6 +1492,29 @@ static UINT NrPresetHint()
     return static_cast<UINT>(cached);
 }
 
+// How many NR passes run over one frame, 1-4, in bits 2-4. Zero reads as one
+// pass, so a client that does not send it keeps working and the struct keeps
+// its size - its layout mirrors the D5V3 header and a hundred tests build it
+// by position.
+static constexpr uint32_t RESIZE_FLAG_NR_PASSES_SHIFT = 2u;
+static constexpr uint32_t RESIZE_FLAG_NR_PASSES_MASK  = 0x1Cu;
+static constexpr unsigned NR_MAX_PASSES = 4u;
+
+static inline unsigned NrPassesFromFlags(uint32_t flags)
+{
+    const unsigned raw =
+        (flags & RESIZE_FLAG_NR_PASSES_MASK) >> RESIZE_FLAG_NR_PASSES_SHIFT;
+    if (raw <= 1u) return 1u;
+    return raw > NR_MAX_PASSES ? NR_MAX_PASSES : raw;
+}
+
+//: Features for passes 2..4. Pass 1 is h.feature, which the rest of this
+//: file already knows about. Each pass gets its OWN feature: calling one
+//: feature twice in a frame hands it two evaluations with no motion between
+//: them, which is a lie to its temporal history and shows up as lost detail
+//: on the later passes.
+static NVSDK_NGX_Handle *g_nr_pass[NR_MAX_PASSES] = { nullptr, nullptr, nullptr, nullptr };
+
 static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, UINT full_w = 0, UINT full_h = 0)
 {
     (void)flags;
@@ -1665,6 +1688,50 @@ static bool Evaluate(ID3D12Resource *color, ID3D12Resource *output, ID3D12Resour
     if (EndCommands() == 0) return false;   // queue Signal failed (device removed)
     if (NVSDK_NGX_FAILED(re)) { Log("[host] evaluate failed 0x%08X (%s)", re, NgxResultName(re)); return false; }
     return true;
+}
+
+static void ReleasePassFeatures()
+{
+    for (unsigned i = 1; i < NR_MAX_PASSES; ++i)
+    {
+        if (g_nr_pass[i] == nullptr) continue;
+        SafeReleaseFeature(g_nr_pass[i]);
+        g_nr_pass[i] = nullptr;
+    }
+}
+
+// Create features until `want` passes exist, and return how many there are.
+// A refusal is not fatal: the cascade runs shorter and the log says by how
+// much. The caller stores the answer in v.passes_live.
+static unsigned EnsurePassFeatures(UINT w, UINT h_, int flags, UINT full_w,
+                                   UINT full_h, unsigned want)
+{
+    if (want < 1u) want = 1u;
+    if (want > NR_MAX_PASSES) want = NR_MAX_PASSES;
+    if (h.feature == nullptr) return 1u;    // no first pass, no cascade
+    for (unsigned i = 1; i < want; ++i)
+    {
+        if (g_nr_pass[i] != nullptr) continue;
+        // CreateFeature writes into the global h.feature - that is its
+        // contract everywhere else here. Borrow it, take the new handle out,
+        // put the main one back.
+        NVSDK_NGX_Handle *keep = h.feature;
+        h.feature = nullptr;
+        NVSDK_NGX_Result r = NVSDK_NGX_Result_Fail;
+        const bool ok = CreateFeature(w, h_, flags, &r, full_w, full_h);
+        g_nr_pass[i] = h.feature;
+        h.feature = keep;
+        if (!ok || g_nr_pass[i] == nullptr)
+        {
+            g_nr_pass[i] = nullptr;
+            Log("[nr] pass %u could not be created (0x%08X) - the cascade runs "
+                "%u pass(es)", i + 1u, static_cast<unsigned>(r), i);
+            return i;
+        }
+        Log("[nr] pass %u ready: its own feature, its own temporal history",
+            i + 1u);
+    }
+    return want;
 }
 
 // ---------------------------------------------------------------------------
@@ -2052,6 +2119,15 @@ struct VideoState
     // while the network runs at the cheap work resolution.
     bool residual = false;
     float residual_strength = 1.0f;
+    // The cascade. `passes` is what the client asked for; `passes_live` is
+    // what the features allow - a create that fails latches the cascade at
+    // the last pass that exists instead of failing every frame after it.
+    unsigned passes = 1;
+    unsigned passes_live = 1;
+    // The ping-pong partner of nr_out: same size, same format, same resting
+    // state. Allocated with the pair rather than when a second pass is asked
+    // for, because allocating mid-frame is how a switch becomes a stutter.
+    ID3D12Resource *nr_alt = nullptr;
 };
 
 // Two different questions, and conflating them is what turned a 10-bit
@@ -3010,13 +3086,18 @@ static bool CreateVideoResources(VideoState &v, UINT w, UINT hgt, UINT full_w = 
                 SUCCEEDED(h.dev->CreateCommittedResource(
                     &def, D3D12_HEAP_FLAG_NONE, &nd,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-                    __uuidof(ID3D12Resource), reinterpret_cast<void **>(&v.nr_out)));
+                    __uuidof(ID3D12Resource), reinterpret_cast<void **>(&v.nr_out))) &&
+                SUCCEEDED(h.dev->CreateCommittedResource(
+                    &def, D3D12_HEAP_FLAG_NONE, &nd,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                    __uuidof(ID3D12Resource), reinterpret_cast<void **>(&v.nr_alt)));
             if (!ok)
             {
                 Log("[nr] %ux%u working textures failed - staying at full resolution",
                     v.nr_w, v.nr_h);
                 if (v.nr_in != nullptr) { v.nr_in->Release(); v.nr_in = nullptr; }
                 if (v.nr_out != nullptr) { v.nr_out->Release(); v.nr_out = nullptr; }
+                if (v.nr_alt != nullptr) { v.nr_alt->Release(); v.nr_alt = nullptr; }
                 v.nr_small = false;
             }
             else
@@ -5401,6 +5482,56 @@ static void SetTestVideoParams()
     g_video_options.ui_correction = 0;
 }
 
+// One pass of the network, on the command list the caller has already opened.
+//
+// Lifted out of EvaluateVideo so the cascade can call it in a loop. A `for`
+// wrapped around the old body would have enclosed the scale-down, the
+// timestamps and the composite as well, none of which repeat per pass - and
+// that shape reads correct right up until the first mistake, which here means
+// a removed device rather than a failing test.
+//
+// `seh` receives the exception code if the runtime faults; the caller decides
+// what to do about it, because only the caller knows whether the command list
+// can still be abandoned cleanly.
+static NVSDK_NGX_Result EvalNrPass(VideoState &v, NVSDK_NGX_Handle *feature,
+                                   ID3D12Resource *nr_color,
+                                   ID3D12Resource *nr_result,
+                                   UINT nw, UINT nh, int reset, DWORD *seh)
+{
+    *seh = 0;
+    h.params->Reset();
+    h.params->Set("DLSSNR.Color", nr_color); h.params->Set("DLSSNR.Output", nr_result);
+    h.params->Set("DLSSNR.MVec", v.mv.tex);
+    h.params->Set("DLSSNR.ColorSubrectBaseX", 0u); h.params->Set("DLSSNR.ColorSubrectBaseY", 0u);
+    h.params->Set("DLSSNR.ColorSubrectWidth", nw); h.params->Set("DLSSNR.ColorSubrectHeight", nh);
+    h.params->Set("DLSSNR.MVecSubrectBaseX", 0u); h.params->Set("DLSSNR.MVecSubrectBaseY", 0u);
+    h.params->Set("DLSSNR.MVecSubrectWidth", v.w); h.params->Set("DLSSNR.MVecSubrectHeight", v.hgt);
+    h.params->Set("DLSSNR.OutputSubrectBaseX", 0u); h.params->Set("DLSSNR.OutputSubrectBaseY", 0u);
+    h.params->Set("DLSSNR.OutputSubrectWidth", nw); h.params->Set("DLSSNR.OutputSubrectHeight", nh);
+    h.params->Set("DLSSNR.MVecScaleX", v.nr_small ? float(nw)/v.w : 1.0f);
+    h.params->Set("DLSSNR.MVecScaleY", v.nr_small ? float(nh)/v.hgt : 1.0f);
+    bool verified = true;
+    verified &= SetVerifiedU(h.params, "DLSSNR.Enabled", 1u);
+    verified &= SetVerifiedU(h.params, "DLSSNR.Reset", (unsigned int)reset);
+    verified &= SetVerifiedF(h.params, "DLSSNR.Intensity", g_video_options.intensity);
+    verified &= SetVerifiedF(h.params, "DLSSNR.LocalToneStrength", g_video_options.local_tone);
+    verified &= SetVerifiedF(h.params, "DLSSNR.LocalStructureStrength", g_video_options.local_structure);
+    verified &= SetVerifiedF(h.params, "DLSSNR.SkinStructureStrength", g_video_options.skin_structure);
+    verified &= SetVerifiedU(h.params, "DLSSNR.UseAutoMask", g_video_options.auto_mask);
+    verified &= SetVerifiedU(h.params, "DLSSNR.Style", g_video_options.style);
+    verified &= SetVerifiedU(h.params, "DLSSNR.UICorrection", g_video_options.ui_correction);
+    if (!verified)
+        Log("[host] NGX parameter read-back mismatch - a value did not stick");
+    h.params->Set("DLSS.Pre.Exposure", 1.0f);
+    h.params->Set("DLSS.Exposure.Scale", g_pw_exposure);
+    DWORD code = 0;
+    NVSDK_NGX_Result result = static_cast<NVSDK_NGX_Result>(0x7FFFFFFF);
+    __try { result = g_nr_evaluate(h.list, feature, h.params, nullptr); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { code = GetExceptionCode(); }
+    *seh = code;
+    return result;
+}
+
 static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
 {
     if (submitted) *submitted = 0;
@@ -5439,44 +5570,67 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
     // own cost, and folding them into "eval on GPU" would make the number
     // incomparable with every measurement taken so far.
     if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 2);
-    ID3D12Resource *nr_color = v.nr_small ? v.nr_in : v.color.tex;
-    ID3D12Resource *nr_result = v.nr_small ? v.nr_out : v.output;
-    h.params->Reset();
-    h.params->Set("DLSSNR.Color", nr_color); h.params->Set("DLSSNR.Output", nr_result);
-    h.params->Set("DLSSNR.MVec", v.mv.tex);
-    h.params->Set("DLSSNR.ColorSubrectBaseX", 0u); h.params->Set("DLSSNR.ColorSubrectBaseY", 0u);
-    h.params->Set("DLSSNR.ColorSubrectWidth", nw); h.params->Set("DLSSNR.ColorSubrectHeight", nh);
-    h.params->Set("DLSSNR.MVecSubrectBaseX", 0u); h.params->Set("DLSSNR.MVecSubrectBaseY", 0u);
-    h.params->Set("DLSSNR.MVecSubrectWidth", v.w); h.params->Set("DLSSNR.MVecSubrectHeight", v.hgt);
-    h.params->Set("DLSSNR.OutputSubrectBaseX", 0u); h.params->Set("DLSSNR.OutputSubrectBaseY", 0u);
-    h.params->Set("DLSSNR.OutputSubrectWidth", nw); h.params->Set("DLSSNR.OutputSubrectHeight", nh);
-    h.params->Set("DLSSNR.MVecScaleX", v.nr_small ? float(nw)/v.w : 1.0f);
-    h.params->Set("DLSSNR.MVecScaleY", v.nr_small ? float(nh)/v.hgt : 1.0f);
-    bool verified = true;
-    verified &= SetVerifiedU(h.params, "DLSSNR.Enabled", 1u);
-    verified &= SetVerifiedU(h.params, "DLSSNR.Reset", (unsigned int)reset);
-    verified &= SetVerifiedF(h.params, "DLSSNR.Intensity", g_video_options.intensity);
-    verified &= SetVerifiedF(h.params, "DLSSNR.LocalToneStrength", g_video_options.local_tone);
-    verified &= SetVerifiedF(h.params, "DLSSNR.LocalStructureStrength", g_video_options.local_structure);
-    verified &= SetVerifiedF(h.params, "DLSSNR.SkinStructureStrength", g_video_options.skin_structure);
-    verified &= SetVerifiedU(h.params, "DLSSNR.UseAutoMask", g_video_options.auto_mask);
-    verified &= SetVerifiedU(h.params, "DLSSNR.Style", g_video_options.style);
-    verified &= SetVerifiedU(h.params, "DLSSNR.UICorrection", g_video_options.ui_correction);
-    if (!verified)
-        Log("[host] NGX parameter read-back mismatch - a value did not stick");
-    h.params->Set("DLSS.Pre.Exposure", 1.0f);
-    h.params->Set("DLSS.Exposure.Scale", g_pw_exposure);
+    // The cascade. Outside nr_small the network writes the full-res output
+    // directly, and a second pass there would need a full-res scratch - a
+    // different trade and a different measurement - so it stays at one.
+    //
+    // The timestamps around this loop now measure ALL the passes together.
+    // That is deliberate: "eval on GPU" should mean what the network cost
+    // this frame, and with a cascade that is the whole cascade.
+    unsigned passes = (v.nr_small && v.nr_alt != nullptr) ? v.passes_live : 1u;
+    if (passes < 1u) passes = 1u;
+    if (passes > NR_MAX_PASSES) passes = NR_MAX_PASSES;
+    ID3D12Resource *src = v.nr_small ? v.nr_in : v.color.tex;
+    ID3D12Resource *dst = v.nr_small ? v.nr_out : v.output;
     DWORD code = 0;
     NVSDK_NGX_Result result = static_cast<NVSDK_NGX_Result>(0x7FFFFFFF);
-    __try { result = g_nr_evaluate(h.list, h.feature, h.params, nullptr); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { code = GetExceptionCode(); }
-    g_last_eval_result = static_cast<uint32_t>(result);
-    if (code != 0)
+    for (unsigned pass = 0; pass < passes; ++pass)
     {
-        AbortCommands();
-        ReportFailure(failure_stage, "seh", static_cast<HRESULT>(code));
-        Log("[pure] direct evaluate exception 0x%08X", code);
-        return false;
+        NVSDK_NGX_Handle *feature = (pass == 0) ? h.feature : g_nr_pass[pass];
+        if (feature == nullptr) { passes = pass; break; }   // latched short
+        if (pass > 0)
+        {
+            // The previous pass's output is this pass's input: NGX reads the
+            // colour as a shader resource. It goes back to UAV immediately
+            // after, so both scratch buffers keep ONE resting state between
+            // frames and the next frame's barriers are always right.
+            D3D12_RESOURCE_BARRIER to_srv = Transition(
+                src, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            h.list->ResourceBarrier(1, &to_srv);
+        }
+        result = EvalNrPass(v, feature, src, dst, nw, nh, reset, &code);
+        g_last_eval_result = static_cast<uint32_t>(result);
+        if (pass > 0)
+        {
+            D3D12_RESOURCE_BARRIER back = Transition(
+                src, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            h.list->ResourceBarrier(1, &back);
+        }
+        if (code != 0)
+        {
+            AbortCommands();
+            ReportFailure(failure_stage, "seh", static_cast<HRESULT>(code));
+            Log("[pure] direct evaluate exception 0x%08X (pass %u of %u)",
+                code, pass + 1u, passes);
+            return false;
+        }
+        if (NVSDK_NGX_FAILED(result)) break;   // reported below, as before
+        if (pass + 1u < passes)
+        {
+            ID3D12Resource *next_src = dst;
+            dst = (dst == v.nr_out) ? v.nr_alt : v.nr_out;
+            src = next_src;
+        }
+    }
+    // The last pass has to land where everything downstream reads it -
+    // the residual composite, the scale-up, the present all name v.nr_out.
+    // The two scratch buffers are identical, so saying that costs a pointer
+    // swap rather than a copy of the whole work-res texture.
+    if (v.nr_small && dst == v.nr_alt)
+    {
+        ID3D12Resource *t = v.nr_out; v.nr_out = v.nr_alt; v.nr_alt = t;
     }
     if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 3);
     if (v.nr_small)
@@ -5846,6 +6000,7 @@ static void ReleaseVideoTextures(VideoState &v)
     g_res_out_bound = g_res_dst_bound = nullptr;
     if (v.nr_in != nullptr) { v.nr_in->Release(); v.nr_in = nullptr; }
     if (v.nr_out != nullptr) { v.nr_out->Release(); v.nr_out = nullptr; }
+    if (v.nr_alt != nullptr) { v.nr_alt->Release(); v.nr_alt = nullptr; }
     v.nr_small = false;
     v.inputs_ready = false;
     // The capture flag says "the current frame is already in v.color" -
@@ -6074,6 +6229,15 @@ static int RunVideo()
         vh.width, vh.height, flags, &create_result,
         (v.nr_small || !upscale) ? 0 : vh.full_w,
         (v.nr_small || !upscale) ? 0 : vh.full_h);
+    // The cascade's extra features, if the header asked for more than one
+    // pass. Done here rather than lazily on the first frame: a feature costs
+    // about 440 MB and 60 ms, and paying that inside a frame is a stutter the
+    // user would read as a fault.
+    // One pass at creation, always: the stream header has no room for a pass
+    // count (that slot is frame_count), and the client sends an RNSZ with the
+    // profile before the first frame anyway. The cascade is built there.
+    v.passes = 1u;
+    v.passes_live = 1u;
     const uint32_t create_category = feature_created ? 0u :
         (static_cast<uint32_t>(create_result) == 0xBAD00001u ? 1u : 2u);
     const VideoCreateAck create_ack = {
@@ -6192,6 +6356,22 @@ static int RunVideo()
                 // belongs on this path and must be applied to the view by
                 // hand - nothing else here touches it.
                 g_nr_direct = (rc.flags & RESIZE_FLAG_NR_DIRECT) != 0;
+                // The pass count travels with the parameters, and changing it
+                // costs only the features it does not have yet: the sizes are
+                // the same, so the ones already built still fit. Fewer passes
+                // cost nothing at all - the extra features stay, unused, and
+                // are there the moment the user moves the control back.
+                const unsigned want = NrPassesFromFlags(rc.flags);
+                if (want != v.passes || v.passes_live < want)
+                {
+                    v.passes = want;
+                    v.passes_live = EnsurePassFeatures(
+                        v.w, v.hgt, flags,
+                        (v.nr_small || !rup) ? 0 : rc.full_w,
+                        (v.nr_small || !rup) ? 0 : rc.full_h, want);
+                    Log("[nr] cascade: %u pass(es) asked for, %u live",
+                        v.passes, v.passes_live);
+                }
                 v.residual = v.nr_small && !g_nr_direct;
                 v.residual_strength = v.residual ? ResidualStrengthRequested() : 1.0f;
                 g_force_next_frame = true;   // show it on the next frame
@@ -6220,6 +6400,9 @@ static int RunVideo()
             // 2. Release the old feature and textures.
             SafeReleaseFeature(h.feature);
             h.feature = nullptr;
+            // The cascade is sized to the feature: a new work size means new
+            // features for every pass, not a reused one at the wrong size.
+            ReleasePassFeatures();
             ReleaseVideoTextures(v);
             // 3. New options (profile/params travel with the command).
             // VideoResizeCmd has the same packed layout as VideoHeader.
@@ -6265,6 +6448,13 @@ static int RunVideo()
                 Log("[video] RNSZ: feature create failed at %ux%u - SAFE PASSTHROUGH",
                     rc.width, rc.height);
             }
+            v.passes = NrPassesFromFlags(rc.flags);
+            v.passes_live = (h.feature != nullptr)
+                ? EnsurePassFeatures(rc.width, rc.height, flags,
+                                     (v.nr_small || !rup) ? 0 : rc.full_w,
+                                     (v.nr_small || !rup) ? 0 : rc.full_h,
+                                     v.passes)
+                : 1u;
             warmup_done = (h.feature == nullptr);   // only warm a real NR feature
             VideoResizeAck ack = { RESIZE_ACK_MAGIC, 1u, static_cast<uint32_t>(rr), 0u, fh.pts };
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;

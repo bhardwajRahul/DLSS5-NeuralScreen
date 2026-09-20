@@ -723,7 +723,8 @@ def resize_window_live(st, frame_w: int, frame_h: int) -> bool:
     try:
         t0 = time.perf_counter()
         send_resize(st.worker, st.params, new_w, new_h, RESTART_WARMUP,
-                    new_full_w, new_full_h, st.nr_small, st.nr_direct)
+                    new_full_w, new_full_h, st.nr_small, st.nr_direct,
+                    getattr(st, "nr_passes", 1))
         st.reader.wait_rack(timeout=RACK_TIMEOUT)
         st.reader.set_output_size(new_full_w or new_w, new_full_h or new_h)
     except Exception as exc:
@@ -1141,7 +1142,8 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
         try:
             t_rnsz = time.perf_counter()
             send_resize(st.worker, st.params, new_w, new_h, RESTART_WARMUP,
-                        new_full_w, new_full_h, st.nr_small, st.nr_direct)
+                        new_full_w, new_full_h, st.nr_small, st.nr_direct,
+                        getattr(st, "nr_passes", 1))
             st.reader.wait_rack(timeout=RACK_TIMEOUT)
             st.reader.set_output_size(new_full_w or new_w, new_full_h or new_h)
             applied = True
