@@ -711,8 +711,8 @@ static void ProfileCapture(double acquire_start, UINT64 source_qpc, const char *
     if (source_qpc) g_previous_source_qpc = source_qpc;
 }
 
-enum ProfileStage { PS_SWIZZLE, PS_GRAY, PS_MOTION, PS_EVAL, PS_PRESENT, PS_COUNT, PS_NONE = -1 };
-static const char *kProfileStageNames[PS_COUNT] = { "swizzle", "gray", "motion", "eval", "present" };
+enum ProfileStage { PS_SWIZZLE, PS_GRAY, PS_MOTION, PS_EVAL, PS_PRESENT, PS_FG, PS_COUNT, PS_NONE = -1 };
+static const char *kProfileStageNames[PS_COUNT] = { "swizzle", "gray", "motion", "eval", "present", "fg" };
 static double g_ps_submit_sum[PS_COUNT], g_ps_submit_max[PS_COUNT];
 static double g_ps_wait_sum[PS_COUNT], g_ps_wait_max[PS_COUNT];
 static double g_ps_gpu_sum[PS_COUNT], g_ps_gpu_max[PS_COUNT];
@@ -1701,18 +1701,32 @@ static void ReleasePassFeatures()
     }
 }
 
-// Create features until `want` passes exist, and return how many there are.
-// A refusal is not fatal: the cascade runs shorter and the log says by how
-// much. The caller stores the answer in v.passes_live.
+// Reconcile executable passes, preserving the history of those still used.
+// A create refusal shortens the cascade; a failed retirement returns zero.
 static unsigned EnsurePassFeatures(UINT w, UINT h_, int flags, UINT full_w,
                                    UINT full_h, unsigned want)
 {
+    if (g_submission_failed) return 0u;
     if (want < 1u) want = 1u;
     if (want > NR_MAX_PASSES) want = NR_MAX_PASSES;
+    bool surplus = false, changed = false;
+    for (unsigned i = want; i < NR_MAX_PASSES; ++i)
+        surplus = surplus || g_nr_pass[i] != nullptr;
+    if (surplus && h.fence_value != 0 &&
+        !WaitFenceValue(h.fence, h.fence_value, 2000, "nr-pass-retire"))
+        return 0u;
+    for (unsigned i = want; i < NR_MAX_PASSES; ++i)
+    {
+        if (g_nr_pass[i] == nullptr) continue;
+        SafeReleaseFeature(g_nr_pass[i]);
+        g_nr_pass[i] = nullptr;
+        changed = true;
+    }
     if (h.feature == nullptr) return 1u;    // no first pass, no cascade
+    unsigned have = 1u;
     for (unsigned i = 1; i < want; ++i)
     {
-        if (g_nr_pass[i] != nullptr) continue;
+        if (g_nr_pass[i] != nullptr) { ++have; continue; }
         // CreateFeature writes into the global h.feature - that is its
         // contract everywhere else here. Borrow it, take the new handle out,
         // put the main one back.
@@ -1722,17 +1736,21 @@ static unsigned EnsurePassFeatures(UINT w, UINT h_, int flags, UINT full_w,
         const bool ok = CreateFeature(w, h_, flags, &r, full_w, full_h);
         g_nr_pass[i] = h.feature;
         h.feature = keep;
+        if (g_submission_failed) return 0u;
         if (!ok || g_nr_pass[i] == nullptr)
         {
             g_nr_pass[i] = nullptr;
             Log("[video] NR pass %u could not be created (0x%08X) - the cascade runs "
                 "%u pass(es)", i + 1u, static_cast<unsigned>(r), i);
-            return i;
+            break;
         }
+        ++have;
+        changed = true;
         Log("[video] NR pass %u ready: its own feature, its own temporal history",
             i + 1u);
     }
-    return want;
+    if (changed) LogVideoMemory("NR cascade");
+    return have;
 }
 
 // ---------------------------------------------------------------------------
@@ -6267,6 +6285,7 @@ static void PhaseReport(bool bypass)
     const double seconds = static_cast<double>(now - g_ph_tick) / 1000.0;
     g_ph_tick = now;
     FlushProfileFrames();
+    LogVideoMemory("phase sample");
 
     char line[640];
     int off = _snprintf_s(line, sizeof(line), _TRUNCATE, "[phase] %s", bypass ? "bypass" : "NR");
@@ -6503,27 +6522,26 @@ static int RunVideo()
                 // belongs on this path and must be applied to the view by
                 // hand - nothing else here touches it.
                 g_nr_direct = (rc.flags & RESIZE_FLAG_NR_DIRECT) != 0;
-                // The pass count travels with the parameters, and changing it
-                // costs only the features it does not have yet: the sizes are
-                // the same, so the ones already built still fit. Fewer passes
-                // cost nothing at all - the extra features stay, unused, and
-                // are there the moment the user moves the control back.
+                // Keep the saved count, but allocate only passes EvaluateVideo
+                // can execute. Surplus features retire instead of occupying VRAM.
                 const unsigned want = NrPassesFromFlags(rc.flags);
+                const unsigned effective = (v.nr_small && v.nr_alt != nullptr) ? want : 1u;
                 // Said on EVERY parameter apply, not only when it changes:
                 // the first attempt at this went quiet, and a quiet cascade
                 // is indistinguishable from one that was never asked for.
                 Log("[video] NR cascade: flags=0x%08X asked=%u have=%u live=%u "
                     "small=%d", rc.flags, want, v.passes, v.passes_live,
                     v.nr_small ? 1 : 0);
-                if (want != v.passes || v.passes_live < want)
+                if (want != v.passes || v.passes_live != effective)
                 {
                     v.passes = want;
                     v.passes_live = EnsurePassFeatures(
                         v.w, v.hgt, flags,
                         (v.nr_small || !rup) ? 0 : rc.full_w,
-                        (v.nr_small || !rup) ? 0 : rc.full_h, want);
-                    Log("[video] NR cascade built: %u pass(es) asked for, %u live",
-                        v.passes, v.passes_live);
+                        (v.nr_small || !rup) ? 0 : rc.full_h, effective);
+                    if (v.passes_live == 0) return 6;
+                    Log("[video] NR cascade built: asked=%u effective=%u allocated=%u",
+                        v.passes, effective, v.passes_live);
                 }
                 v.residual = v.nr_small && !g_nr_direct;
                 v.residual_strength = v.residual ? ResidualStrengthRequested() : 1.0f;
@@ -6602,12 +6620,16 @@ static int RunVideo()
                     rc.width, rc.height);
             }
             v.passes = NrPassesFromFlags(rc.flags);
+            const unsigned effective = (v.nr_small && v.nr_alt != nullptr) ? v.passes : 1u;
             v.passes_live = (h.feature != nullptr)
                 ? EnsurePassFeatures(rc.width, rc.height, flags,
                                      (v.nr_small || !rup) ? 0 : rc.full_w,
                                      (v.nr_small || !rup) ? 0 : rc.full_h,
-                                     v.passes)
+                                     effective)
                 : 1u;
+            if (v.passes_live == 0) return 6;
+            Log("[video] NR cascade built: asked=%u effective=%u allocated=%u",
+                v.passes, effective, h.feature ? v.passes_live : 0u);
             warmup_done = (h.feature == nullptr);   // only warm a real NR feature
             VideoResizeAck ack = { RESIZE_ACK_MAGIC, 1u, static_cast<uint32_t>(rr), 0u, fh.pts };
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
