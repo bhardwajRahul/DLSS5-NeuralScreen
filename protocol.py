@@ -352,6 +352,11 @@ FRAME_FLAG_WANT_PIXELS = 0x2  # return the pixels even in window mode (for a scr
 FRAME_FLAG_MOTION_SMALL = 0x4  # motion field at flow resolution, upscaled by the worker
 FRAME_FLAG_SPLIT = 0x20        # before/after wipe; position in the high 16 bits of reserved
 FRAME_FLAG_SKIP_STATIC = 0x40  # no new frame - let the worker idle instead of re-running NGX
+# Answer once the frame is on the GPU queue rather than once it is presented:
+# the loop's own work (the HUD, commands, the next capture request) then runs
+# while the GPU finishes the frame. The worker honours it only where it is
+# safe - a processed frame presented by the worker with no pixels coming back.
+FRAME_FLAG_EARLY_REPLY = 0x2000
 
 # MOTS: the motion field arrives at the optical-flow resolution (~320x180) and
 # the worker upscales it to the work resolution on the GPU. The CPU is spared
@@ -475,7 +480,7 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
                no_color: bool = False, bypass: bool = False,
                split: float = 0.0, skip_static: bool = False,
                frame_generation: bool | None = None, frame_multiplier: int = 2,
-               prepared: bool = False) -> None:
+               prepared: bool = False, early_reply: bool = False) -> None:
     """Send a frame to the worker.
 
     With shared memory agreed, only the 24-byte header with the
@@ -501,6 +506,8 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
             (FRAME_FLAG_SKIP_STATIC if skip_static else 0)
     if prepared:
         flags |= FRAME_FLAG_PREPARED
+    if early_reply:
+        flags |= FRAME_FLAG_EARLY_REPLY
     if frame_generation is not None:
         # Bits 8-11: enabled, multiplier minus two, explicit UI override.
         flags |= 0x800 | (0x100 if frame_generation else 0)

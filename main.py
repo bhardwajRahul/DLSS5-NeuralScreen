@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -137,6 +138,13 @@ from protocol import (  # noqa: F401
 
 
 
+
+#: Ask the worker to answer each frame as soon as it is queued on the GPU
+#: (FRAME_FLAG_EARLY_REPLY) instead of once it is on screen, so this loop's own
+#: work - the HUD, the commands, the next capture request - runs while the GPU
+#: finishes the frame rather than between frames. NS_EARLY_REPLY=0 turns it
+#: off, for comparing the two or ruling it out in a report.
+EARLY_REPLY = os.environ.get("NS_EARLY_REPLY", "1") != "0"
 
 #: How many consecutive frames without an NGX evaluation before the interface
 #: stops claiming the picture is processed. Ten frames is a fraction of a second
@@ -869,7 +877,8 @@ def main() -> int:
                            skip_static=bool(st.cfg.get("skip_static", False)),
                            frame_generation=bool(st.cfg.get("frame_generation", False)),
                            frame_multiplier=int(st.cfg.get("frame_multiplier", 2)),
-                           prepared=bool(st.gray_active))
+                           prepared=bool(st.gray_active),
+                           early_reply=EARLY_REPLY)
                 _perf("send", t0)
             except (BrokenPipeError, OSError, EOFError, RuntimeError) as exc:
                 st.consecutive_restarts += 1

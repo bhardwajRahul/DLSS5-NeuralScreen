@@ -50,11 +50,14 @@ def main():
         send = Mock()
         namespace = dict(st=st, bypass=bypass, motion_status=status, time=time, sys=sys,
                          check_worker=Mock(), prepare_capture=capture, send_frame=send,
-                         _perf=Mock())
+                         _perf=Mock(), EARLY_REPLY=True)
         exec(code, namespace)
         assert calls == (['capture'] if bypass else ['capture', 'guides'])
         assert send.call_count == 1
         assert send.call_args.kwargs['prepared'] is True
+        # The loop asks for the answer as soon as the frame is queued; the
+        # worker decides where that is safe (FRAME_FLAG_EARLY_REPLY).
+        assert send.call_args.kwargs['early_reply'] is True
         assert guides.process.call_count == (0 if bypass else 1)
         if bypass:
             assert guides.previous_gray is None
@@ -83,7 +86,7 @@ def main():
     send = Mock()
     namespace = dict(st=st, bypass=True, motion_status=status, time=time, sys=sys,
                      check_worker=Mock(), prepare_capture=Mock(), send_frame=send,
-                     _perf=Mock())
+                     _perf=Mock(), EARLY_REPLY=True)
     exec(code, namespace)
     assert guides.process.call_count == 1, \
         'bypass + FG must compute real guides: zero motion and reset=True leave FG nothing to interpolate'

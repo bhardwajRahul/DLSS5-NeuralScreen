@@ -99,6 +99,7 @@ ABOUT = {
     "test_convert_page.py": "the conversion page and the Convert cell fit in twelve languages",
     "test_media_convert.py": "a file goes through the network: formats, naming, and a real still on the GPU",
     "test_gpu_recorder.py": "recording on the GPU: every codec, colour, resize, A/V sync, and the worker's stop, failure and loss",
+    "test_early_reply.py": "the worker answers a frame once it is queued: one answer per frame, early only where safe, and the wait cut",
     "test_worker_orphan.py": "a dead parent cannot leave a worker running (the Job Object tie)",
     "test_diag_settings_complete.py": "every shipped setting is reported in a diagnostic package or withheld on purpose",
     "test_worker_log_prefixes.py": "every prefix the worker logs under reaches the shared log",
@@ -401,6 +402,7 @@ TEST_GROUPS = {
     GROUP_GPU: frozenset({
         "test_media_convert.py",
         "test_gpu_recorder.py",
+        "test_early_reply.py",
         "test_adapter_agreement.py",
         "test_bypass.py",
         "test_direct_reconstruction.py",

@@ -1944,6 +1944,14 @@ static constexpr uint32_t FRAME_FLAG_SPLIT = 0x20u;
 // texture. An empty OUT1 is the "nothing changed" answer; WANT_PIXELS wins
 // over this bit (a screenshot or a recording wants the picture either way).
 static constexpr uint32_t FRAME_FLAG_SKIP_STATIC = 0x40u;
+// bit 13: answer as soon as the frame is on the GPU queue, not once it has
+// been presented. The client's own per-frame work - the HUD, the commands, the
+// next capture request - then runs while the GPU finishes this frame instead
+// of after it, and the frame rate stops paying for Python's share of the loop.
+// Honoured only where the tail of the frame is deferred already (a processed
+// frame, present mode, worker capture, no pixels, no wipe, no HDR, no Frame
+// Generation): everywhere else the answer still follows the present.
+static constexpr uint32_t FRAME_FLAG_EARLY_REPLY = 0x2000u;
 
 static UINT SplitXFromFlags(uint32_t reserved, UINT width)
 {
@@ -2930,6 +2938,19 @@ static bool RebuildPresentIfStale()
     return true;
 }
 
+// FRAME_FLAG_EARLY_REPLY: the OUT1 this frame owes the client, which
+// PresentFrame writes the moment the present list is on the queue. The present
+// itself (the fence wait, Present) then overlaps the client's next iteration;
+// nothing is reordered - the worker still reads the next message only after
+// this frame is on screen.
+static struct EarlyReply
+{
+    bool armed = false, sent = false, failed = false;
+    uint32_t index = 0;
+    int64_t pts = 0;
+} g_early_reply;
+static void SendEarlyReply();   // defined next to WriteExact, below
+
 static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
 {
     if (!RebuildPresentIfStale()) return false;
@@ -2984,6 +3005,7 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
         ProfileGpuEnd(PS_PRESENT);
         const UINT64 fv = EndCommands();
         if (submitted) *submitted = fv;
+        if (fv != 0) SendEarlyReply();
         if (ProfileWait(PS_PRESENT, fv, submitted ? 60000 : 2000))
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
@@ -3150,6 +3172,19 @@ static void OwnTheProtocolPipe()
     // through g_wire).
     HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
     if (err != nullptr) SetStdHandle(STD_OUTPUT_HANDLE, err);
+}
+
+static bool WriteExact(FILE *f, const void *p, size_t n);
+
+static void SendEarlyReply()
+{
+    if (!g_early_reply.armed || g_early_reply.sent) return;
+    g_early_reply.sent = true;
+    // The NGX result is known: the evaluate call returned before the present
+    // list was recorded. Only the GPU's execution of it is still running.
+    const VideoResultHeader out = { OUT_MAGIC, g_early_reply.index, OUT_STATUS_OK,
+                                    0u, g_last_eval_result, g_early_reply.pts };
+    if (!WriteExact(g_wire, &out, sizeof(out))) g_early_reply.failed = true;
 }
 
 static bool WriteExact(FILE *f, const void *p, size_t n)
@@ -7305,8 +7340,21 @@ static int RunVideo()
             // NGX evaluate is skipped but the pipeline is alive (window, HUD).
             FollowCapturedWindow();
             ReassertPresentTopmost();
+            g_early_reply = {};
+            if (defer_tail && !bypass && (fh.reserved & FRAME_FLAG_EARLY_REPLY) != 0)
+            {
+                g_early_reply.armed = true;
+                g_early_reply.index = fh.index;
+                g_early_reply.pts = fh.pts;
+            }
             const bool pres_ok = bypass ? PresentBypass(v) : PresentFrame(v, defer_tail ? &present_done : nullptr);
+            // Whether PresentFrame answered already (FRAME_FLAG_EARLY_REPLY):
+            // Frame Generation and HDR present elsewhere and never do.
+            const bool replied = g_early_reply.sent;
+            const bool reply_failed = g_early_reply.failed;
+            g_early_reply = {};
             PhaseAdd(PH_PRESENT, t_pres);
+            if (reply_failed) return 10;
             if (!pres_ok) return 9;
             if (defer_tail)
             {
@@ -7334,7 +7382,7 @@ static int RunVideo()
                 if (!dl_ok) return 9;
                 if (!DeliverPixels(output, fh.index, fh.pts)) return 10;
             }
-            else
+            else if (!replied)
             {
                 VideoResultHeader out = { OUT_MAGIC, fh.index, OUT_STATUS_OK, 0u, g_last_eval_result, fh.pts };
                 if (!WriteExact(g_wire, &out, sizeof(out))) return 10;
