@@ -63,11 +63,12 @@ def _work_size(width: int, height: int, scale: float,
     # one the residual composite reads, and none of that exists at 1:1: the
     # network writes the full-res output directly there, so the worker forces
     # the count back to one (`v.nr_small = v.upscale && asked`, and then
-    # `passes = (v.nr_small && v.nr_alt) ? v.passes_live : 1`). It says
-    # nothing while it does it - there is no log line on that path - so a
-    # panel showing four passes was driving one, and the features for the
-    # other three were built and then discarded: measured 248 -> 853 MB of
-    # video memory at 960x540, ~200 MB per pass, for nothing.
+    # `passes = (v.nr_small && v.nr_alt) ? v.passes_live : 1`). It said
+    # nothing while it did it, so a panel showing four passes was driving one
+    # (reported in #110), and until v2.0.2 the features for the other three
+    # were built and discarded: measured 248 -> 853 MB of video memory at
+    # 960x540, ~200 MB per pass. Since v2.0.2 they are not allocated, and the
+    # worker's "NR cascade built" line says why a count falls short.
     #
     # So a pass count above one steps the work size down by the smallest even
     # amount that engages the residual path. This costs nothing and gains:
@@ -87,12 +88,10 @@ def _work_size(width: int, height: int, scale: float,
     if int(nr_passes or 1) > 1 and (w, h) == (int(width), int(height)):
         w = max(64, (int(width) - 2) // 2 * 2)
         h = max(64, (int(height) - 2) // 2 * 2)
+        # A frame too small to step down from keeps its size (the floor in
+        # resolution_limits wins); the cascade cannot run there, and the
+        # worker's "NR cascade built" line says why.
         w, h = safe_processing_size(int(width), int(height), w, h)
-        if (w, h) == (int(width), int(height)):
-            # A frame too small to step down from - the floor in
-            # resolution_limits won. Nothing more to do: the cascade cannot
-            # run here and the worker will say so by running one pass.
-            pass
     return min(w, int(width)), min(h, int(height))
 
 
