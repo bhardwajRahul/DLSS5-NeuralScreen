@@ -521,6 +521,21 @@ def bring_up(st) -> None:
     # restarts climbed to NR OFF - the exact storm the shortening exists to
     # prevent (audit F3).
     st.effective_warmup = effective_warmup
+    # The overlay is built BEFORE the worker, and that order is load-bearing:
+    # Display publishes its window handle in NS_HUD_HWND (display.py, in
+    # _move_to_origin), and the worker reads it to show the picture window
+    # BELOW the panel instead of on top of it. A worker started first inherits
+    # an environment where the variable does not exist yet, and it reads it
+    # once - so its reveal falls back to ShowWindow, which puts the picture
+    # over the panel. That fallback is exactly the single-refresh flash v2.0.0
+    # set out to remove, and a reporter's log shows the fallback line on a
+    # plain launch (#107).
+    st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
+    # The overlay is the size of one monitor and must sit ON it: created at
+    # (0,0) it covered the primary screen while the capture ran elsewhere.
+    st.display.set_origin(*st.mon_origin)
+    st.display.set_lang(st.lang)
+
     require_compatibility(st)
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
         st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
@@ -529,11 +544,6 @@ def bring_up(st) -> None:
 
     print(f"[main] capturing monitor {st.monitor}: {st.capture.resolution}")
 
-    st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
-    # The overlay is the size of one monitor and must sit ON it: created at
-    # (0,0) it covered the primary screen while the capture ran elsewhere.
-    st.display.set_origin(*st.mon_origin)
-    st.display.set_lang(st.lang)
     # The program draws over the desktop and gives no sign of itself -
     # without this it is unclear after launch whether it is running.
     st.startup_menu = bool(st.cfg.get("open_menu_on_start", True))
