@@ -180,6 +180,39 @@ int main()
         // being applied at all, which is the contract.
         check(hdrTone[0] >= 180 && hdrTone[0] <= 195,
               "a real scRGB capture at unit white must still tone-map (~187)");
+        // Source HDR and the output preference are independent. Reuse the
+        // same texture across mode changes so stale conversion state fails.
+        for (UINT sourceHdr : {1u, 0u, 1u}) {
+            for (UINT outputHdr : {0u, 1u}) {
+                cap.fp=1; cap.white=2.05f; cap.hdr=sourceHdr;
+                dispatch(kHdrCaptureHlsl,{native.Get()},proxy.Get(),&cap);
+                auto converted=read(proxy.Get(),4);
+                if (sourceHdr) {
+                    check(converted[12] < converted[16] && converted[16] < converted[20],
+                          "HDR source highlights clipped when output HDR is off");
+                    check(std::abs(int(converted[12])-155)<=1 &&
+                          std::abs(int(converted[16])-196)<=1 &&
+                          std::abs(int(converted[20])-239)<=1,
+                          "HDR source conversion changed with output preference");
+                } else {
+                    check(converted[12]==255,"SDR FP16 white must not be tone-mapped");
+                }
+                comp.white=cap.white; comp.bypass=1; comp.split=UINT_MAX; comp.hdr=outputHdr;
+                dispatch(kHdrCompositeHlsl,{native.Get(),proxy.Get(),proxy.Get()},result.Get(),&comp);
+                auto presented=read(result.Get(),8);
+                if (outputHdr) {
+                    check(memcmp(presented.data(),raw.data(),presented.size())==0,
+                          "HDR bypass changed during source mode transitions");
+                } else {
+                    const HALF *linear=(const HALF*)presented.data();
+                    check(XMConvertHalfToFloat(linear[12])<=1.0f,
+                          "SDR presentation exceeded unit white");
+                    if (sourceHdr)
+                        check(linear[12]<linear[16] && linear[16]<linear[20],
+                              "SDR presentation lost HDR source highlight detail");
+                }
+            }
+        }
         cap.hdr=0;
         auto display=QueryHdrDisplay(MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY));
         printf("Display probe: HDR=%d, SDR white=%.1f nits\n",display.enabled,display.white*80);

@@ -26,6 +26,12 @@ BAT = BASE / "native" / "test-hdr.bat"
 
 
 def main() -> int:
+    source = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(encoding="utf-8")
+    capture = source.split("static bool SwizzleCaptureIntoColor(VideoState &v)", 1)[1]
+    constants = capture.split("struct { UINT is_float;", 1)[1].split("};", 1)[0]
+    if "(g_capture_float && g_capture_display.enabled) ? 1u : 0u" not in constants:
+        print("FAIL: capture shader HDR flag must follow source HDR, not presentation preference")
+        return 1
     if not BAT.exists():
         print(f"FAIL: no {BAT}")
         return 1
