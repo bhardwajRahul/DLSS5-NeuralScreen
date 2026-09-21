@@ -535,6 +535,7 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
     NVSDK_NGX_D3D12_DLSSG_Eval_Params ep = {};
     ep.pBackbuffer = color; ep.pMVecs = v.mv.tex; ep.pDepth = g_fg.depth.tex;
     if (!BeginCommands()) { g_fg.failed = true; CloseFgResources(); return false; }
+    const bool profile_fg = ProfileGpuBegin(PS_FG);
     bool allow_interpolation = true;
     p->Set(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, static_cast<unsigned long long>(g_fg.sequence + 1));
     opt.multiFrameCount = g_fg_count;
@@ -559,7 +560,8 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
         if (state != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) h.list->ResourceBarrier(1, &post);
         if (NVSDK_NGX_FAILED(result))
         {
-            if (!WaitFenceValue(h.fence, EndCommands(), 30000,
+            if (profile_fg) ProfileGpuEnd(PS_FG);
+            if (!ProfileWait(PS_FG, EndCommands(), 30000,
                                 "fg-evaluate"))
             { g_fg.failed = true; return false; }
             // A refused multiplier is not a broken feature, and it used to be
@@ -574,6 +576,7 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
             g_fg.failed = true; CloseFgResources(); return false;
         }
     }
+    if (profile_fg) ProfileGpuEnd(PS_FG);
     FgSlot *slot = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_fg.mutex);
@@ -586,7 +589,7 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
             // contract a STALE g_fg_present_fence from an earlier frame and
             // the token-order guard kills the worker (the blink-out class).
             const UINT64 fence = EndCommands();
-            if (!WaitFenceValue(h.fence, fence, 30000, "fg-starvation"))
+            if (!ProfileWait(PS_FG, fence, 30000, "fg-starvation"))
             { g_fg.failed = true; return false; }
             g_fg_present_fence = fence;
             return true;
@@ -623,7 +626,7 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
     auto spout_post = Transition(export_src, D3D12_RESOURCE_STATE_COPY_SOURCE, export_rest);
     h.list->ResourceBarrier(1, &spout_post);
     const UINT64 fg_fence = EndCommands();
-    if (!WaitFenceValue(h.fence, fg_fence, 30000, "fg-evaluate"))
+    if (!ProfileWait(PS_FG, fg_fence, 30000, "fg-evaluate"))
     { g_fg.failed = true; CloseFgResources(); return false; }
     g_fg_present_fence = fg_fence;
     BYTE *disabled = nullptr;

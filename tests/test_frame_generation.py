@@ -147,6 +147,10 @@ def run(hdr=False, dynamic=False, check_pixels=False, fg_only=False):
         if hdr:
             pygame.quit()
     assert worker.returncode == 0, worker.returncode
+    if env.get("NS_PHASE") == "1":
+        timings = re.findall(r"boundary fg: submit [\d.]+/[\d.]+ wait ([\d.]+)/[\d.]+ GPU ([\d.]+)/[\d.]+", log)
+        assert timings and any(float(gpu) > 0 for _, gpu in timings), "FG GPU timings missing"
+        assert "video memory after phase sample:" in log, "periodic VRAM budget missing"
     if fg_only:
         # NR off from the very first frame and FG on: this is the case that had
         # no lifecycle lines at all in a user's log (#104). The presenter must
