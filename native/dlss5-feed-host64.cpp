@@ -4793,12 +4793,12 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     h.list->SetComputeRootDescriptorTable(1, g1);
     // rotate180 only for duplication: a WGC window is already composed the
     // way the user sees it, so turning it over would be a second rotation.
-    // hdr is the second, independent fact about the same frame: FP16 arrival
-    // says nothing about the picture being scRGB (see kHdrCaptureHlsl).
+    // Source HDR controls conversion even when HDR presentation is disabled.
+    // FP16 alone can also contain SDR on a high-bit-depth display.
     struct { UINT is_float; float white; UINT rotate180; UINT hdr; } hdr = {
         g_capture_float ? 1u : 0u, g_hdr_frame_white,
         (g_dda_active && g_capture_rotate180) ? 1u : 0u,
-        g_hdr_capture ? 1u : 0u };
+        (g_capture_float && g_capture_display.enabled) ? 1u : 0u };
     h.list->SetComputeRoot32BitConstants(2, 4, &hdr, 0);
     h.list->Dispatch((g_dda_w + 7) / 8, (g_dda_h + 7) / 8, 1);
     // copy swizzled dst into v.color.tex
