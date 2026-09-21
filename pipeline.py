@@ -33,7 +33,7 @@ import numpy as np
 import channels
 import settings_io
 from capture import (ScreenCapture, _refresh_dxcam_factory,
-                     devicename_for_output_idx, monitor_size,
+                     monitor_size,
                      resolve_output_idx)
 from display import Display
 from guides import TemporalGuideGenerator

@@ -10,17 +10,6 @@ text belongs.
 
 from __future__ import annotations
 
-# --- Brand palette --------------------------------------------------------
-BG = "#0D1117"            # dark background
-PANEL = "#161B22"         # input fields / combo boxes
-BORDER = "#30363D"        # separators, borders
-ACCENT = "#FFBF00"        # amber accent
-ACCENT_HOVER = "#FFD24D"  # accent on hover
-TEXT = "#E6EDF3"          # main text
-MUTED = "#8B949E"         # muted text
-DANGER = "#F85149"        # quit: an irreversible action, marked by colour
-DANGER_HOVER = "#3D1D1D"
-
 DEFAULT_LANG = "en"
 
 # --- Localization: EVERY UI + HUD/alert string ---------------------------

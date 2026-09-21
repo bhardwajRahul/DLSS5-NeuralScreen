@@ -214,24 +214,6 @@ def split_multiselect(raw: str) -> list[Path]:
     return [folder / name for name in parts[1:]]
 
 
-def ask_open_path(parent_hwnd: int, initial_dir: str | None = None,
-                  title: str | None = None) -> Path | None:
-    """The native "Open" dialog. The chosen file, or None on cancel.
-
-    Unlike the save dialog there is no fallback: a conversion with no input
-    is not a conversion, so a dialog that cannot be shown is a cancel.
-    """
-    try:
-        ofn, buf = _open_dialog_struct(parent_hwnd, initial_dir, title)
-        if not ctypes.windll.comdlg32.GetOpenFileNameW(ctypes.byref(ofn)):
-            return None
-        chosen = buf.value.strip()
-        return Path(chosen) if chosen else None
-    except Exception as exc:
-        print(f"[dialogs] open dialog unavailable ({exc})", file=sys.stderr)
-        return None
-
-
 def ask_open_paths(parent_hwnd: int, initial_dir: str | None = None,
                    title: str | None = None) -> list[Path]:
     """The native "Open" dialog with several files allowed. [] on cancel.

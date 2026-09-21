@@ -1102,7 +1102,7 @@ GpuRecStats GpuRecStop()
     st.written = r->written.load();
     st.dropped = r->dropped.load();
     st.codec = r->codec;
-    st.had_audio = r->ring != nullptr || r->audio_read > 0;
+    st.had_audio = r->has_audio;   // the ring is already unmapped here
     st.audio_frames = static_cast<uint32_t>(
         (std::min)(r->audio_read - r->audio_base, int64_t(UINT32_MAX)));
     st.hr = r->error.load();

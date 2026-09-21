@@ -310,7 +310,6 @@ def main() -> int:
     pipeline.switch_window = lambda *a, **k: None
     import dialogs
     dialogs.ask_open_paths = lambda *a, **k: []
-    dialogs.ask_open_path = lambda *a, **k: None
     dialogs.pick_directory = lambda *a, **k: None
     dialogs.ask_save_path = lambda *a, **k: None
 

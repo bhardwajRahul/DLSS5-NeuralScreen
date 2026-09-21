@@ -26,9 +26,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import json
 import os
-import queue
 import subprocess
 import sys
 import time
@@ -66,12 +64,9 @@ import cv2
 import numpy as np
 import pygame  # HUD overlay on the recorded frame (image.frombuffer)
 
-from capture import ScreenCapture, resolve_output_idx
+from capture import ScreenCapture
 from display import Display
-from guides import TemporalGuideGenerator
 from motion_backend import MotionBackendStatus
-from hotkeys import (describe as describe_hotkeys, numlock_needed, numlock_on,
-                     parse_binding)
 from i18n import STRINGS as UI_STRINGS
 
 import channels

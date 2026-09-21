@@ -1,18 +1,24 @@
-﻿// dlss5-feed-host64 - the 64-bit half of DLSS5-Feeder for 32-bit games.
+﻿// nvngx.dll - NeuralScreen's worker: the process that runs NVIDIA's neural
+// pass (DLSS NR, feature 18) and everything that has to live next to it.
 //
-// A 32-bit game cannot load NGX or the DLSS 5 add-on (both x64-only). This little
-// process can: it puts ReShade x64 (dxgi.dll) and renodx-dlss5.addon64 next to
-// itself, opens a hidden 1x1 window with a minimal D3D12 swapchain -- so from the
-// DLSS 5 add-on's point of view it IS a D3D12 game -- and runs the NGX DLAA
-// evaluate on frames the game delivers through cross-process shared textures
-// (created game-side on D3D11; see the phase-0 spike) and shared fences.
+// The client (main.py) starts it with --live and talks to it over stdin and
+// stdout in a binary protocol - the *_MAGIC constants below, with every struct
+// pinned against its Python format by tests/test_protocol_sizes.py. The worker
+// captures the desktop or one window (Desktop Duplication, Windows.Graphics.
+// Capture), runs the network, presents the result in its own overlay window,
+// and on request generates frames (DLSS-G), estimates motion (NVOFA),
+// publishes over Spout2 and records on the GPU (gpu_recorder.cpp). It carries
+// the name nvngx.dll because the NR runtime serves only callers whose module
+// path does.
 //
-//   dlss5-feed-host64.exe --test   stand-alone: synthetic pattern, no game needed
-//                                  (phase-1 proof: "feature 18 created" in ReShade.log)
-//   dlss5-feed-host64.exe <pid>    serve the game with that PID over the pipe
+//   nvngx.dll --live   the client's worker; the only mode the app starts
+//   nvngx.dll --video  the same protocol with a bounded frame count
+//   nvngx.dll --test   self-test: synthetic frames, no client
+//   nvngx.dll <pid>    the original DLSS5-Feeder mode: serve a 32-bit game's
+//                      frames over the feed pipe (src/feed_ipc.h)
 //
-// Logs to dlss5-feed-host.log next to the exe; the DLSS 5 add-on's own state
-// appears in the host's ReShade.log.
+// In the protocol modes the log goes to stderr, where the client files it into
+// NeuralScreen.log; otherwise to dlss5-feed-host.log next to the binary.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -65,65 +71,9 @@
 // ---------------------------------------------------------------------------
 
 static char g_log_path[MAX_PATH];
-static bool g_show_window = false;   // visible host window = the user's door to the DLSS 5 panel
-static bool g_renodx_lazy = false;   // DLSS 5 add-on is v45+ (per-present rescan, lazy adoption)
 static bool g_video_mode = false;    // stdin/stdout are a binary frame protocol in this mode
 
 static void Log(const char *fmt, ...);
-
-// Detect the DLSS 5 add-on generation next to this exe: v45+ ('EnableHooks' marker in
-// the binary) rescans every present and adopts missed features lazily, so the warm-up
-// re-create is unnecessary -- and its EnableHooks key should be '2' (NGX-only) for this
-// feeder, written into OUR ReShade.ini before ReShade loads and the add-on reads it.
-static void DetectRenodxAddon()
-{
-    char dir[MAX_PATH], path[MAX_PATH], ini[MAX_PATH];
-    GetModuleFileNameA(nullptr, dir, MAX_PATH);
-    if (char *s = strrchr(dir, '\\')) *(s + 1) = '\0';
-    sprintf_s(path, "%srenodx-dlss5.addon64", dir);
-    sprintf_s(ini, "%sReShade.ini", dir);
-
-    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (f == INVALID_HANDLE_VALUE) { Log("[host] renodx-dlss5.addon64 not found next to the host"); return; }
-    const DWORD size = GetFileSize(f, nullptr);
-    DWORD got = 0;
-    char *buf = (size > 0 && size < 8u * 1024 * 1024) ? static_cast<char *>(malloc(size)) : nullptr;
-    if (buf != nullptr && ReadFile(f, buf, size, &got, nullptr) && got == size)
-        for (DWORD i = 0; i + 11 < size; ++i)
-            if (memcmp(buf + i, "EnableHooks", 11) == 0) { g_renodx_lazy = true; break; }
-    free(buf);
-    CloseHandle(f);
-
-    char ver[48] = "?";
-    DWORD dummy = 0;
-    const DWORD vsize = GetFileVersionInfoSizeA(path, &dummy);
-    if (vsize > 0)
-    {
-        void *vdata = malloc(vsize);
-        VS_FIXEDFILEINFO *ffi = nullptr;
-        UINT flen = 0;
-        if (vdata != nullptr && GetFileVersionInfoA(path, 0, vsize, vdata) &&
-            VerQueryValueA(vdata, "\\", reinterpret_cast<void **>(&ffi), &flen) && ffi != nullptr)
-            sprintf_s(ver, "%u.%u.%u.%u", HIWORD(ffi->dwFileVersionMS), LOWORD(ffi->dwFileVersionMS),
-                      HIWORD(ffi->dwFileVersionLS), LOWORD(ffi->dwFileVersionLS));
-        free(vdata);
-    }
-    Log("[host] DLSS 5 add-on: v%s -- %s engine", ver,
-        g_renodx_lazy ? "v45+ (lazy adoption; warm-up skipped)" : "classic (warm-up stays on)");
-
-    if (g_renodx_lazy)
-    {
-        char v[16] = {};
-        GetPrivateProfileStringA("RenoDX.DLSS5", "EnableHooks", "", v, sizeof(v), ini);
-        if (v[0] == '\0')
-        {
-            WritePrivateProfileStringA("RenoDX.DLSS5", "EnableHooks", "2", ini);
-            Log("[host] EnableHooks was unset; wrote EnableHooks=2 into the host's ReShade.ini");
-        }
-        else
-            Log("[host] EnableHooks=%s (user-set; leaving it alone)", v);
-    }
-}
 
 static void Log(const char *fmt, ...)
 {
@@ -187,10 +137,8 @@ static const char *NgxResultName(NVSDK_NGX_Result r)
 struct Host
 {
     HWND                       hwnd;
-    IDXGISwapChain1           *swap;
     ID3D12Device              *dev;
     ID3D12CommandQueue        *queue;      // NGX work
-    ID3D12CommandQueue        *pump_queue; // owns the dummy swapchain
     ID3D12GraphicsCommandList *list;
     static const int           kFrames = 3;
     ID3D12CommandAllocator    *alloc[kFrames];
@@ -1034,213 +982,16 @@ static void SafeReleaseFeature(NVSDK_NGX_Handle *f)
     __except (EXCEPTION_EXECUTE_HANDLER) { Log("[host] ReleaseFeature raised 0x%08X (ignored)", GetExceptionCode()); }
 }
 
-// ---------------------------------------------------------------------------
-// The disguise: hidden window + minimal D3D12 swapchain so ReShade x64 loads
-// and the DLSS 5 add-on arms itself, exactly as in a real D3D12 game.
-// ---------------------------------------------------------------------------
-
-static LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
-{
-    if (m == WM_CLOSE) { ShowWindow(w, SW_HIDE); return 0; }   // closing only hides; the feed lives on
-    return DefWindowProcW(w, m, wp, lp);
-}
-
-// --- banner: "32-bit DLSS 5 Feeder" rendered once with GDI, copied into every frame ---
-
-static ID3D12Resource             *g_banner;
-static IDXGISwapChain3            *g_swap3;
-static ID3D12CommandAllocator     *g_pump_alloc;
-static ID3D12GraphicsCommandList  *g_pump_list;
-static ID3D12Fence                *g_pump_fence;
-static UINT64                      g_pump_val;
-static HANDLE                      g_pump_ev;
-
-static bool BeginCommands();
-static UINT64 EndCommands();
-static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms,
-                           const char *where, bool fatal);
-
-static void InitBanner()
-{
-    const int W = 960, H = 540;
-
-    // 1. Render the text with GDI into a 32-bit DIB.
-    BITMAPINFO bi = {};
-    bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
-    bi.bmiHeader.biWidth       = W;
-    bi.bmiHeader.biHeight      = -H;   // top-down
-    bi.bmiHeader.biPlanes      = 1;
-    bi.bmiHeader.biBitCount    = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    void *bits = nullptr;
-    HDC dc = CreateCompatibleDC(nullptr);
-    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (dc == nullptr || bmp == nullptr || bits == nullptr) return;
-    HGDIOBJ old_bmp = SelectObject(dc, bmp);
-
-    RECT full = { 0, 0, W, H };
-    HBRUSH bg = CreateSolidBrush(RGB(18, 18, 22));
-    FillRect(dc, &full, bg);
-    DeleteObject(bg);
-    SetBkMode(dc, TRANSPARENT);
-
-    HFONT fnt_big   = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    HFONT fnt_small = CreateFontW(26, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    HGDIOBJ old_font = SelectObject(dc, fnt_big);
-    SetTextColor(dc, RGB(118, 185, 0));
-    RECT r1 = { 0, 150, W, 240 };
-    DrawTextW(dc, L"32-bit DLSS 5 Feeder", -1, &r1, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-    SelectObject(dc, fnt_small);
-    SetTextColor(dc, RGB(200, 200, 205));
-    RECT r2 = { 0, 260, W, 300 };
-    DrawTextW(dc, L"DLSS 5 neural rendering runs here for your 32-bit game.", -1, &r2,
-              DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-    RECT r3 = { 0, 305, W, 345 };
-    DrawTextW(dc, L"Press  Home  in this window to tune it  \x2022  closing only hides the window", -1, &r3,
-              DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-    SelectObject(dc, old_font);
-    DeleteObject(fnt_big);
-    DeleteObject(fnt_small);
-    GdiFlush();
-
-    // 2. Upload it (BGRA -> RGBA) and keep it as a copy source.
-    D3D12_HEAP_PROPERTIES up = {};
-    up.Type = D3D12_HEAP_TYPE_UPLOAD;
-    const UINT pitch = (W * 4 + 255) & ~255u;
-    D3D12_RESOURCE_DESC bd = {};
-    bd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bd.Width            = static_cast<UINT64>(pitch) * H;
-    bd.Height           = 1;
-    bd.DepthOrArraySize = 1;
-    bd.MipLevels        = 1;
-    bd.SampleDesc.Count = 1;
-    bd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    ID3D12Resource *staging = nullptr;
-    D3D12_HEAP_PROPERTIES def = {};
-    def.Type = D3D12_HEAP_TYPE_DEFAULT;
-    D3D12_RESOURCE_DESC td = {};
-    td.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    td.Width            = W;
-    td.Height           = H;
-    td.DepthOrArraySize = 1;
-    td.MipLevels        = 1;
-    td.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    if (FAILED(h.dev->CreateCommittedResource(&up, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                              nullptr, __uuidof(ID3D12Resource), reinterpret_cast<void **>(&staging))) ||
-        FAILED(h.dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST,
-                                              nullptr, __uuidof(ID3D12Resource), reinterpret_cast<void **>(&g_banner))))
-    { SelectObject(dc, old_bmp); DeleteObject(bmp); DeleteDC(dc); return; }
-
-    BYTE *dst = nullptr;
-    staging->Map(0, nullptr, reinterpret_cast<void **>(&dst));
-    const BYTE *srcp = static_cast<const BYTE *>(bits);
-    for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x)
-        {
-            const BYTE *p = srcp + (static_cast<size_t>(y) * W + x) * 4;   // GDI: BGRA
-            BYTE *q = dst + static_cast<size_t>(y) * pitch + static_cast<size_t>(x) * 4;
-            q[0] = p[2]; q[1] = p[1]; q[2] = p[0]; q[3] = 0xFF;
-        }
-    staging->Unmap(0, nullptr);
-    SelectObject(dc, old_bmp);
-    DeleteObject(bmp);
-    DeleteDC(dc);
-
-    if (BeginCommands())
-    {
-        D3D12_TEXTURE_COPY_LOCATION src = {}, dcl = {};
-        src.pResource = staging;
-        src.Type      = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        src.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
-        src.PlacedFootprint.Footprint.Width    = W;
-        src.PlacedFootprint.Footprint.Height   = H;
-        src.PlacedFootprint.Footprint.Depth    = 1;
-        src.PlacedFootprint.Footprint.RowPitch = pitch;
-        dcl.pResource = g_banner;
-        dcl.Type      = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        h.list->CopyTextureRegion(&dcl, 0, 0, 0, &src, nullptr);
-        D3D12_RESOURCE_BARRIER b = {};
-        b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource   = g_banner;
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        b.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        h.list->ResourceBarrier(1, &b);
-        const UINT64 v = EndCommands();
-        // The upload buffer goes back either way: the early return added here
-        // to stop using a banner the GPU never finished copying would
-        // otherwise walk out holding it.
-        if (!WaitFenceValue(h.fence, v, 2000, "banner-upload"))
-        {
-            if (!g_submission_failed) staging->Release();
-            return;
-        }
-    }
-    staging->Release();
-
-    // 3. A tiny allocator/list/fence pair on the pump queue for the per-frame copy.
-    h.dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator),
-                                  reinterpret_cast<void **>(&g_pump_alloc));
-    if (g_pump_alloc != nullptr)
-        h.dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_pump_alloc, nullptr,
-                                 __uuidof(ID3D12GraphicsCommandList), reinterpret_cast<void **>(&g_pump_list));
-    if (g_pump_list != nullptr) g_pump_list->Close();
-    h.dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void **>(&g_pump_fence));
-    g_pump_ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    h.swap->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&g_swap3));
-    Log("[host] banner ready");
-}
-
 typedef HRESULT (WINAPI *PFN_D3D12CreateDevice_)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
 typedef HRESULT (WINAPI *PFN_CreateDXGIFactory1_)(REFIID, void **);
 
-static void PumpPresent()
+// --test and the feed mode have no window of their own any more, but this
+// thread still owns a message queue (COM and the driver can post to it), so it
+// is drained between frames.
+static void PumpMessages()
 {
     MSG msg;
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
-    if (h.swap == nullptr) return;
-
-    // Paint the banner into the backbuffer (ReShade's overlay composites on top at Present).
-    // h.pump_queue is not created in this build (a dead path from InitBanner)
-    // - the check is mandatory, otherwise a latent NULL crash.
-    if (g_banner != nullptr && g_pump_list != nullptr && g_swap3 != nullptr
-        && h.pump_queue != nullptr)
-    {
-        ID3D12Resource *bb = nullptr;
-        if (SUCCEEDED(g_swap3->GetBuffer(g_swap3->GetCurrentBackBufferIndex(), __uuidof(ID3D12Resource),
-                                         reinterpret_cast<void **>(&bb))) && bb != nullptr)
-        {
-            if (SUCCEEDED(g_pump_alloc->Reset()) && SUCCEEDED(g_pump_list->Reset(g_pump_alloc, nullptr)))
-            {
-                D3D12_RESOURCE_BARRIER b = {};
-                b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                b.Transition.pResource   = bb;
-                b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-                b.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
-                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                g_pump_list->ResourceBarrier(1, &b);
-                g_pump_list->CopyResource(bb, g_banner);
-                b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-                b.Transition.StateAfter  = D3D12_RESOURCE_STATE_PRESENT;
-                g_pump_list->ResourceBarrier(1, &b);
-                g_pump_list->Close();
-                ID3D12CommandList *lists[] = { g_pump_list };
-                h.pump_queue->ExecuteCommandLists(1, lists);
-                h.pump_queue->Signal(g_pump_fence, ++g_pump_val);
-                if (g_pump_fence->GetCompletedValue() < g_pump_val && g_pump_ev != nullptr)
-                {
-                    g_pump_fence->SetEventOnCompletion(g_pump_val, g_pump_ev);
-                    WaitForSingleObject(g_pump_ev, 100);
-                }
-            }
-            bb->Release();
-        }
-    }
-    h.swap->Present(0, 0);
 }
 
 // NS_GPU: which DXGI adapter the worker runs on, by the index EnumAdapters1
@@ -1753,6 +1504,19 @@ static void ReleasePassFeatures()
     }
 }
 
+// Why a cascade runs fewer passes than were asked for, for the build line.
+// The ping-pong partner exists only at the work resolution: at 1:1 the network
+// writes the full-size output directly and there is nothing to cascade through.
+static const char *CascadeShortfall(bool nr_small, unsigned asked,
+                                    unsigned effective)
+{
+    if (effective >= asked) return "";
+    return nr_small
+        ? " - the second work buffer was not created"
+        : " - the network runs at 1:1, which has no work-resolution scratch to "
+          "cascade through; lower the processing resolution to engage it";
+}
+
 // Reconcile executable passes, preserving the history of those still used.
 // A create refusal shortens the cascade; a failed retirement returns zero.
 static unsigned EnsurePassFeatures(UINT w, UINT h_, int flags, UINT full_w,
@@ -1844,8 +1608,10 @@ static int RunTest()
     ID3D12Resource *mv     = MakeTex(W, H, DXGI_FORMAT_R16G16_FLOAT, false);
     if (!color || !output || !depth || !mv) { Log("[host] test texture creation failed"); return 1; }
 
-    // Give the DLSS 5 add-on its hook-arming time, with the swapchain pumping.
-    for (int i = 0; i < 120; ++i) { PumpPresent(); Sleep(8); }
+    // A second of message pumping before the first create: the DLSS 5 add-on of
+    // the feeder this began as needed it to arm its hooks. Nothing arms hooks
+    // now; the self-test keeps its timing.
+    for (int i = 0; i < 120; ++i) { PumpMessages(); Sleep(8); }
 
     int flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure |
                 NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
@@ -1855,7 +1621,7 @@ static int RunTest()
     int good = 0;
     for (int i = 0; i < 300; ++i)
     {
-        PumpPresent();
+        PumpMessages();
         if (Evaluate(color, output, depth, mv, W, H, i == 0 ? 1 : 0, 1.0f, 1.0f)) ++good;
         else break;
         if (i == 180)   // the warm-up re-create, same medicine as in-game
@@ -1868,7 +1634,6 @@ static int RunTest()
         }
     }
     Log("[host] --test finished: %d/300 evaluates succeeded", good);
-    Log("[host] check the host's ReShade.log for 'feature 18 created' / 'evaluation succeeded'");
     return good >= 250 ? 0 : 1;
 }
 
@@ -5726,24 +5491,6 @@ static void ApplyNrEvalParams(NVSDK_NGX_Parameter *p, ID3D12Resource *color,
     p->Set("DLSS.Exposure.Scale", g_pw_exposure);
 }
 
-// --test drives the worker with no client, so no header ever fills
-// g_video_options. The defaults a live session sends for the shipped Natural
-// profile go in instead - the read-back check above needs real values, and a
-// zeroed profile would make the synthetic run report a contract failure that
-// only exists in the self-test.
-static void SetTestVideoParams()
-{
-    g_video_options = {};
-    g_video_options.warmup = 8;
-    g_video_options.intensity = 1.00f;
-    g_video_options.local_tone = 0.50f;
-    g_video_options.local_structure = 1.00f;
-    g_video_options.skin_structure = -1.0f;
-    g_video_options.style = 1;
-    g_video_options.auto_mask = 1;
-    g_video_options.ui_correction = 0;
-}
-
 // One pass of the network, on the command list the caller has already opened.
 //
 // Lifted out of EvaluateVideo so the cascade can call it in a loop. A `for`
@@ -5840,37 +5587,6 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
     // That is deliberate: "eval on GPU" should mean what the network cost
     // this frame, and with a cascade that is the whole cascade.
     unsigned passes = (v.nr_small && v.nr_alt != nullptr) ? v.passes_live : 1u;
-    // Say so when the cascade is asked for and cannot run. That gate is
-    // silent by construction, and it is the reason a report of "multipass
-    // does nothing" could not be answered from a log: at 1:1 the network
-    // writes the full-res output directly, so there is no work-resolution
-    // scratch to ping-pong through and the count simply becomes one. The
-    // panel meanwhile keeps showing the number the user picked, because it
-    // is drawn under Boost and Boost IS on. Measured while chasing it: at
-    // 960x540 1:1 the output of one pass and of four is byte-identical, and
-    // the features for the other three are built and then discarded - 248 to
-    // 853 MB of video memory, about 200 MB a pass, for nothing.
-    //
-    // Said once per change rather than once per frame, like the shortfall
-    // below: this sits on the frame path.
-    if (v.passes_live > 1u && passes == 1u)
-    {
-        static unsigned reported_inactive = 0u;
-        static int reported_reason = -1;
-        const int reason = v.nr_small ? 1 : 0;
-        if (v.passes_live != reported_inactive || reason != reported_reason)
-        {
-            reported_inactive = v.passes_live;
-            reported_reason = reason;
-            Log("[video] NR cascade inactive: %u pass(es) asked for, 1 running - %s",
-                v.passes_live,
-                v.nr_small
-                    ? "the second work buffer was never created"
-                    : "the network runs at 1:1, which has no work-resolution "
-                      "scratch to cascade through - lower the processing "
-                      "resolution so the residual composite engages");
-        }
-    }
     if (passes < 1u) passes = 1u;
     if (passes > NR_MAX_PASSES) passes = NR_MAX_PASSES;
     // The count is settled BEFORE the first pass writes anything, because the
@@ -6143,23 +5859,6 @@ static bool DownloadVideoFrame(VideoState &v, std::vector<BYTE> &packed,
 }
 
 #include "frame_generation.inl"
-
-static bool ReShadeHasFeature18()
-{
-    char path[MAX_PATH] = {};
-    GetModuleFileNameA(nullptr, path, MAX_PATH);
-    if (char *s = strrchr(path, '\\')) strcpy_s(s + 1, MAX_PATH - (s + 1 - path), "ReShade.log");
-    HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return false;
-    const DWORD n = GetFileSize(file, nullptr);
-    std::vector<char> data(n > 0 ? static_cast<size_t>(n) + 1 : 1, 0);
-    DWORD got = 0;
-    if (n > 0) ReadFile(file, data.data(), n, &got, nullptr);
-    CloseHandle(file);
-    return strstr(data.data(), "feature 18 created") != nullptr &&
-           strstr(data.data(), "inline feature 18 evaluation succeeded") != nullptr;
-}
 
 // The frame on screen, recorded once more when the recording stops. A still
 // screen sends no frames (skip-static), so without this the video track would
@@ -6753,8 +6452,9 @@ static int RunVideo()
                         (v.nr_small || !rup) ? 0 : rc.full_w,
                         (v.nr_small || !rup) ? 0 : rc.full_h, effective);
                     if (v.passes_live == 0) return 6;
-                    Log("[video] NR cascade built: asked=%u effective=%u allocated=%u",
-                        v.passes, effective, v.passes_live);
+                    Log("[video] NR cascade built: asked=%u effective=%u allocated=%u%s",
+                        v.passes, effective, v.passes_live,
+                        CascadeShortfall(v.nr_small, v.passes, effective));
                 }
                 v.residual = v.nr_small && !g_nr_direct;
                 v.residual_strength = v.residual ? ResidualStrengthRequested() : 1.0f;
@@ -6841,8 +6541,9 @@ static int RunVideo()
                                      effective)
                 : 1u;
             if (v.passes_live == 0) return 6;
-            Log("[video] NR cascade built: asked=%u effective=%u allocated=%u",
-                v.passes, effective, h.feature ? v.passes_live : 0u);
+            Log("[video] NR cascade built: asked=%u effective=%u allocated=%u%s",
+                v.passes, effective, h.feature ? v.passes_live : 0u,
+                CascadeShortfall(v.nr_small, v.passes, effective));
             warmup_done = (h.feature == nullptr);   // only warm a real NR feature
             VideoResizeAck ack = { RESIZE_ACK_MAGIC, 1u, static_cast<uint32_t>(rr), 0u, fh.pts };
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
@@ -7518,7 +7219,7 @@ static int Serve(DWORD game_pid)
     // not race that (a 15 ms miss latched STANDBY in Blacklist), so hold it briefly.
     UINT64 hold_until = GetTickCount64() + 800;
     UINT64 evaluated  = 0;
-    bool   warm_done  = g_renodx_lazy;   // v45+ adopts missed creates on its own
+    bool   warm_done  = false;
     int    build_fails = 0;
 
     for (;;)
@@ -7528,10 +7229,10 @@ static int Serve(DWORD game_pid)
         // first and decide -- FeedFrameMsg and FeedBuild share no prefix, so the
         // client precedes every message with a 1-byte tag instead.
         //
-        // A plain blocking ReadFile here starves the message pump (and Present)
-        // whenever the game stops feeding frames -- paused, loading, a menu -- and
-        // Windows shows the host window as "Not Responding". Poll instead, so the
-        // window (and its ReShade overlay) stays alive and clickable at all times.
+        // A plain blocking ReadFile here starves the message pump whenever the
+        // game stops feeding frames -- paused, loading, a menu. Poll instead, so
+        // the thread's queue keeps draining. (It once kept a visible host window
+        // and its ReShade overlay responsive; both are gone.)
         BYTE tag = 0;
         bool tag_read = false;
         for (;;)
@@ -7539,7 +7240,7 @@ static int Serve(DWORD game_pid)
             DWORD avail = 0;
             if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &avail, nullptr)) break;   // pipe broken
             if (avail > 0) { tag_read = ReadFull(pipe, &tag, 1); break; }
-            PumpPresent();
+            PumpMessages();
             Sleep(8);
         }
         if (!tag_read) { Log("[host] pipe closed by the game"); break; }
@@ -7607,7 +7308,7 @@ static int Serve(DWORD game_pid)
             }
 
             evaluated = 0;
-            warm_done = transport_only || g_renodx_lazy;   // no warm-up without NGX / with v45+
+            warm_done = transport_only;   // no warm-up without NGX
 
             FeedBuildAck back = {};
             back.ok         = ok ? 1 : 0;
@@ -7673,7 +7374,7 @@ static int Serve(DWORD game_pid)
 
             if (fm.n <= 3 || (fm.n % 1800) == 0)
                 Log("[host] frame %llu evaluated", (unsigned long long)fm.n);
-            PumpPresent();
+            PumpMessages();
         }
         else
         {
@@ -7716,22 +7417,21 @@ int main(int argc, char **argv)
 
     Log("dlss5-feed-host64 (built %s %s)", __DATE__, __TIME__);
 
-    bool  test = false, hide = false, video = false;
+    bool  test = false, video = false;
     DWORD pid = 0;
     for (int i = 1; i < argc; ++i)
     {
         if      (strcmp(argv[i], "--test") == 0) test = true;
         else if (strcmp(argv[i], "--video") == 0) video = true;
         else if (strcmp(argv[i], "--live") == 0) { video = true; g_live_force = true; }
-        else if (strcmp(argv[i], "--hide") == 0) hide = true;
+        else if (strcmp(argv[i], "--hide") == 0) {}   // accepted: it hid a host window that is gone
         else pid = static_cast<DWORD>(strtoul(argv[i], nullptr, 10));
     }
     if (!test && !video && pid == 0)
     {
-        Log("usage: dlss5-worker --test | --video | --live | <game pid> [--hide]");
+        Log("usage: nvngx.dll --test | --video | --live | <game pid>");
         return 1;
     }
-    g_show_window = !test && !video && !hide; // video/probe hosts remain hidden
 
     if (!InitDisguise()) return 1;
     if (!InitNgx()) { Log("[host] NGX unavailable"); return 1; }

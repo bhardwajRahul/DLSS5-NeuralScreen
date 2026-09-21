@@ -20,12 +20,13 @@ two cannot drift apart again:
    only caller was the broken pair, and leaving them invites the same mistake;
 3. the parameter block is shared (`ApplyNrEvalParams`), so the self-test sets
    the same names the live path sets instead of its own subset;
-4. `--test` fills the shipped profile (`SetTestVideoParams`) - the read-back
-   check compares against real values, and an all-zero profile would report a
-   contract failure that exists only in the self-test.
+4. `--test` evaluates with the shipped profile: with no stream header the
+   shared block falls back to `ShippedVideoDefaults()`, so the read-back check
+   compares against real values - an all-zero profile would report a contract
+   failure that exists only in the self-test.
 
 Provable by mutation: point `Evaluate` back at the core wrapper, or drop the
-profile call, and the matching check goes red.
+fallback, and the matching check goes red.
 
 Run:  runtime\\python.exe tests\\test_self_test_uses_runtime.py
 """

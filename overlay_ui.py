@@ -18,7 +18,6 @@ factor the HUD uses (display.ui_scale_for).
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -167,9 +166,6 @@ SCALE_STEPS = (0.8, 0.9, 1.0, 1.15, 1.3)
 #: than what it draws puts the next control on top of its own scale.
 RULER_DROP = 5
 SLIDER_H = 6
-KNOB_R = 9
-BTN_H = 42
-BTN_PAD = 18
 BTN_GAP = 8
 ICON_W = 34        # header button: a rounded square, not a circle
                    # 30 was too small to notice: the user asked where the
@@ -178,8 +174,6 @@ ACTION_H = 36      # action/primary button: one line of text, the mockup's
                    # padding-10 + 15px. It was 46 while the hotkey caption
                    # was drawn under the name; the main page shows no hotkeys,
                    # so 25 of those units held nothing.
-EXIT_H = 64        # exit: plus an explanation on a third line
-STAT_LINE_H = 24
 STAT_PAD = 14
 RADIUS = 10
 
@@ -3303,23 +3297,6 @@ class OverlayMenu:
                 img = self._clip(self._small_font, name,
                                  _rgb(self.c["muted"]), room)
                 surface.blit(img, (name_x, cyr - img.get_height() // 2))
-
-    def _rec_text(self, s: dict) -> str:
-        """Recording state: the duration is more useful than a bare "on"."""
-        if not self.state.get("recording"):
-            return s.get("off", "off")
-        secs = float(self.state.get("rec_seconds", 0.0))
-        return f"{int(secs) // 60:d}:{int(secs) % 60:02d}"
-
-    def _draw_hotkeys(self, surface, s: dict) -> None:
-        """The hotkey line. Otherwise there is nowhere to learn about
-        Num1/Num0/Ctrl+Alt+Q."""
-        rect = getattr(self, "_hotkeys_rect", None)
-        if rect is None:
-            return
-        text = s.get("hotkeys", "")
-        line = self._small_font.render(text, True, _rgb(self.c["muted"]))
-        surface.blit(line, (rect.x, rect.y))
 
     def _clip(self, font, text: str, color, max_w: int):
         """Render text clipped to max_w with an ellipsis.
