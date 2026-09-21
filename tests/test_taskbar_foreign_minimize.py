@@ -273,23 +273,37 @@ def main() -> int:
     # carry the condition and either one regressing reopens the report.
     print("\n[1c] the fallback arriving as WM_NCACTIVATE with a minimised window")
     _arm(commands)
-    # The state 1b left behind is what this needs: the foreign window
-    # minimised, our window in the foreground, the cursor over the taskbar.
-    prev_now = win._prev_minimised()
-    print(f"    previous minimised={prev_now}, "
-          f"ours foreground={user32.GetForegroundWindow() == hwnd}, "
-          f"cursor over taskbar={taskbar.TaskbarWindow._cursor_over_taskbar(win)}")
-    if not prev_now:
-        failures.append("the previous foreground window is not minimised any "
-                        "more - the WM_NCACTIVATE check cannot be trusted")
-    elif _park_before_send(failures, "step 1c"):
-        user32.SendMessageW(hwnd, WM_NCACTIVATE, 1, 0)
+    # Self-contained, not "whatever 1b left behind": measured, the foreign
+    # window was no longer the previous foreground one by this point (it can be
+    # re-sampled or dropped between steps), and the step then failed on its own
+    # precondition rather than on the guard. Give it the foreground, minimise
+    # it, then let our window take the foreground - the same shape as 1b.
+    if not _force_foreground(foreign):
+        failures.append("could not give the foreign window the foreground for "
+                        "the WM_NCACTIVATE check (Windows refused)")
+    else:
+        time.sleep(0.4)
+        user32.ShowWindow(foreign, SW_MINIMIZE)
         time.sleep(0.5)
-        got = _drain(commands)
-        print(f"    commands: {got}")
-        if got:
-            failures.append("a WM_NCACTIVATE with the previous window minimised "
-                            f"opened the menu (issue #96): {got}")
+        _force_foreground(hwnd)
+        time.sleep(0.3)
+        prev_now = win._prev_minimised()
+        print(f"    previous minimised={prev_now}, "
+              f"ours foreground={user32.GetForegroundWindow() == hwnd}, "
+              f"cursor over taskbar="
+              f"{taskbar.TaskbarWindow._cursor_over_taskbar(win)}")
+        if not prev_now:
+            failures.append("the previous foreground window is not minimised "
+                            "after the setup - the WM_NCACTIVATE check cannot "
+                            "be trusted")
+        elif _park_before_send(failures, "step 1c"):
+            user32.SendMessageW(hwnd, WM_NCACTIVATE, 1, 0)
+            time.sleep(0.5)
+            got = _drain(commands)
+            print(f"    commands: {got}")
+            if got:
+                failures.append("a WM_NCACTIVATE with the previous window "
+                                f"minimised opened the menu (issue #96): {got}")
 
     # --- 2. a real click must still work -----------------------------------
     # Measured: a click activates OUR window (Windows makes us the foreground
