@@ -2617,6 +2617,50 @@ static void FollowCapturedWindow()
 // answer is yes (both our windows are topmost), so this is zero
 // SetWindowPos calls and no DWM flicker. A borderless game (Cyberpunk)
 // keeps itself on top and would hide the picture forever without this.
+//
+// SHELL CHROME AND OUR OWN PROGRAM ARE NOT "SOMETHING THAT TOOK THE TOP".
+// Raising the picture above them is what pushed it over the client's panel and
+// made the panel flash, and the reporter's own log names both cases (#107):
+//
+//     06:24:08  [z] foreign-above-hud  class='#32770' title='Save As'  pid=46044
+//     06:22:40  [z] foreign-above-hud  class='Shell_TrayWnd'           pid=8020
+//
+// pid 46044 is the client itself - the Save As dialog is its modal window, the
+// one the user is looking at while the screenshot is being saved. pid 8020 is
+// the shell: Shell_TrayWnd, its flyouts (XamlExplorerHostIslandWindow,
+// tooltips_class32) and SysDragImage, which take the topmost slot whenever the
+// pointer touches the taskbar. Every one of those made this function raise the
+// picture; the client's guard then put the HUD back one to three refreshes
+// later, and that is the flash in #96 and #107. Measured in that session: 18
+// losses of the top, 17 of them a foreign window, five of them the dialog.
+//
+// A real application window still raises the picture, which is the case this
+// exists for. A hidden window cannot cover anything, so it is skipped too.
+static HWND HudWindow();   // defined below; the pid of the panel is its owner
+
+// The process that owns the shell's desktop window (explorer), read once.
+static DWORD ShellProcessId()
+{
+    static DWORD cached = 0;
+    if (cached != 0) return cached;
+    const HWND shell = GetShellWindow();
+    DWORD pid = 0;
+    if (shell != nullptr) GetWindowThreadProcessId(shell, &pid);
+    cached = pid;
+    return pid;
+}
+
+// The process that owns the panel - the client. Its own dialogs and helpers
+// are part of the program the user is driving, not a window that covered us.
+static DWORD HudProcessId()
+{
+    const HWND hud = HudWindow();
+    if (hud == nullptr) return 0;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hud, &pid);
+    return pid;
+}
+
 static void ReassertPresentTopmost()
 {
     if (g_present_hwnd == nullptr) return;
@@ -2637,6 +2681,32 @@ static void ReassertPresentTopmost()
     RECT r;
     if (GetWindowRect(top, &r) && r.right == r.left && r.bottom == r.top)
         return;  // zero-sized (IME, helpers) cannot cover the picture
+    if (!IsWindowVisible(top))
+        return;  // a hidden window cannot cover anything either
+    // Whose window is this? The shell's and the client's own are the desktop
+    // and the program we draw over, not a window that took our place.
+    DWORD pid = 0;
+    GetWindowThreadProcessId(top, &pid);
+    const DWORD shell = ShellProcessId();
+    const DWORD client = HudProcessId();
+    const uint32_t self = static_cast<uint32_t>(GetCurrentProcessId());
+    if (pid != 0 && ((shell != 0 && pid == shell) || pid == self ||
+                     (client != 0 && pid == client)))
+    {
+        // Said ONCE per reason, not every 300 frames: a user's log is read by
+        // a person, and this state persists for as long as the taskbar is
+        // being used or a dialog is open.
+        static DWORD last_skip_pid = 0;
+        if (pid != last_skip_pid)
+        {
+            last_skip_pid = pid;
+            Log("[z] present left as is: the top window belongs to %s (pid=%lu) - "
+                "the picture is not raised over the shell or our own program",
+                pid == self ? "this process" : (pid == shell ? "the shell" : "the client"),
+                static_cast<unsigned long>(pid));
+        }
+        return;
+    }
     SetWindowPos(g_present_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }

@@ -69,7 +69,14 @@ _LOG_ALWAYS = ("[host]", "[pure]", "[arch]", "[cap]", "[dda]", "[present]",
                # a line that is never printed looks exactly like a line that
                # was never reached.
                "[nr]", "[scale]", "[gray]", "[residual]", "[outs]",
-               "[failure]", "[reset]", "[live]", "[test]")
+               "[failure]", "[reset]", "[live]", "[test]",
+               # [z]: the worker's own z-order decision - which window took
+               # the top and why the picture was or was not raised over it.
+               # The client logs its half under the same tag, and the two
+               # halves are read together in #96/#107; a worker half dropped
+               # here would leave a user's log looking like the worker never
+               # made the decision at all.
+               "[z]")
 #: [video] lines that are a heartbeat rather than a diagnostic: the "delivered
 #: frame N" line is printed every 30 frames and would bury the log.
 _LOG_SKIP = ("delivered frame",)

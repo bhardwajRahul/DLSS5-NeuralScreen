@@ -404,6 +404,11 @@ class Display:
         # (0,0) is the primary monitor; a second one can sit anywhere. Set
         # through set_origin() once the monitor is known (main owns that).
         self._origin = (0, 0)
+        # Cached once: the pid of the shell's desktop window and our own pid.
+        # The z-order walk asks "is this window ours or the shell's" for every
+        # entry it passes, and both answers are process-wide constants.
+        self._shell_pid: int | None = None
+        self._own_pid: int | None = None
         self._move_to_origin()
         # Force the physical window size: even if DPI awareness did not apply
         # (a 3072x1728 window instead of 3840x2160), we stretch the window to
@@ -1309,6 +1314,13 @@ class Display:
                     if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
                         ok = window_can_cover(rect, self._virtual_screen(),
                                               HELPER_MIN_PX)
+                        # Shell chrome and our own program's windows are not
+                        # "something that covered us": raising the pair over
+                        # them is the churn that reads as the panel blinking
+                        # (#96 taskbar, #107 Save As dialog), and the worker
+                        # applies the same rule in ReassertPresentTopmost.
+                        if ok and self._own_or_shell_window(hwnd):
+                            ok = False
                 if ok:
                     return hwnd
                 hwnd = user32.GetWindow(hwnd, 2)   # GW_HWNDNEXT
@@ -1318,6 +1330,48 @@ class Display:
         except Exception:
             pass
         return None
+
+    def _own_or_shell_window(self, hwnd) -> bool:
+        """Whether a window belongs to us or to the shell, not to a stranger.
+
+        Two windows that take the topmost slot on a normal desktop and mean
+        nothing by it - both named in a reporter's log (#107):
+
+          Shell_TrayWnd, XamlExplorerHostIslandWindow, tooltips_class32,
+          SysDragImage      - the shell, taken whenever the pointer is near
+                              the taskbar (pid 8020 in that session);
+          #32770 'Save As'  - the program's OWN modal dialog, which is what
+                              the user is looking at while a screenshot is
+                              being written (pid 46044, the client itself).
+
+        Reading either as "a stranger took the top" made the guard raise the
+        picture and then the HUD - two SetWindowPos on a state that was
+        already correct, which is one DWM recompose with the picture over the
+        panel in between. That is the flash this guard was accused of.
+
+        The shell's pid comes from its desktop window (GetShellWindow) rather
+        than from the taskbar's class name: the flyouts above the taskbar are
+        not Shell_TrayWnd, and a class list would have to name every one.
+        """
+        try:
+            kernel32 = ctypes.windll.kernel32
+            user32.GetWindowThreadProcessId.argtypes = [
+                wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+            user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+            if self._shell_pid is None:
+                shell = user32.GetShellWindow()
+                pid = wintypes.DWORD(0)
+                user32.GetWindowThreadProcessId(shell, ctypes.byref(pid))
+                self._shell_pid = int(pid.value) if shell else 0
+            if self._own_pid is None:
+                self._own_pid = int(kernel32.GetCurrentProcessId())
+            pid = wintypes.DWORD(0)
+            if not user32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(pid)):
+                return False
+            got = int(pid.value)
+            return got != 0 and got in (self._own_pid, self._shell_pid)
+        except Exception:
+            return False
 
     @staticmethod
     def _virtual_screen() -> tuple[int, int, int, int]:
