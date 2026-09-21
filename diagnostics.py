@@ -571,6 +571,11 @@ _SETTINGS_KEYS = (
     "fullscreen", "warmup", "split", "record_audio",
     "rec_indicator", "open_menu_on_start",
     "screenshot_format", "screenshot_mode",
+    # The conversion page's output choices: a report about a conversion
+    # that came out silent or in the wrong codec starts here. The folder
+    # itself is a path and stays out, like the other two.
+    "convert_dest", "convert_codec", "convert_quality",
+    "convert_image_format", "convert_audio",
 )
 _MAX_SETTINGS_VALUE = 120
 

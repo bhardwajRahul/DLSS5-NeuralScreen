@@ -313,6 +313,12 @@ class _Pipeline:
         "nr_passes",
         "convert_busy",
         "convert_status",
+        # The conversion queue (convert_jobs), the finished jobs waiting
+        # for one combined alert, and the running file's fraction for
+        # the main page's Convert cell.
+        "convert_queue",
+        "convert_batch",
+        "convert_progress",
         # Which worker has been told the pass count: the cascade has to be
         # re-sent to every new one (see the main loop).
         "nr_passes_pid",
@@ -562,6 +568,9 @@ def main() -> int:
 
             # The answer from the "Save as" dialog (it runs in its own thread).
             commands.drain_save_dialog(st)
+            # Conversions run on their own thread; what finished is
+            # announced here, where the display may be touched.
+            commands.service_conversions(st)
             commands.poll_recording_finalizer(st)
 
             # NR OFF is a real idle state unless an explicit consumer still
@@ -1271,6 +1280,15 @@ def main() -> int:
                 print(f"  {line}", file=sys.stderr)
         return 1
     finally:
+        # A conversion may be running on its own worker. Stop it first and
+        # wait a bounded moment: the runner reaps its worker on the way out,
+        # and the job object in pipeline covers the case where it cannot.
+        if st.convert_queue is not None:
+            try:
+                st.convert_queue.shutdown(timeout=10.0)
+            except Exception as exc:
+                print(f"[main] failed to stop the conversions: {exc}",
+                      file=sys.stderr)
         # A recording may have been running at exit. Begin the same asynchronous
         # path the UI uses, then wait here only because the UI is already gone.
         if st.recorder is not None:

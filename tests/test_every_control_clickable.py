@@ -127,6 +127,10 @@ def real_state():
     st.split_pos = 0.0
     st.tray_commands = queue.Queue()
     st.shot_paths = queue.Queue()
+    import convert_jobs
+    st.convert_queue = convert_jobs.ConvertQueue(
+        convert=lambda *a, **k: None)
+    st.convert_batch = []
 
     # A fake worker that looks alive:  is asked on several paths, and
     # // are the restart helpers.
@@ -304,8 +308,13 @@ def main() -> int:
                                                threading.Event())
     pipeline.request_apply = lambda *a, **k: None
     pipeline.switch_window = lambda *a, **k: None
+    import dialogs
+    dialogs.ask_open_paths = lambda *a, **k: []
+    dialogs.ask_open_path = lambda *a, **k: None
+    dialogs.pick_directory = lambda *a, **k: None
+    dialogs.ask_save_path = lambda *a, **k: None
 
-    pages = ("main", "settings", "windows")
+    pages = ("main", "settings", "windows", "convert")
     tabs = overlay_ui.SETTINGS_TABS
 
     for page in pages:
@@ -334,6 +343,22 @@ def main() -> int:
                 "open_on_start": True, "skip_static": True, "boost": False,
                 "spout": False, "hdr": False, "gpu": "0",
                 "gpu_text": "RTX 5070 Ti", "gpus": ["0"], "langs": ["en", "ru"],
+                "convert_dest": "folder", "convert_dir": "C:/Converted",
+                "convert_progress": 0.4,
+                "convert_jobs": [
+                    {"id": 1, "name": "a.mp4", "kind": "video",
+                     "status": "running", "fraction": 0.4, "line": "40%",
+                     "tone": "text", "action": "stop"},
+                    {"id": 2, "name": "b.png", "kind": "image",
+                     "status": "done", "output": "C:/Converted/b-nr.png",
+                     "line": "done", "tone": "ok", "action": "show"},
+                    {"id": 3, "name": "c.avi", "kind": "video",
+                     "status": "failed", "error": "denied", "line": "no",
+                     "tone": "danger", "action": "retry"},
+                    {"id": 4, "name": "d.mkv", "kind": "video",
+                     "status": "queued", "line": "waiting", "tone": "muted",
+                     "action": "remove"},
+                ],
             })
             st.display.menu.visible = True
             st.display.menu.layout(1920, 1080)

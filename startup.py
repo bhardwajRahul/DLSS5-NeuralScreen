@@ -32,6 +32,7 @@ import time
 
 import numpy as np
 
+import convert_jobs
 from capture import (ScreenCapture, list_adapters, list_monitors,
                      monitor_origin, monitor_work_size,
                      resolve_output_idx)
@@ -438,6 +439,9 @@ def configure(st) -> None:
     #: only reads it; commands owns both fields.
     st.convert_busy = False
     st.convert_status = ""
+    st.convert_queue = convert_jobs.ConvertQueue()
+    st.convert_batch = []
+    st.convert_progress = None
     #: The verdict the interface reads: NR is on, but nothing is processed.
     st.nr_not_evaluating = False
     os.environ["NS_NR_RESIDUAL"] = "0" if st.nr_direct else "1"

@@ -508,6 +508,90 @@ def main() -> int:
                 failures.append(f"delete_preset: expected "
                                 f"[('button', 'delete_preset')], got {out}")
 
+    # 8. The conversion page. The main page's Convert cell opens it; each
+    #    row's button carries its job and its action in the key; the footer
+    #    adds files; the output choices send their values; and a file dropped
+    #    on the panel opens the page and joins the queue.
+    menu.page = "main"
+    menu.layout(3840, 2160)
+    paint(menu)
+    cell = find(menu, "button", "convert")
+    if cell is None:
+        failures.append("no Convert cell in the main page's actions")
+    else:
+        out = click(menu, cell)
+        if menu.page != "convert" or out != [("capture", None)]:
+            failures.append(f"Convert: expected the conversion page, got "
+                            f"page={menu.page!r} out={out}")
+    menu.page = "convert"
+    menu.set_state({"convert_dest": "source", "convert_jobs": [
+        {"id": 7, "name": "clip.mp4", "kind": "video", "status": "running",
+         "fraction": 0.4, "line": "40%", "tone": "text", "action": "stop"},
+        {"id": 8, "name": "still.png", "kind": "image", "status": "done",
+         "fraction": 1.0, "line": "done", "tone": "ok", "action": "show"}]})
+    menu.layout(3840, 2160)
+    paint(menu)
+    for key in ("convert_job:7:stop", "convert_job:8:show",
+                "convert_clear", "convert_stop_all"):
+        btn = find(menu, "button", key)
+        if btn is None:
+            failures.append(f"conversion page: no {key!r} button")
+            continue
+        out = click(menu, btn)
+        if out != [("button", key)]:
+            failures.append(f"{key}: expected [('button', {key!r})], got {out}")
+    add = find(menu, "action", "convert_add")
+    if add is None:
+        failures.append("no Add files in the conversion page's footer")
+    else:
+        out = click(menu, add)
+        if out != [("button", "convert_add")]:
+            failures.append(f"Add files: expected [('button', 'convert_add')], "
+                            f"got {out}")
+    for key, value in (("convert_dest", "folder"), ("convert_codec", "h264"),
+                       ("convert_quality", "small"),
+                       ("convert_image_format", "png")):
+        menu.layout(3840, 2160)
+        paint(menu)
+        seg = find(menu, "segmented", key)
+        cells = (seg.extra.get("cells") or []) if seg else []
+        if not cells:
+            failures.append(f"conversion page: no {key!r} segment")
+            continue
+        at = cells[list(seg.payload).index(value)].center
+        out = menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, {"pos": at, "button": 1}))
+        menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONUP, {"pos": at, "button": 1}))
+        if out != [(key, value)]:
+            failures.append(f"{key}: expected [({key!r}, {value!r})], got {out}")
+    menu.layout(3840, 2160)
+    paint(menu)
+    if find(menu, "button", "convert_dir") is None:
+        failures.append("One folder shows no Change folder button")
+    audio = find(menu, "toggle", "convert_audio")
+    if audio is None:
+        failures.append("no Keep audio switch on the conversion page")
+    else:
+        out = click(menu, audio)
+        if out != [("toggle", "convert_audio")]:
+            failures.append(f"Keep audio: expected [('toggle', "
+                            f"'convert_audio')], got {out}")
+    menu.page = "main"
+    menu.layout(3840, 2160)
+    out = menu.handle_event(pygame.event.Event(
+        pygame.DROPFILE, {"file": "C:/clips/drop.mp4"}))
+    if menu.page != "convert" or out != [("capture", None),
+                                         ("convert_files", ["C:/clips/drop.mp4"])]:
+        failures.append(f"a dropped file: expected the conversion page and "
+                        f"the file queued, got page={menu.page!r} out={out}")
+    menu.layout(3840, 2160)
+    paint(menu)
+    back = find(menu, "action", "back")
+    if back is None or click(menu, back) != [("capture", None)] \
+            or menu.page != "main":
+        failures.append("Back on the conversion page did not return to main")
+
     if failures:
         for f in failures:
             print("FAIL:", f)

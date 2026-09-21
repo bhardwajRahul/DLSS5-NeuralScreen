@@ -68,6 +68,20 @@ THEMES = {
 #: it holds its first option, which is how these lists are built (the default
 #: comes first). Kept next to the page rather than inside it so the rule is
 #: readable in one place.
+#: A conversion row's button by its state, for a row that does not say (the
+#: payload always does - see settings_io._convert_rows; a hand-built test
+#: row may not). The same rule as convert_jobs.row_action.
+_CONVERT_ROW_ACTION = {"running": "stop", "queued": "remove", "done": "show"}
+
+#: The conversion page's segmented controls and the values each may send -
+#: the same lists as settings_io.CONVERT_*, which validates them again.
+_CONVERT_SEGMENTS = {
+    "convert_dest": ("source", "folder"),
+    "convert_codec": ("auto", "av1", "hevc", "h264"),
+    "convert_quality": ("high", "balanced", "small"),
+    "convert_image_format": ("keep", "png", "jpg"),
+}
+
 NEUTRAL_CHOICE = {
     "frame_limit_mode": "unlimited",
     "motion_backend": "nvofa",
@@ -332,6 +346,18 @@ class OverlayMenu:
             "nr_passes": 1,
             "convert_busy": False,
             "convert_status": "",
+            # The conversion page: the queue's rows (each already carrying
+            # its second line and its button - see settings_io._convert_rows),
+            # the running file's fraction for the main page's Convert cell,
+            # and the page's output choices.
+            "convert_jobs": [],
+            "convert_progress": None,
+            "convert_dest": "source",
+            "convert_dir": "",
+            "convert_codec": "auto",
+            "convert_quality": "high",
+            "convert_image_format": "keep",
+            "convert_audio": True,
             # version / windows / driver / gpu, from the log header.
             "about": {},
             "compatibility_status": "not_run",
@@ -1322,6 +1348,125 @@ class OverlayMenu:
                     cy += row_h + self._u(4)
             cy += gap
 
+        elif self.page == "convert":
+            # The conversion page. Laid out like the windows page - rows, and
+            # Back beside the page's own action in the footer - because it is
+            # the same kind of page: a list the user acts on, not settings set
+            # once in a lifetime. Top to bottom: what the page does, the queue,
+            # and what the files come out as.
+            jobs = [dict(j) for j in (self.state.get("convert_jobs") or [])
+                    if isinstance(j, dict)]
+            hint = s.get("convert_page_hint", "")
+            if hint:
+                note_h = self._note_height(hint, inner_w)
+                items.append(Item("note", "convert_hint",
+                                  pygame.Rect(pad, cy, inner_w, note_h),
+                                  extra={"text": hint}))
+                cy += note_h + gap
+            section(s.get("sec_convert_queue", "files"))
+            if not jobs:
+                # The empty state is also the drop target's outline: files
+                # dropped anywhere on the screen land here, and the dashed box
+                # is what says so before anyone tries.
+                empty = s.get("convert_empty", "")
+                inset = self._u(14)
+                box_h = self._note_height(empty, inner_w - 2 * inset) + 2 * inset
+                items.append(Item("note", "convert_empty",
+                                  pygame.Rect(pad, cy, inner_w, box_h),
+                                  extra={"text": empty, "boxed": True,
+                                         "inset": inset}))
+                cy += box_h + gap
+            else:
+                act_w = self._convert_action_width(s)
+                row_pad = self._u(8)
+                row_h = (row_pad + label_h
+                         + self._small_font.get_height() + self._u(4)
+                         + self._u(4) + row_pad)
+                btn_h = ctrl_h - self._u(4)
+                for job in jobs:
+                    rect = pygame.Rect(pad, cy, inner_w, row_h)
+                    action = str(job.get("action")
+                                 or _CONVERT_ROW_ACTION.get(job.get("status"),
+                                                            "retry"))
+                    items.append(Item("job", f"convert_row:{job.get('id')}",
+                                      rect, payload=job.get("id"),
+                                      extra={"job": job, "act_w": act_w,
+                                             "row_pad": row_pad}))
+                    # The row's one button, keyed by the job and the action:
+                    # the key IS the command (commands.convert_row_action),
+                    # and a key per row keeps hover and focus on this row.
+                    items.append(Item(
+                        "button", f"convert_job:{job.get('id')}:{action}",
+                        pygame.Rect(rect.right - row_pad - act_w,
+                                    rect.y + row_pad + (label_h - btn_h) // 2,
+                                    act_w, btn_h),
+                        extra={"label": s.get(f"convert_act_{action}", action),
+                               "small": True}))
+                    cy += row_h + self._u(6)
+                cy += self._u(4)
+                finished = any(j.get("status") in ("done", "failed", "cancelled")
+                               for j in jobs)
+                active = any(j.get("status") in ("queued", "running")
+                             for j in jobs)
+                bw = inner_w // 2
+                for idx, (key, label, enabled) in enumerate((
+                        ("convert_clear", s.get("convert_clear", "Clear finished"),
+                         finished),
+                        ("convert_stop_all", s.get("convert_stop_all", "Stop all"),
+                         active))):
+                    cw = bw if idx == 0 else inner_w - bw
+                    items.append(Item("button", key,
+                                      pygame.Rect(pad + idx * bw, cy, cw, act_h),
+                                      extra={"label": label, "filled": False,
+                                             "pair": "left" if idx == 0 else "right",
+                                             "disabled": not enabled}))
+                cy += act_h + self._u(8)
+
+            section(s.get("sec_convert_output", "output"))
+            dest = str(self.state.get("convert_dest", "source"))
+            segmented("convert_dest", s.get("convert_dest", "Save to"), dest,
+                      ["source", "folder"],
+                      labels=[s.get("convert_dest_source", "Beside original"),
+                              s.get("convert_dest_folder", "One folder")])
+            if dest == "folder":
+                # The folder and the action beside it - the screenshot
+                # folder's row, for the same reasons (the path elided in the
+                # middle, the button saying only what it does).
+                folder = str(self.state.get("convert_dir") or "")
+                bgap = self._u(BTN_GAP)
+                btn_w = max(self._u(120), inner_w // 3)
+                items.append(Item("info", "convert_dir_path",
+                                  pygame.Rect(pad, cy, inner_w - btn_w - bgap,
+                                              ctrl_h),
+                                  extra={"label": "",
+                                         "value": self._elide_path(folder)}))
+                items.append(Item("button", "convert_dir",
+                                  pygame.Rect(pad + inner_w - btn_w, cy,
+                                              btn_w, ctrl_h),
+                                  extra={"label": s.get("change_folder",
+                                                        "Change folder..."),
+                                         "small": True}))
+                cy += ctrl_h + gap
+            segmented("convert_codec", s.get("convert_codec", "Video codec"),
+                      str(self.state.get("convert_codec", "auto")),
+                      ["auto", "av1", "hevc", "h264"],
+                      labels=[s.get("convert_codec_auto", "Auto"),
+                              "AV1", "HEVC", "H.264"])
+            segmented("convert_quality", s.get("convert_quality", "Quality"),
+                      str(self.state.get("convert_quality", "high")),
+                      ["high", "balanced", "small"],
+                      labels=[s.get("convert_quality_high", "Best"),
+                              s.get("convert_quality_balanced", "Balanced"),
+                              s.get("convert_quality_small", "Smaller")])
+            segmented("convert_image_format",
+                      s.get("convert_image_format", "Image format"),
+                      str(self.state.get("convert_image_format", "keep")),
+                      ["keep", "png", "jpg"],
+                      labels=[s.get("convert_image_keep", "Original"),
+                              "PNG", "JPG"])
+            toggle("convert_audio", s.get("convert_audio", "Keep audio"),
+                   bool(self.state.get("convert_audio", True)))
+
         elif self.page == "settings":
             # Four tabs where six sections used to run one after another. The
             # page is where everything set once in a lifetime lives, and it
@@ -1488,10 +1633,12 @@ class OverlayMenu:
             section(s.get("sec_convert", "file conversion"), "rec")
             busy = bool(self.state.get("convert_busy"))
             if show:
-                items.append(Item("button", "convert_pick",
+                # Opens the conversion page, where the queue and the output
+                # choices live; the main page's Convert cell goes there too.
+                items.append(Item("button", "convert",
                                   pygame.Rect(pad, cy, inner_w, ctrl_h),
                                   extra={"label": s.get(
-                                      "convert_pick", "Convert a file..."),
+                                      "convert_pick", "Convert files..."),
                                          "filled": False}))
                 cy += ctrl_h + gap
                 # One row that says either what is happening or what the
@@ -1898,38 +2045,79 @@ class OverlayMenu:
             # Two rows of two: Select window + Fullscreen on top, Screenshot
             # + Record below (user rule 10.09: the capture actions belong
             # together in one section, the footer keeps only Exit).
-            bw = inner_w // 2
             # Select window and Fullscreen left this section for the source
             # segment above: picking what to process is not an action, it is
             # a setting, and it belongs where the source is named.
+            #
+            # Convert joined them as a third cell: it is the third way a
+            # picture leaves the program (a still of the screen, the screen
+            # over time, a file on disk), and behind the gear on the Media tab
+            # nobody found it. The cell opens the conversion page, and while a
+            # file converts it carries the running file's percentage. Measured
+            # with the product font at the small size: the longest caption in
+            # any language, es "Captura de pantalla", is 121 px of the 123 a
+            # third of the strip leaves it beside its icon.
+            progress = self.state.get("convert_progress")
+            convert_label = s.get("convert", "Convert")
+            if isinstance(progress, (int, float)):
+                convert_label = f"{convert_label} {int(progress * 100)}%"
             rows = (
                 (("screenshot", s["screenshot"]),
                  ("record", (s.get("record_finalizing", "Finalizing...")
                              if self.state.get("recording_finalizing")
                              else s["record_stop_short"]
                              if self.state.get("recording")
-                             else s["record"]))),
+                             else s["record"])),
+                 ("convert", convert_label)),
             )
+            # The widest caption each cell will ever show: Record turns into
+            # Stop and Finalizing, Convert gains a percentage - measured at
+            # their longest, the cells do not move when the state changes.
+            ik = SMALL_SIZE / float(FONT_SIZE)
+            icon_w = int(round(self._u(17) * ik)) + self._u(9)
+            longest = {
+                "record": (s["record"], s["record_stop_short"],
+                           s.get("record_finalizing", "Finalizing...")),
+                "convert": (f"{s.get('convert', 'Convert')} 100%",),
+            }
             for row in rows:
-                for idx, (key, label) in enumerate(row):
-                    # One strip, two cells - the SOURCE control's look, which
-                    # is what the page already uses for two things that belong
-                    # side by side (user, 20.09).
-                    cw = bw if idx == 0 else inner_w - bw
+                needs = [max(self._small_font.size(str(t))[0]
+                             for t in longest.get(key, (label,)))
+                         + icon_w + self._u(16)
+                         for key, label in row]
+                if all(n <= inner_w // len(row) for n in needs):
+                    # Equal thirds whenever every caption fits one.
+                    widths = [inner_w // len(row)] * len(row)
+                else:
+                    # Otherwise each cell takes what its caption needs and
+                    # the rest is shared - the FG row's rule, for the FG
+                    # row's reason: ja "スクリーンショット" is 126 px in its
+                    # own face, and a third of the strip leaves 123.
+                    spare = max(0, inner_w - sum(needs)) // len(row)
+                    widths = [n + spare for n in needs]
+                widths[-1] = inner_w - sum(widths[:-1])
+                x = pad
+                for idx, ((key, label), cw) in enumerate(zip(row, widths)):
+                    # One strip, its cells side by side - the SOURCE control's
+                    # look, which is what the page already uses for things
+                    # that belong together (user, 20.09).
+                    last = idx == len(row) - 1
                     items.append(Item("button", key,
-                                      pygame.Rect(pad + idx * bw, cy, cw,
-                                                  act_h),
+                                      pygame.Rect(x, cy, cw, act_h),
                                       extra={"label": label,
                                              # The 1c rule: each capture action
                                              # carries a 1.4 px line icon.
                                              "icon": key if key in
-                                             ("screenshot", "record") else None,
+                                             ("screenshot", "record",
+                                              "convert") else None,
                                              "filled": False,
                                              "pair": ("left" if idx == 0
-                                                      else "right"),
+                                                      else "right" if last
+                                                      else "mid"),
                                              "disabled": (key == "record" and
                                                           bool(self.state.get(
                                                               "recording_finalizing")))}))
+                    x += cw
                 cy += act_h + self._u(8)
 
         # The footer: actions with the hotkey printed underneath. "Collapse"
@@ -1959,21 +2147,31 @@ class OverlayMenu:
         self._rule_rel = pygame.Rect(pad, cy, inner_w, 1)
         cy += self._u(14)
         act_h = self._u(ACTION_H)
-        if self.page in ("settings", "windows"):
-            if self.page == "windows":
-                # Back and Refresh side by side. The list is frozen while this
-                # page is open (a re-read every frame made rows shuffle under
-                # the cursor - 13.09), so a fresh reading has to be asked for.
+        if self.page in ("settings", "windows", "convert"):
+            if self.page in ("windows", "convert"):
+                # Back and the page's own action side by side. On the windows
+                # page that is Refresh: the list is frozen while the page is
+                # open (a re-read every frame made rows shuffle under the
+                # cursor - 13.09), so a fresh reading has to be asked for. On
+                # the conversion page it is Add files: the one thing the page
+                # cannot do without, kept where it cannot scroll away under a
+                # long queue.
                 bgap = self._u(BTN_GAP)
                 bw = (inner_w - bgap) // 2
                 items.append(Item("action", "back",
                                   pygame.Rect(pad, cy, bw, act_h),
                                   extra={"label": s["back"],
                                          "filled": False}))
-                items.append(Item("action", "refresh_windows",
-                                  pygame.Rect(pad + bw + bgap, cy, bw, act_h),
-                                  extra={"label": s.get("refresh_list",
-                                                        "Refresh list")}))
+                if self.page == "windows":
+                    items.append(Item("action", "refresh_windows",
+                                      pygame.Rect(pad + bw + bgap, cy, bw, act_h),
+                                      extra={"label": s.get("refresh_list",
+                                                            "Refresh list")}))
+                else:
+                    items.append(Item("action", "convert_add",
+                                      pygame.Rect(pad + bw + bgap, cy, bw, act_h),
+                                      extra={"label": s.get("convert_add",
+                                                            "Add files...")}))
             else:
                 items.append(Item("action", "back",
                                   pygame.Rect(pad, cy, inner_w, act_h),
@@ -2209,6 +2407,23 @@ class OverlayMenu:
         if not self.visible:
             return []
         out: list[tuple] = []
+        if event.type == getattr(pygame, "DROPFILE", -1):
+            # A file dropped from Explorer. While the menu is open the layer
+            # takes the mouse across the whole screen, so a drop anywhere
+            # lands here (closed, the layer is click-through and the drop
+            # goes to whatever is underneath, as it should). Whatever the page,
+            # a dropped file means "convert this": the conversion page opens
+            # to show it joining the queue. SDL sends one event per file.
+            path = getattr(event, "file", None)
+            if path:
+                if self.page != "convert":
+                    self.page = "convert"
+                    self.scroll = 0
+                    self.capturing = None
+                    self.open_choice = None
+                    out.append(("capture", None))
+                out.append(("convert_files", [str(path)]))
+            return out
         if self.capturing is not None and event.type == pygame.KEYDOWN:
             # While we wait for a key the keyboard belongs to the field. Esc
             # cancels, otherwise the menu would close instead of cancelling the
@@ -2510,8 +2725,10 @@ class OverlayMenu:
         """A plain button. The windows button opens the window list page,
         the fullscreen button returns the capture to the whole screen (the
         window-mode exit, same as the Num5 hotkey)."""
-        if key == "windows":
-            self.page = "windows"
+        if key in ("windows", "convert"):
+            # Both open a page of their own (the window list; the conversion
+            # queue), and navigation is the menu's business, not main's.
+            self.page = key
             self.scroll = 0
             self.capturing = None
             return [("capture", None)]
@@ -2578,6 +2795,13 @@ class OverlayMenu:
             if value in ("off", "tl", "tr", "bl", "br"):
                 self.state["fps_overlay"] = value
                 return [("fps_overlay", value)]
+            return []
+        if key in _CONVERT_SEGMENTS:
+            # The conversion page's output choices. Optimistic, like the
+            # screenshot format: the cell answers the click at once.
+            if value in _CONVERT_SEGMENTS[key]:
+                self.state[key] = value
+                return [(key, value)]
             return []
         if key == "menu_scale":
             # Applied at once so the click is answered by the thing the click
@@ -2770,7 +2994,9 @@ class OverlayMenu:
                              max(2, self._u(2)))
         head = (s.get("settings_title", "Settings") if self.page == "settings"
                 else s.get("windows_title", "Select window")
-                if self.page == "windows" else s["title"])
+                if self.page == "windows"
+                else s.get("convert_title", "File conversion")
+                if self.page == "convert" else s["title"])
         title = self._title_font.render(head, True, _rgb(self.c["text"]))
         surface.blit(title, (r.x + pad, r.y + self._u(16)))
         # The version right after the title: the top right corner is taken by
@@ -2828,6 +3054,9 @@ class OverlayMenu:
              "info": self._draw_info,
              "action": self._draw_action,
              "hotkey": self._draw_hotkey,
+             # The conversion page: a queued file, and a line of explanation.
+             "job": self._draw_job,
+             "note": self._draw_note,
              # The header icons sit above the scroll area - we draw them after
              # the clip is lifted, otherwise they get cut off.
              "icon": lambda *_: None,
@@ -3628,6 +3857,149 @@ class OverlayMenu:
         keep_tail = limit - 3 - keep_head
         return f"{path[:keep_head]}...{path[-keep_tail:]}"
 
+    # -- the conversion page ----------------------------------------------
+
+    def _font_for_text(self, text: str, base):
+        """A face that has the text's script, falling back to `base`.
+
+        A file name can be Korean or Chinese in an English interface, and the
+        product face draws those as boxes. The same choice the windows page
+        makes for window titles: hangul, kana, then the CJK ideographs.
+        """
+        if self._cjk_fonts:
+            if any(0xAC00 <= ord(ch) <= 0xD7AF for ch in text):
+                return self._cjk_fonts.get("malgungothic") or base
+            if any(0x3040 <= ord(ch) <= 0x30FF for ch in text):
+                return self._cjk_fonts.get("yugothic") or base
+            if any(0x4E00 <= ord(ch) <= 0x9FFF for ch in text):
+                return self._cjk_fonts.get("microsoftyahei") or base
+        return base
+
+    def _wrap_note(self, text: str, width: int) -> list[str]:
+        """Lines of `text` that fit `width` in the small face.
+
+        On the words, like _wrap_hint - and then on the characters of a word
+        that does not fit on a line of its own. That second rule is every
+        sentence in Chinese and Japanese: they have no spaces to break at,
+        and wrapped at spaces alone the empty-queue note was one line that
+        ran off the panel.
+        """
+        font = self._small_font
+        out: list[str] = []
+        for para in str(text).split("\n"):
+            line = ""
+            for word in para.split(" "):
+                trial = f"{line} {word}" if line else word
+                if font.size(trial)[0] <= width:
+                    line = trial
+                    continue
+                if line:
+                    out.append(line)
+                    line = ""
+                if font.size(word)[0] <= width:
+                    line = word
+                    continue
+                for ch in word:
+                    if line and font.size(line + ch)[0] > width:
+                        out.append(line)
+                        line = ch
+                    else:
+                        line += ch
+            out.append(line)
+        return out
+
+    def _note_height(self, text: str, width: int) -> int:
+        """How tall _draw_note will draw `text` at `width`."""
+        return len(self._wrap_note(text, width)) * (
+            self._small_font.get_height() + self._u(4))
+
+    def _convert_action_width(self, s: dict) -> int:
+        """One width for every row's button: the longest action word here.
+
+        The buttons then stand in one column whatever state each row is in -
+        a Stop above a Show above a Retry, not a ragged edge.
+        """
+        widest = max(self._small_font.size(s.get(f"convert_act_{a}", a))[0]
+                     for a in ("stop", "remove", "show", "retry"))
+        return max(self._u(64), widest + self._u(20))
+
+    def _dashed_rect(self, surface, rect: pygame.Rect, color: str) -> None:
+        """A dashed outline - the drop target's usual look."""
+        dash, gap = self._u(6), self._u(4)
+        width = max(1, self._u(1))
+        col = _rgb(color)
+        for x0 in range(rect.left, rect.right, dash + gap):
+            x1 = min(x0 + dash, rect.right - 1)
+            pygame.draw.line(surface, col, (x0, rect.top), (x1, rect.top), width)
+            pygame.draw.line(surface, col, (x0, rect.bottom - 1),
+                             (x1, rect.bottom - 1), width)
+        for y0 in range(rect.top, rect.bottom, dash + gap):
+            y1 = min(y0 + dash, rect.bottom - 1)
+            pygame.draw.line(surface, col, (rect.left, y0), (rect.left, y1), width)
+            pygame.draw.line(surface, col, (rect.right - 1, y0),
+                             (rect.right - 1, y1), width)
+
+    def _draw_note(self, surface, item: Item, s: dict) -> None:
+        """A line or two of explanation; boxed, it is the empty queue."""
+        text = str(item.extra.get("text") or "")
+        rect = item.rect
+        x, y, width = rect.x, rect.y, rect.w
+        if item.extra.get("boxed"):
+            self._dashed_rect(surface, rect, self.c["border"])
+            inset = int(item.extra.get("inset", self._u(14)))
+            x, y, width = rect.x + inset, rect.y + inset, rect.w - 2 * inset
+        line_h = self._small_font.get_height() + self._u(4)
+        for line in self._wrap_note(text, width):
+            img = self._clip(self._small_font, line, _rgb(self.c["muted"]),
+                             width)
+            surface.blit(img, (x, y))
+            y += line_h
+
+    def _draw_job(self, surface, item: Item, s: dict) -> None:
+        """One file of the queue: its name, what is happening, how far.
+
+        The second line and its tone arrive worded (settings_io's payload);
+        this only draws them. The button on the right is its own item.
+        """
+        job = item.extra.get("job") or {}
+        rect = item.rect
+        row_pad = int(item.extra.get("row_pad", self._u(8)))
+        act_w = int(item.extra.get("act_w", 0))
+        inner = self._u(10)
+        label_h = self._u(LABEL_H)
+        pygame.draw.rect(surface, _rgb(self.c["surface"]), rect,
+                         border_radius=self._u(RADIUS // 2))
+        name = str(job.get("name") or "")
+        name_img = self._clip(self._font_for_text(name, self._font), name,
+                              _rgb(self.c["text"]),
+                              rect.w - 2 * inner - act_w - self._u(8))
+        top = rect.y + row_pad
+        surface.blit(name_img, (rect.x + inner,
+                                top + (label_h - name_img.get_height()) // 2))
+        tone = {"text": self.c["text"], "ok": self.c["ok"],
+                "danger": self.c["danger"]}.get(str(job.get("tone") or ""),
+                                                self.c["muted"])
+        line_y = top + label_h
+        line_img = self._clip(self._small_font, str(job.get("line") or ""),
+                              _rgb(tone), rect.w - 2 * inner)
+        surface.blit(line_img, (rect.x + inner, line_y))
+        if job.get("status") != "running":
+            return
+        # The bar only while the file runs: a finished row says so in words,
+        # and a full bar under every one of them would be noise.
+        bar = pygame.Rect(rect.x + inner,
+                          line_y + self._small_font.get_height() + self._u(4),
+                          rect.w - 2 * inner, self._u(4))
+        pygame.draw.rect(surface, _rgb(self.c["border"]), bar,
+                         border_radius=self._u(2))
+        fraction = job.get("fraction")
+        if isinstance(fraction, (int, float)) and fraction > 0:
+            fill = pygame.Rect(bar.x, bar.y,
+                               max(self._u(4), int(bar.w * min(1.0, fraction))),
+                               bar.h)
+            pygame.draw.rect(surface, _rgb(self.c["accent"]), fill,
+                             border_radius=self._u(2))
+
     def _draw_info(self, surface, item: Item, s: dict) -> None:
         """A line: what on the left, how big on the right.
 
@@ -3869,6 +4241,26 @@ class OverlayMenu:
             pygame.draw.circle(surface, col, (cx, cy), u(6), w)
             pygame.draw.circle(surface, _rgb(self.c["danger"]), (cx, cy),
                                u(3))
+        elif key == "convert":
+            # A page with its corner folded and an arrow through it: a file
+            # going in one way and coming out another. The same 17 x 15 box
+            # and stroke as the camera, so the three cells read as one set.
+            bw, bh = u(12), u(15)
+            x0, y0 = cx - u(17) // 2, cy - bh // 2
+            fold = u(4)
+            pygame.draw.lines(surface, col, True, [
+                (x0, y0), (x0 + bw - fold, y0), (x0 + bw, y0 + fold),
+                (x0 + bw, y0 + bh), (x0, y0 + bh)], w)
+            pygame.draw.line(surface, col, (x0 + bw - fold, y0),
+                             (x0 + bw - fold, y0 + fold), w)
+            pygame.draw.line(surface, col, (x0 + bw - fold, y0 + fold),
+                             (x0 + bw, y0 + fold), w)
+            ay = cy + u(2)
+            pygame.draw.line(surface, col, (x0 + u(3), ay),
+                             (x0 + u(17), ay), w)
+            pygame.draw.lines(surface, col, False, [
+                (x0 + u(14), ay - u(3)), (x0 + u(17), ay),
+                (x0 + u(14), ay + u(3))], w)
         else:
             return cx
         return cx + u(9)
@@ -4014,16 +4406,19 @@ class OverlayMenu:
             # groups are painted AFTER the items (the FG row needs its frame on
             # top of a filled cell), and a strip drawn then would cover these
             # captions.
+            # A strip of three has a middle cell ("mid"): square on both sides,
+            # with its own seam on the left like the right-hand cell.
             radius = self._u(RADIUS // 2)
             left = pair == "left"
+            right = pair == "right"
             pygame.draw.rect(
                 surface, _rgb(self.c["surface"]), item.rect,
                 border_top_left_radius=radius if left else 0,
                 border_bottom_left_radius=radius if left else 0,
-                border_top_right_radius=0 if left else radius,
-                border_bottom_right_radius=0 if left else radius)
+                border_top_right_radius=radius if right else 0,
+                border_bottom_right_radius=radius if right else 0)
             if not left:
-                # The seam, drawn once by the right-hand cell.
+                # The seam, drawn once by the cell to its right.
                 pygame.draw.line(surface, _rgb(self.c["border"]),
                                  (item.rect.x, item.rect.y + self._u(6)),
                                  (item.rect.x, item.rect.bottom - self._u(6)),

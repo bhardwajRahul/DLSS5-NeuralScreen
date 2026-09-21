@@ -46,6 +46,7 @@ WITHHELD = {
     "presets": "the user's own saved parameter sets",
     "recording_dir": "a filesystem path",
     "screenshot_dir": "a filesystem path",
+    "convert_dir": "a filesystem path",
     "menu_offset": "where the user dragged the panel - geometry, not config",
     "menu_height": "the same",
     "width": "the output resolution, already in the log header and `monitor`",

@@ -9,17 +9,20 @@ missing. This module is that missing part.
 
 What it does NOT do, on purpose:
 
-* It does not touch the live pipeline. The caller decides whether the
-  overlay's worker is stood down first (see commands.convert_media); this
-  module starts its own worker, converts, and reaps it. Two NGX features
-  initialising on one card at the same time is the failure restart_worker's
-  2 s sleep exists for, and a conversion is not worth risking the overlay.
+* It does not touch the live pipeline. It starts its own worker, converts, and
+  reaps it; the overlay's worker keeps running. Two workers on one card was
+  measured rather than assumed (a second one created and evaluated in 1.17 s
+  while the first kept answering) - they share the card, so both run slower
+  while a file converts, and that is the whole cost.
 * It does not interpret settings. It is handed the same `params` dict the
   overlay builds, so a conversion is the picture the sliders were showing,
-  not a second tuning surface that could drift from them.
-* It knows nothing about the menu. Progress is a callback and cancellation
-  is an Event, so the engine can be driven by a test, by the UI thread, or
-  from a shell, and none of those is the "real" caller.
+  not a second tuning surface that could drift from them. The output choices
+  it does take - codec, quality, image format, audio - are about the FILE,
+  and the panel has no other place for them.
+* It knows nothing about the menu or the queue. Progress is a callback and
+  cancellation is an Event, so the engine can be driven by a test, by the
+  queue in convert_jobs, or from a shell, and none of those is the "real"
+  caller.
 
 The motion field is the part worth understanding. The network is temporal:
 it is handed motion vectors and a reset flag, and it accumulates across
@@ -76,8 +79,30 @@ _AV_FORMATS = {
 #: encoder is opened.
 CODEC_CHAIN = ("av1_nvenc", "hevc_nvenc", "h264_nvenc")
 
+#: What the panel offers for the video codec. "auto" is the chain above; a
+#: named codec starts the chain there, so a card without it still produces a
+#: file (and the result says which codec it got) instead of failing the job.
+CODEC_CHOICES = ("auto", "av1", "hevc", "h264")
+
+#: Quality steps -> NVENC constant quality. 16 is what the recorder uses and
+#: is visually lossless for this content; 23 is the usual "high quality web"
+#: point; 30 is for when the file size matters more than the last detail.
+QUALITY_CQ = {"high": 16, "balanced": 23, "small": 30}
+
+#: The CPU encoder that ends every chain. NVENC refuses small frames outright
+#: (measured on the bundled build: 128x128 fails in all three encoders,
+#: 640x360 opens) and a card can be out of encoder sessions, while x264
+#: opens at any size. Slower by an order of magnitude - which is why it is
+#: last, and why the result says when it was used.
+SOFTWARE_CODEC = "libx264"
+SOFTWARE_CRF = {"high": 17, "balanced": 21, "small": 26}
+
+#: What the panel offers for a still: the source's own format, or one of two.
+IMAGE_FORMATS = ("keep", "png", "jpg")
+
 #: Quality-targeted VBR, as the recorder uses. A conversion is not realtime,
-#: so it can afford p7 where the recorder settles for p6.
+#: so it can afford p7 where the recorder settles for p6. `cq` is replaced by
+#: the chosen quality step.
 ENCODER_OPTIONS = {
     "preset": "p7",
     "tune": "hq",
@@ -87,6 +112,13 @@ ENCODER_OPTIONS = {
     "bufsize": "500M",
 }
 BIT_RATE = 120_000_000
+
+#: Audio codecs the MP4 muxer takes as they are. Anything else (Vorbis, PCM,
+#: WMA...) is re-encoded to AAC rather than dropped: a converted video that
+#: comes back silent reads as a broken converter, whatever the reason.
+MP4_AUDIO_COPY = frozenset({"aac", "mp3", "ac3", "eac3", "opus", "flac", "alac"})
+AAC_SAMPLE_RATE = 48000
+AAC_BIT_RATE = 192_000
 
 #: The worker is handed one frame at a time and answers before the next is
 #: sent, so this is a per-frame ceiling and not a whole-file one. A 4K frame
@@ -117,9 +149,9 @@ class ConversionError(RuntimeError):
 class Progress:
     """What the caller is told while a conversion runs.
 
-    `total` is 0 when it is not knowable - a container that does not declare
-    a frame count, which is common enough that a progress bar has to cope
-    rather than lie about it.
+    `total` is 0 when it is not knowable - a container that declares neither
+    a frame count nor a duration - so a progress bar has to cope rather than
+    lie about it. `stage` is one of: decoding, starting, processing, writing.
     """
     stage: str
     done: int = 0
@@ -128,7 +160,7 @@ class Progress:
 
     @property
     def fraction(self) -> float:
-        return (self.done / self.total) if self.total > 0 else 0.0
+        return min(1.0, self.done / self.total) if self.total > 0 else 0.0
 
 
 @dataclass
@@ -145,6 +177,9 @@ class ConversionResult:
     work_width: int = 0
     work_height: int = 0
     skipped: int = 0
+    #: "copied" | "aac" | "none" (the source had none) | "off" (not asked
+    #: for) | "dropped" (it could not be carried - the reason is in notes).
+    audio: str = "none"
     notes: list = field(default_factory=list)
 
 
@@ -158,22 +193,69 @@ def classify(path: Path) -> str:
     return ""
 
 
-def default_output_path(source: Path, out_dir: Path | None = None) -> Path:
+def output_suffix(source: Path, image_format: str = "keep") -> str:
+    """The extension a converted file gets.
+
+    A still keeps its own format unless PNG or JPEG was asked for. A video is
+    re-encoded with NVENC (AV1/HEVC/H.264), and not every source container
+    can carry that: AVI and WMV cannot hold AV1 at all, and WebM holds
+    neither HEVC nor H.264. So video goes to MP4 - which every player opens -
+    except from MKV and WebM, whose files often carry audio and subtitle
+    codecs MP4 refuses, and which become MKV so the audio survives as it was.
+    """
+    source = Path(source)
+    suffix = source.suffix.lower()
+    if classify(source) == "image":
+        if image_format == "png":
+            return ".png"
+        if image_format == "jpg":
+            return ".jpg"
+        return suffix
+    return ".mkv" if suffix in (".mkv", ".webm") else ".mp4"
+
+
+def default_output_path(source: Path, out_dir: Path | None = None,
+                        suffix: str | None = None) -> Path:
     """`<name>-nr<suffix>`, beside the source unless a folder was chosen.
 
     Never the source itself: a converter that can overwrite its own input
     destroys the original on a second run, and the second run is exactly
-    what someone does after changing a slider.
+    what someone does after changing a slider. A ".partial" left by a run
+    that died counts as taken too - its name is the one a retry would use.
     """
     source = Path(source)
     folder = Path(out_dir) if out_dir else source.parent
-    stem, suffix = source.stem, source.suffix
+    stem = source.stem
+    suffix = suffix or source.suffix
     candidate = folder / f"{stem}-nr{suffix}"
     n = 2
-    while candidate.exists():
+    while candidate.exists() or Path(f"{candidate}.partial").exists():
         candidate = folder / f"{stem}-nr-{n}{suffix}"
         n += 1
     return candidate
+
+
+def codec_chain(choice: str) -> tuple[str, ...]:
+    """The NVENC encoders to try for a panel choice, best first."""
+    if choice == "hevc":
+        return ("hevc_nvenc", "h264_nvenc")
+    if choice == "h264":
+        return ("h264_nvenc",)
+    return CODEC_CHAIN
+
+
+def encoder_options(quality: str) -> dict:
+    """ENCODER_OPTIONS with the chosen quality step."""
+    cq = QUALITY_CQ.get(quality, QUALITY_CQ["high"])
+    return dict(ENCODER_OPTIONS, cq=str(cq))
+
+
+def audio_plan(codec_name: str, container_format: str) -> str:
+    """"copy" when the output container takes the source audio as it is,
+    "aac" when it has to be re-encoded to be carried at all."""
+    if container_format in ("matroska", "webm"):
+        return "copy"
+    return "copy" if str(codec_name).lower() in MP4_AUDIO_COPY else "aac"
 
 
 def processing_size(width: int, height: int, work_scale: float,
@@ -274,6 +356,13 @@ def _check(cancel: threading.Event | None) -> None:
         raise ConversionCancelled("cancelled")
 
 
+def _drop_partial(partial: Path) -> None:
+    try:
+        partial.unlink()
+    except OSError:
+        pass
+
+
 def convert_image(source: Path, output: Path, params: dict, *,
                   work_scale: float = 0.65, nr_small: bool = True,
                   nr_passes: int = 1,
@@ -311,14 +400,17 @@ def convert_image(source: Path, output: Path, params: dict, *,
                                      nr_passes)
     _check(cancel)
 
-    say("processing", 0, 1, f"{width}x{height} -> network {work_w}x{work_h}")
+    say("starting", 0, 1, f"{width}x{height}")
     with _Engine(params, width, height, work_w, work_h, nr_passes) as engine:
+        _check(cancel)
+        say("processing", 0, 1, f"{width}x{height}")
         pixels = engine.evaluate(0, frame, _zero_motion(work_w, work_h), True)
     if pixels is None:
         raise ConversionError("process", "the worker returned no pixels")
     _check(cancel)
 
     say("writing", 1, 1, output.name)
+    partial = output.with_name(output.name + ".partial")
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         out = np.ascontiguousarray(pixels)[:, :, :3]
@@ -326,7 +418,6 @@ def convert_image(source: Path, output: Path, params: dict, *,
         # The partial name is the recorder's rule, for the recorder's reason:
         # a file that exists is a file someone will open, and a conversion
         # that died halfway must not leave one that looks finished.
-        partial = output.with_name(output.name + ".partial")
         # The format is named, never inferred: Pillow picks it from the
         # EXTENSION, and the partial name ends in ".partial", so letting it
         # guess raises "unknown file extension" after the frame has already
@@ -339,19 +430,150 @@ def convert_image(source: Path, output: Path, params: dict, *,
             image.save(partial, format=fmt)
         os.replace(partial, output)
     except Exception as exc:
+        _drop_partial(partial)
         raise ConversionError("encode", exc) from exc
 
     return ConversionResult(
         source=source, output=output, kind="image", frames=1,
         seconds=time.perf_counter() - started,
         width=width, height=height, work_width=work_w, work_height=work_h,
-        codec=output.suffix.lstrip(".").lower())
+        codec=output.suffix.lstrip(".").lower(), audio="none")
+
+
+def _estimate_frames(container, stream, rate) -> int:
+    """How many frames the video holds, or 0 when nothing says.
+
+    The declared count first; many containers leave it at zero (MKV, WebM,
+    most AVIs), and there the duration times the rate is exact enough for a
+    progress bar - which is all the number is for.
+    """
+    declared = int(getattr(stream, "frames", 0) or 0)
+    if declared > 0:
+        return declared
+    seconds = 0.0
+    try:
+        if stream.duration and stream.time_base:
+            seconds = float(stream.duration * stream.time_base)
+        elif container.duration:
+            seconds = float(container.duration) / 1_000_000.0  # AV_TIME_BASE
+    except Exception:
+        seconds = 0.0
+    return max(0, int(round(seconds * float(rate)))) if seconds > 0 else 0
+
+
+def _encoder_probe(av, name, rate, width, height, quality) -> bool:
+    """Whether `name` opens for this size, tried in a throwaway container.
+
+    Walking the chain inside the real output container would leave every
+    refused candidate behind in it as a dead stream, and the muxer writes
+    them all into the file header.
+    """
+    import io
+    probe = av.open(io.BytesIO(), mode="w", format="mp4")
+    try:
+        stream = probe.add_stream(name, rate=rate)
+        stream.width, stream.height = width, height
+        stream.pix_fmt = "yuv420p"
+        stream.time_base = Fraction(1, 1) / rate
+        stream.options = (encoder_options(quality) if name != SOFTWARE_CODEC
+                          else {"preset": "medium",
+                                "crf": str(SOFTWARE_CRF.get(quality, 17))})
+        stream.open()
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+
+
+def _pick_video_encoder(av, chain, rate, width, height, quality) -> str:
+    """The first encoder of the chain that opens here, x264 as the last."""
+    for name in tuple(chain) + (SOFTWARE_CODEC,):
+        if _encoder_probe(av, name, rate, width, height, quality):
+            return name
+    raise ConversionError("encode", f"no video encoder opens at {width}x{height}")
+
+
+def _add_video_stream(out_container, name, rate, width, height, quality):
+    stream = out_container.add_stream(name, rate=rate)
+    stream.width, stream.height = width, height
+    stream.pix_fmt = "yuv420p"
+    stream.time_base = Fraction(1, 1) / rate
+    if name == SOFTWARE_CODEC:
+        stream.options = {"preset": "medium",
+                          "crf": str(SOFTWARE_CRF.get(quality, 17))}
+    else:
+        stream.bit_rate = BIT_RATE
+        stream.options = encoder_options(quality)
+    stream.open()
+    return stream
+
+
+class _AacTrack:
+    """Source audio re-encoded to AAC, on one contiguous sample clock.
+
+    The recorder's pattern (resampler -> fifo -> whole 1024-sample frames)
+    for the same reason: AAC encodes fixed frames, a decoder hands out
+    whatever its packets held.
+    """
+
+    def __init__(self, av, out_container):
+        self.av = av
+        self.stream = out_container.add_stream("aac", rate=AAC_SAMPLE_RATE)
+        self.stream.bit_rate = AAC_BIT_RATE
+        self.stream.layout = "stereo"
+        self.stream.format = "fltp"
+        self.stream.time_base = Fraction(1, AAC_SAMPLE_RATE)
+        self.resampler = av.AudioResampler(format="fltp", layout="stereo",
+                                           rate=AAC_SAMPLE_RATE)
+        self.fifo = av.AudioFifo()
+        self.samples = None
+
+    def push(self, frame, container) -> None:
+        for converted in self.resampler.resample(frame):
+            self._append(converted, frame)
+        self._drain(container)
+
+    def _append(self, converted, source_frame) -> None:
+        if converted is None or converted.samples <= 0:
+            return
+        if self.samples is None:
+            # The track starts where the source's audio starts, so a file
+            # whose sound begins after its picture stays in sync.
+            start = getattr(source_frame, "time", None)
+            self.samples = max(0, int(round(float(start) * AAC_SAMPLE_RATE))
+                               ) if start is not None else 0
+        converted.sample_rate = AAC_SAMPLE_RATE
+        converted.time_base = self.stream.time_base
+        converted.pts = self.samples
+        self.samples += converted.samples
+        self.fifo.write(converted)
+
+    def _drain(self, container, flush: bool = False) -> None:
+        size = self.stream.codec_context.frame_size or 1024
+        while True:
+            frame = self.fifo.read(size, partial=flush)
+            if frame is None:
+                return
+            for packet in self.stream.encode(frame):
+                container.mux(packet)
+
+    def finish(self, container) -> None:
+        for converted in self.resampler.resample(None):
+            self._append(converted, None)
+        self._drain(container, flush=True)
+        for packet in self.stream.encode(None):
+            container.mux(packet)
 
 
 def convert_video(source: Path, output: Path, params: dict, *,
                   work_scale: float = 0.65, nr_small: bool = True,
                   nr_passes: int = 1, flow_preset: str = "fast",
-                  copy_audio: bool = True,
+                  copy_audio: bool = True, codec: str = "auto",
+                  quality: str = "high",
                   progress: Callable[[Progress], None] | None = None,
                   cancel: threading.Event | None = None) -> ConversionResult:
     """A video through the network, frame by frame, with real motion guides.
@@ -362,25 +584,39 @@ def convert_video(source: Path, output: Path, params: dict, *,
     vectors is stable. A scene cut is reported as a reset by the same
     scene-score rule the desktop uses.
 
-    Audio is remuxed, not re-encoded: the samples are the user's and nothing
-    here improves them, so they are copied packet for packet when the output
-    container will take them.
+    One pass over the source, video and audio packets in the order the file
+    holds them, so the output is interleaved the way the source was. Audio
+    is copied packet for packet when the output container takes it, and
+    re-encoded to AAC when it does not - never silently dropped. (It was, in
+    the first version: `add_stream(template=...)` is not an API of the
+    bundled PyAV 18, the TypeError was caught as "audio not copied", and
+    every converted video came back without sound.)
+
+    Video timestamps follow the source frames rather than a frame counter,
+    so a file with a variable frame rate, or with its picture starting after
+    its sound, stays in sync with the audio that was carried over.
     """
     import av
 
     source, output = Path(source), Path(output)
     started = time.perf_counter()
     notes: list = []
+    partial = output.with_name(output.name + ".partial")
 
     def say(stage: str, done: int, total: int, detail: str = "") -> None:
         if progress is not None:
             progress(Progress(stage, done, total, detail))
 
+    say("decoding", 0, 0, source.name)
     try:
         container = av.open(str(source))
     except Exception as exc:
         raise ConversionError("decode", exc) from exc
 
+    engine = None
+    out_container = None
+    finished = False
+    stage = "decode"
     try:
         stream = next((s for s in container.streams if s.type == "video"), None)
         if stream is None:
@@ -394,123 +630,150 @@ def convert_video(source: Path, output: Path, params: dict, *,
         # An odd dimension cannot be encoded as yuv420p and the worker's own
         # sizing assumes even frames; rounding DOWN keeps us inside the source.
         even_w, even_h = width - (width % 2), height - (height % 2)
-        total = int(getattr(stream, "frames", 0) or 0)
         rate = stream.average_rate or stream.guessed_rate or Fraction(30, 1)
+        rate = Fraction(rate).limit_denominator(1001 * 1000)
+        total = _estimate_frames(container, stream, rate)
         work_w, work_h = processing_size(even_w, even_h, work_scale,
                                          nr_small, nr_passes)
+        size_text = f"{even_w}x{even_h}"
 
         guides = TemporalGuideGenerator(work_w, work_h, preset=flow_preset)
-        out_container = None
-        out_stream = None
-        audio_out = None
-        audio_in = None
-        codec_used = ""
-        partial = output.with_name(output.name + ".partial")
+        stage = "encode"
         output.parent.mkdir(parents=True, exist_ok=True)
+        container_format = _AV_FORMATS.get(output.suffix.lower(), "mp4")
+        codec_used = _pick_video_encoder(av, codec_chain(codec), rate,
+                                         even_w, even_h, quality)
+        if codec_used == SOFTWARE_CODEC:
+            notes.append(f"NVENC cannot encode {even_w}x{even_h} here - "
+                         f"encoded on the CPU (x264)")
+        elif codec != "auto" and not codec_used.startswith(codec):
+            notes.append(f"{codec.upper()} is not available on this card - "
+                         f"encoded with {codec_used.split('_')[0].upper()}")
 
-        try:
-            out_container = av.open(
-                str(partial), mode="w",
-                format=_AV_FORMATS.get(output.suffix.lower(), "mp4"))
-            last_error: BaseException | None = None
-            for codec in CODEC_CHAIN:
-                try:
-                    candidate = out_container.add_stream(codec, rate=rate)
-                    candidate.width, candidate.height = even_w, even_h
-                    candidate.pix_fmt = "yuv420p"
-                    candidate.bit_rate = BIT_RATE
-                    candidate.options = dict(ENCODER_OPTIONS)
-                    # Opening is what actually proves the encoder exists on
-                    # this card; add_stream succeeds on hardware without it.
-                    candidate.open()
-                    out_stream, codec_used = candidate, codec
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    continue
-            if out_stream is None:
-                raise ConversionError("encode", last_error or "no NVENC encoder opened")
-
-            if copy_audio:
-                audio_in = next((s for s in container.streams if s.type == "audio"), None)
-                if audio_in is not None:
-                    try:
-                        audio_out = out_container.add_stream(template=audio_in)
-                    except Exception as exc:
-                        audio_out = None
-                        notes.append(f"audio not copied ({exc})")
-
-            done = 0
-            skipped = 0
-            for packet in container.demux(stream):
-                for frame in packet.decode():
-                    _check(cancel)
-                    rgba = _as_rgba(frame.to_ndarray(format="rgba"))
-                    if rgba.shape[1] != even_w or rgba.shape[0] != even_h:
-                        rgba = np.ascontiguousarray(rgba[:even_h, :even_w])
-                    if done == 0:
-                        engine = _Engine(params, even_w, even_h,
-                                         work_w, work_h, nr_passes)
-                        engine.__enter__()
-                    guide = guides.process(rgba)
-                    pixels = engine.evaluate(done, rgba, guide.motion, guide.reset)
-                    if pixels is None:
-                        skipped += 1
-                        pixels = rgba
-                    out = np.ascontiguousarray(pixels)[:even_h, :even_w]
-                    video_frame = av.VideoFrame.from_ndarray(out, format="rgba")
-                    # The colour tags belong on the FRAME as well as the
-                    # stream: swscale takes its matrix from the frame while
-                    # the player reads the stream, and that mismatch is what
-                    # the recorder's own comment calls "the contrast".
-                    video_frame.color_range = 2          # full (sRGB)
-                    video_frame.colorspace = 1           # BT.709
-                    video_frame.color_primaries = 1
-                    video_frame.color_trc = 13           # sRGB
-                    video_frame.pts = done
-                    video_frame.time_base = Fraction(1, 1) / rate
-                    for out_packet in out_stream.encode(video_frame):
-                        out_container.mux(out_packet)
-                    done += 1
-                    say("processing", done, total, f"{even_w}x{even_h}")
-
-            if done == 0:
-                raise ConversionError("decode", "no frames could be decoded")
-
-            for out_packet in out_stream.encode(None):
-                out_container.mux(out_packet)
-
-            if audio_out is not None and audio_in is not None:
-                say("audio", done, total, "copying the original track")
-                try:
-                    container.seek(0)
-                    for packet in container.demux(audio_in):
-                        if packet.dts is None:
-                            continue
-                        packet.stream = audio_out
-                        out_container.mux(packet)
-                except Exception as exc:
-                    notes.append(f"audio not copied ({exc})")
-        finally:
+        audio_in = next((s for s in container.streams if s.type == "audio"),
+                        None)
+        audio_mode = "off" if not copy_audio else (
+            "none" if audio_in is None else
+            audio_plan(audio_in.codec_context.name, container_format))
+        # The header is written HERE, before a single frame goes through the
+        # network: a copied audio track the container refuses fails at this
+        # point, and it is cheap to rebuild the output without it now - not
+        # after an hour of frames. Copy falls back to AAC, AAC to no audio.
+        while True:
+            out_container = av.open(str(partial), mode="w",
+                                    format=container_format)
+            out_stream = _add_video_stream(out_container, codec_used, rate,
+                                           even_w, even_h, quality)
+            audio_out = None
+            aac = None
             try:
-                if 'engine' in dir() and done:
-                    engine.__exit__(None, None, None)
-            except Exception:
-                pass
-            if out_container is not None:
+                if audio_mode == "copy":
+                    audio_out = out_container.add_stream_from_template(audio_in)
+                elif audio_mode == "aac":
+                    aac = _AacTrack(av, out_container)
+                out_container.start_encoding()
+                break
+            except Exception as exc:
                 try:
                     out_container.close()
                 except Exception:
                     pass
+                out_container = None
+                _drop_partial(partial)
+                if audio_mode == "copy":
+                    notes.append(f"the audio could not be copied as it was "
+                                 f"({exc}) - re-encoded to AAC")
+                    audio_mode = "aac"
+                elif audio_mode == "aac":
+                    notes.append(f"the audio could not be carried ({exc})")
+                    audio_mode = "dropped"
+                else:
+                    raise ConversionError("encode", exc) from exc
 
+        stage = "process"
+        done = 0
+        skipped = 0
+        last_pts = -1
+        time_base = out_stream.time_base
+        streams = [stream] + ([audio_in] if audio_mode in ("copy", "aac") else [])
+        say("starting", 0, total, size_text)
+        for packet in container.demux(*streams):
+            _check(cancel)
+            if packet.stream.index != stream.index:
+                if audio_mode == "copy":
+                    if packet.dts is None:
+                        continue          # the demuxer's flush packet
+                    packet.stream = audio_out
+                    out_container.mux(packet)
+                elif aac is not None:
+                    for audio_frame in packet.decode():
+                        aac.push(audio_frame, out_container)
+                continue
+            for frame in packet.decode():
+                _check(cancel)
+                rgba = _as_rgba(frame.to_ndarray(format="rgba"))
+                if rgba.shape[1] != even_w or rgba.shape[0] != even_h:
+                    rgba = np.ascontiguousarray(rgba[:even_h, :even_w])
+                if engine is None:
+                    engine = _Engine(params, even_w, even_h,
+                                     work_w, work_h, nr_passes)
+                    engine.__enter__()
+                guide = guides.process(rgba)
+                pixels = engine.evaluate(done, rgba, guide.motion, guide.reset)
+                if pixels is None:
+                    skipped += 1
+                    pixels = rgba
+                out = np.ascontiguousarray(pixels)[:even_h, :even_w]
+                video_frame = av.VideoFrame.from_ndarray(out, format="rgba")
+                # The colour tags belong on the FRAME as well as the
+                # stream: swscale takes its matrix from the frame while
+                # the player reads the stream, and that mismatch is what
+                # the recorder's own comment calls "the contrast".
+                video_frame.color_range = 2          # full (sRGB)
+                video_frame.colorspace = 1           # BT.709
+                video_frame.color_primaries = 1
+                video_frame.color_trc = 13           # sRGB
+                when = frame.time
+                pts = (int(round(float(when) / float(time_base)))
+                       if when is not None else last_pts + 1)
+                pts = max(pts, last_pts + 1)
+                last_pts = pts
+                video_frame.pts = pts
+                video_frame.time_base = time_base
+                for out_packet in out_stream.encode(video_frame):
+                    out_container.mux(out_packet)
+                done += 1
+                say("processing", done, max(total, done), size_text)
+
+        if done == 0:
+            raise ConversionError("decode", "no frames could be decoded")
+
+        stage = "encode"
+        say("writing", done, max(total, done), output.name)
+        for out_packet in out_stream.encode(None):
+            out_container.mux(out_packet)
+        if aac is not None:
+            aac.finish(out_container)
+        out_container.close()
+        out_container = None
         os.replace(partial, output)
-    except ConversionCancelled:
-        try:
-            partial.unlink()
-        except Exception:
-            pass
+        finished = True
+    except (ConversionCancelled, ConversionError):
         raise
+    except Exception as exc:
+        # The stage the failure happened in, not a catch-all: "process" is
+        # the worker (a timeout, a pipe that closed), "encode" the file.
+        raise ConversionError(stage, exc) from exc
     finally:
+        if engine is not None:
+            engine.__exit__(None, None, None)
+        if out_container is not None:
+            try:
+                out_container.close()
+            except Exception:
+                pass
+        if not finished:
+            _drop_partial(partial)
         try:
             container.close()
         except Exception:
@@ -520,21 +783,30 @@ def convert_video(source: Path, output: Path, params: dict, *,
         source=source, output=output, kind="video", frames=done,
         seconds=time.perf_counter() - started, codec=codec_used,
         width=even_w, height=even_h, work_width=work_w, work_height=work_h,
-        skipped=skipped, notes=notes)
+        skipped=skipped, audio="copied" if audio_mode == "copy" else audio_mode,
+        notes=notes)
 
 
 def convert(source: Path, output: Path | None, params: dict, **kwargs) -> ConversionResult:
-    """Convert by kind, so a caller does not have to know which this is."""
+    """Convert by kind, so a caller does not have to know which this is.
+
+    Accepts every option of both converters; the ones that do not apply to
+    this kind of file are ignored, so a queue can hand the same settings to
+    a still and a video. `out_dir` and `image_format` only decide the output
+    name, and only when no `output` is given.
+    """
     source = Path(source)
     kind = classify(source)
     if not kind:
         raise ConversionError(
             "decode", f"{source.suffix or 'that file'} is not a format this converts")
+    out_dir = kwargs.pop("out_dir", None)
+    image_format = kwargs.pop("image_format", "keep")
     if output is None:
-        output = default_output_path(source, kwargs.pop("out_dir", None))
-    kwargs.pop("out_dir", None)
+        output = default_output_path(source, out_dir,
+                                     output_suffix(source, image_format))
     if kind == "image":
-        kwargs.pop("flow_preset", None)
-        kwargs.pop("copy_audio", None)
+        for video_only in ("flow_preset", "copy_audio", "codec", "quality"):
+            kwargs.pop(video_only, None)
         return convert_image(source, Path(output), params, **kwargs)
     return convert_video(source, Path(output), params, **kwargs)

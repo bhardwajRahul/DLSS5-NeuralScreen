@@ -29,6 +29,7 @@ from pathlib import Path
 import pygame  # the menu is baked into the screenshot
 
 import channels
+import convert_jobs
 import dialogs
 import pipeline
 import settings_io
@@ -48,6 +49,15 @@ from winapi import window_frame_rect, window_under_cursor
 #: Identity comparison ensures this sentinel cannot be confused with a future
 #: path-like pending-shot state.
 SHOT_FRAME_PENDING = object()
+
+#: The conversion page's segmented choices: the action's name is the config
+#: key, and these are the values it may take.
+_CONVERT_CHOICES = {
+    "convert_dest": settings_io.CONVERT_DESTS,
+    "convert_codec": settings_io.CONVERT_CODECS,
+    "convert_quality": settings_io.CONVERT_QUALITIES,
+    "convert_image_format": settings_io.CONVERT_IMAGE_FORMATS,
+}
 
 
 def _configured_directory(value, fallback: Path) -> Path:
@@ -215,30 +225,20 @@ def drain_save_dialog(st) -> None:
             if (isinstance(answer, tuple) and len(answer) == 2
                     and answer[0] in (
                         "save", "screenshot_dir", "recording_dir", "diagnostics",
-                        "convert_pick", "convert_done")):
+                        "convert_pick", "convert_dir")):
                 kind, shot_path = answer
             else:
                 # Backward compatibility for tests and older producers.
                 kind, shot_path = "save", answer
             if kind == "convert_pick":
-                # The picker answered. Nothing was started yet: the
-                # conversion begins here, on the main thread, so the state
-                # the worker thread copies is read in one place.
-                if shot_path is not None:
-                    begin_conversion(st, Path(shot_path))
-                continue
-            if kind == "convert_done":
-                ok, detail = shot_path
-                st.convert_busy = False
-                st.convert_status = ""
-                if ok:
-                    st.display.alert(UI_STRINGS[st.lang].get(
-                        "convert_done", "Converted: {path}").format(path=detail),
-                        duration=8.0)
-                else:
-                    st.display.alert(UI_STRINGS[st.lang].get(
-                        "convert_failed", "Conversion failed: {details}").format(
-                            details=detail), duration=8.0)
+                # The picker answered with the files chosen (a list; one Path
+                # from an older producer). They join the queue HERE, on the
+                # main thread, which is where the settings they are converted
+                # with are read.
+                if isinstance(shot_path, (str, Path)):
+                    shot_path = [shot_path]
+                if shot_path:
+                    add_conversions(st, shot_path)
                 continue
             if kind == "diagnostics":
                 ok, detail = shot_path
@@ -252,6 +252,18 @@ def drain_save_dialog(st) -> None:
                     st.display.alert(UI_STRINGS[st.lang].get(
                         "diagnostics_failed",
                         "Could not create diagnostic package"), duration=6.0)
+                continue
+            if kind == "convert_dir":
+                # The conversion page shows the folder on its own row, so the
+                # choice is its own confirmation - no alert over the panel.
+                if shot_path is None:
+                    continue
+                st.cfg["convert_dir"] = str(shot_path)
+                st.cfg["convert_dest"] = "folder"
+                settings_io.save_menu_layout(st)
+                st.display.menu.set_state({"convert_dir": str(shot_path),
+                                           "convert_dest": "folder"})
+                print(f"[main] convert_dir -> {shot_path}")
                 continue
             if kind in ("screenshot_dir", "recording_dir"):
                 if shot_path is None:
@@ -362,16 +374,22 @@ def poll_recording_finalizer(st) -> None:
             stage=stage, path=partial))
 
 
+#: Which title each folder picker carries: (strings key, English fallback).
+_FOLDER_PICKERS = {
+    "screenshot_dir": ("select_shot_dir", "Select the screenshot folder"),
+    "recording_dir": ("select_record_dir", "Select the recording folder"),
+    "convert_dir": ("select_convert_dir",
+                    "Select the folder for converted files"),
+}
+
+
 def open_folder_picker(st, kind: str) -> None:
     """Open one media-directory picker and return a tagged queue result."""
-    if kind not in ("screenshot_dir", "recording_dir") or st.shot_dialog_open:
+    if kind not in _FOLDER_PICKERS or st.shot_dialog_open:
         return
     st.shot_dialog_open = True
     hwnd = st.display.get_hwnd()
-    title_key = ("select_shot_dir" if kind == "screenshot_dir"
-                 else "select_record_dir")
-    fallback = ("Select the screenshot folder" if kind == "screenshot_dir"
-                else "Select the recording folder")
+    title_key, fallback = _FOLDER_PICKERS[kind]
     title = UI_STRINGS[st.lang].get(title_key, fallback)
 
     def _pick_dir() -> None:
@@ -385,75 +403,157 @@ def open_folder_picker(st, kind: str) -> None:
     threading.Thread(target=_pick_dir, name="folder-picker", daemon=True).start()
 
 
-def convert_media(st) -> None:
-    """Pick a file and run it through the network, off the UI thread.
+def convert_settings(st) -> "convert_jobs.ConvertSettings":
+    """What a file joining the queue NOW would be converted with.
 
-    The conversion starts its OWN worker and leaves the overlay's alone.
-    That is allowed: two NGX features on one card at the same time was the
-    open question, and it was measured rather than assumed - a second worker
-    created and evaluated in 1.17 s while the first kept answering, and the
-    first kept answering after the second exited. So this is the diagnostic
-    bundle's shape (a thread and a queue) and not a pipeline teardown, and
-    the picture on screen never stops.
-
-    The settings are the live ones - st.params, st.work_scale, st.nr_small -
-    so the converted file is the picture the panel is showing.
+    Read here, on the main thread, because this is where the live state is
+    written: the queue's runner thread only ever sees this frozen copy. The
+    look is the one the panel shows - the sliders, the profile, Boost and
+    the cascade - and the output choices are the conversion page's own.
     """
-    if getattr(st, "convert_busy", False):
-        st.display.alert(UI_STRINGS[st.lang].get(
-            "convert_busy", "A conversion is already running"))
+    cfg = st.cfg
+    out_dir = None
+    if cfg.get("convert_dest") == "folder":
+        out_dir = str(_configured_directory(cfg.get("convert_dir"),
+                                            BASE_DIR / "converted"))
+    return convert_jobs.ConvertSettings(
+        params=dict(st.params),
+        work_scale=float(st.work_scale),
+        nr_small=bool(st.nr_small),
+        nr_passes=int(getattr(st, "nr_passes", 1) or 1),
+        flow_preset=str(cfg.get("flow_preset", "fast")),
+        out_dir=out_dir,
+        codec=str(cfg.get("convert_codec", "auto")),
+        quality=str(cfg.get("convert_quality", "high")),
+        image_format=str(cfg.get("convert_image_format", "keep")),
+        copy_audio=cfg.get("convert_audio", True) is not False)
+
+
+def add_conversions(st, paths) -> None:
+    """Queue files - from the picker or dropped on the panel - and say so."""
+    queue = getattr(st, "convert_queue", None)
+    if queue is None:
         return
+    s = UI_STRINGS[st.lang]
+    try:
+        settings = convert_settings(st)
+    except OSError as exc:
+        # The chosen folder cannot be created (a drive that is gone): the
+        # files are not queued, and the reason is the folder, not the files.
+        print(f"[main] the conversion folder is not usable: {exc}",
+              file=sys.stderr)
+        st.display.alert(s.get("convert_err_denied",
+                               "cannot write there - pick a folder below"))
+        return
+    added, refused = queue.add(paths, settings)
+    for name, reason in refused:
+        print(f"[main] not queued for conversion: {name} ({reason})")
+    if refused:
+        st.display.alert(s.get(
+            "convert_refused",
+            "Not added ({n}): unsupported format or already queued").format(
+                n=len(refused)))
+    elif added and getattr(st.display.menu, "page", "") != "convert":
+        # With the page open the new rows ARE the confirmation.
+        st.display.alert(s.get("convert_added",
+                               "Added to the conversion queue: {n}").format(
+                                   n=len(added)))
+    if added:
+        print(f"[main] queued {len(added)} file(s) for conversion")
+
+
+def pick_convert_files(st) -> None:
+    """The "Add files" picker, off the UI thread (it is modal)."""
     if st.shot_dialog_open:
         return
     st.shot_dialog_open = True
     # pygame is not thread-safe: the handle is read here, on the main thread.
     hwnd = st.display.get_hwnd()
-    start_dir = _configured_directory(
-        st.cfg.get("recording_dir"), BASE_DIR / "recordings")
+    # A CONSTANT start folder, on purpose: Windows reopens the dialog where
+    # the user last picked from whenever it is handed the same folder as the
+    # first time, so this is where the very first visit starts and nothing
+    # more (see dialogs.ask_open_paths).
+    start_dir = str(_configured_directory(st.cfg.get("recording_dir"),
+                                          BASE_DIR / "recordings"))
+    title = UI_STRINGS[st.lang].get("convert_dialog",
+                                    "Choose images or videos to convert")
 
     def _pick() -> None:
         try:
-            chosen = dialogs.ask_open_path(
-                hwnd, str(start_dir),
-                UI_STRINGS[st.lang].get("convert_pick", "Convert a file..."))
+            chosen = dialogs.ask_open_paths(hwnd, start_dir, title)
         except Exception as exc:
             print(f"[main] the convert picker crashed: {exc}", file=sys.stderr)
-            chosen = None
+            chosen = []
         st.shot_paths.put(("convert_pick", chosen))
 
     threading.Thread(target=_pick, name="convert-picker", daemon=True).start()
 
 
-def begin_conversion(st, source) -> None:
-    """Start the conversion itself, once a file has been chosen."""
-    import media_convert
-
-    st.convert_busy = True
-    st.convert_status = UI_STRINGS[st.lang].get(
-        "convert_working", "Converting {name}...").format(name=source.name)
-    st.display.alert(st.convert_status, duration=6.0)
-    params = dict(st.params)
-    work_scale = float(st.work_scale)
-    nr_small = bool(st.nr_small)
-    flow_preset = str(st.cfg.get("flow_preset", "fast"))
-    nr_passes = int(getattr(st, "nr_passes", 1) or 1)
-    out_dir = st.cfg.get("recording_dir") or None
-
-    def _run() -> None:
+def convert_row_action(st, name: str) -> None:
+    """A row's button: "convert_job:<id>:<stop|remove|show|retry>"."""
+    queue = getattr(st, "convert_queue", None)
+    if queue is None:
+        return
+    try:
+        _prefix, job_id, what = name.split(":", 2)
+        job_id = int(job_id)
+    except ValueError:
+        return
+    settings = None
+    if what == "retry":
         try:
-            result = media_convert.convert(
-                source, None, params, work_scale=work_scale,
-                nr_small=nr_small, nr_passes=nr_passes,
-                flow_preset=flow_preset, out_dir=out_dir)
-            print(f"[main] converted {source.name} -> {result.output} "
-                  f"({result.frames} frame(s), {result.seconds:.1f}s)")
-            answer = (True, str(result.output))
-        except Exception as exc:
-            print(f"[main] conversion failed: {exc}", file=sys.stderr)
-            answer = (False, f"{type(exc).__name__}: {exc}")
-        st.shot_paths.put(("convert_done", answer))
+            settings = convert_settings(st)
+        except OSError:
+            settings = None
+    if queue.act(job_id, what, settings) and what == "show":
+        # Explorer opens UNDER the overlay, and with the menu open every
+        # click lands on the panel - the window it just opened would be on
+        # screen and out of reach. Showing a file is leaving the panel.
+        apply_menu_action(st, ("button", "close"))
 
-    threading.Thread(target=_run, name="media-convert", daemon=True).start()
+
+def service_conversions(st) -> None:
+    """Once per loop: announce what finished, and publish the queue's state.
+
+    One file finished: its result. Several: one line for the batch, when the
+    queue has run dry - an alert per file would bury each other. A file
+    stopped by hand says nothing: the row already reads "stopped".
+    """
+    queue = getattr(st, "convert_queue", None)
+    if queue is None:
+        return
+    s = UI_STRINGS[st.lang]
+    finished = queue.pop_finished()
+    batch = getattr(st, "convert_batch", None)
+    if batch is None:
+        batch = st.convert_batch = []
+    batch.extend(job for job in finished
+                 if job.status != convert_jobs.CANCELLED)
+    summary = queue.summary()
+    if batch and not summary["busy"]:
+        done = [job for job in batch if job.status == convert_jobs.DONE]
+        if len(batch) == 1 and done:
+            st.display.alert(s.get("convert_done", "Converted: {path}").format(
+                path=done[0].output), duration=8.0)
+        elif len(batch) == 1:
+            reason = s.get(f"convert_err_{batch[0].error or 'unknown'}",
+                           s.get("convert_err_unknown", "failed"))
+            st.display.alert(s.get(
+                "convert_failed", "Conversion failed: {details}").format(
+                    details=f"{batch[0].source.name} - {reason}"), duration=8.0)
+        else:
+            st.display.alert(s.get(
+                "convert_batch_done", "Converted {done} of {total} files").format(
+                    done=len(done), total=len(batch)), duration=8.0)
+        batch.clear()
+    st.convert_busy = summary["busy"]
+    st.convert_progress = (summary["fraction"] if summary["running"]
+                           else None)
+    st.convert_status = (
+        s.get("convert_working", "Converting {name}...").format(
+            name=summary["running"])
+        + (f"  {int(summary['fraction'] * 100)}%" if summary["fraction"] else "")
+        if summary["running"] else "")
 
 
 def create_diagnostics(st) -> None:
@@ -634,6 +734,26 @@ def apply_menu_action(st, action: tuple) -> None:
         if image_format in ("png", "jpg"):
             st.cfg["screenshot_format"] = image_format
             settings_io.save_menu_layout(st)
+    elif kind in _CONVERT_CHOICES:
+        # The conversion page's output choices. They reach the files queued
+        # AFTER the change - a file already waiting keeps what it was added
+        # with (convert_jobs, "the look it was ADDED with").
+        value = str(action[1])
+        if value in _CONVERT_CHOICES[kind]:
+            st.cfg[kind] = value
+            settings_io.save_menu_layout(st)
+            if kind == "convert_dest" and value == "folder" \
+                    and not st.cfg.get("convert_dir"):
+                # "One folder" with no folder yet: ask for it now, rather than
+                # quietly using a default the user never saw.
+                open_folder_picker(st, "convert_dir")
+    elif kind == "toggle" and action[1] == "convert_audio":
+        st.cfg["convert_audio"] = not (st.cfg.get("convert_audio", True)
+                                       is not False)
+        settings_io.save_menu_layout(st)
+    elif kind == "convert_files":
+        # Files dropped on the panel.
+        add_conversions(st, list(action[1] or []))
     elif kind == "param":
         new_params = dict(st.params)
         new_params[action[1]] = float(action[2])
@@ -861,8 +981,20 @@ def apply_menu_action(st, action: tuple) -> None:
             open_folder_picker(st, "screenshot_dir")
         elif name == "record_dir":
             open_folder_picker(st, "recording_dir")
-        elif name == "convert_pick":
-            convert_media(st)
+        elif name in ("convert_add", "convert_pick"):
+            pick_convert_files(st)
+        elif name == "convert_dir":
+            open_folder_picker(st, "convert_dir")
+        elif name == "convert_clear":
+            if st.convert_queue is not None:
+                st.convert_queue.clear_finished()
+        elif name == "convert_stop_all":
+            if st.convert_queue is not None and st.convert_queue.stop_all():
+                print("[main] conversions stopped from the menu")
+                st.display.alert(UI_STRINGS[st.lang].get(
+                    "convert_stopped", "Conversion stopped"))
+        elif name.startswith("convert_job:"):
+            convert_row_action(st, name)
         elif name == "diagnostics":
             create_diagnostics(st)
         elif name == "github":

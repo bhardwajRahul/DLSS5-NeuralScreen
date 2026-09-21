@@ -148,8 +148,19 @@ def media_filter() -> str:
             f"All files (*.*){nul}*.*{nul}")
 
 
+#: OFN_ALLOWMULTISELECT | OFN_EXPLORER: several files in one pick, answered
+#: in the Explorer-style shape (folder, NUL, name, NUL, ..., NUL NUL).
+OFN_MULTI = 0x00000200 | 0x00080000
+
+#: Room for the names of a multi-file pick. Every chosen name is written into
+#: this one buffer; at 1024 characters - the single-file size - a pick of
+#: twenty long names in a deep folder fails with FNERR_BUFFERTOOSMALL, which
+#: looks exactly like a cancel.
+OPEN_BUFFER_CHARS = 65536
+
+
 def _open_dialog_struct(parent_hwnd: int, initial_dir: str | None,
-                        title: str | None = None):
+                        title: str | None = None, multi: bool = False):
     """The OPENFILENAME for "Open", and the buffer the path comes back in.
 
     Split from the call for the same reason as the save one: a modal dialog
@@ -161,7 +172,7 @@ def _open_dialog_struct(parent_hwnd: int, initial_dir: str | None,
     The filter lists the formats media_convert will actually open, so the
     picker cannot offer a file the converter then refuses.
     """
-    buf = ctypes.create_unicode_buffer(1024)
+    buf = ctypes.create_unicode_buffer(OPEN_BUFFER_CHARS if multi else 1024)
     ofn = _OPENFILENAME()
     ofn.lStructSize = ctypes.sizeof(_OPENFILENAME)
     ofn.hwndOwner = parent_hwnd or None
@@ -170,7 +181,7 @@ def _open_dialog_struct(parent_hwnd: int, initial_dir: str | None,
     # SyntaxError that only shows up at import time.
     ofn.lpstrFilter = media_filter()
     ofn.lpstrFile = ctypes.cast(buf, wintypes.LPWSTR)
-    ofn.nMaxFile = 1024
+    ofn.nMaxFile = len(buf)
     ofn.nFilterIndex = 1
     ofn.lpstrInitialDir = initial_dir or None
     ofn.lpstrTitle = title or None
@@ -178,8 +189,29 @@ def _open_dialog_struct(parent_hwnd: int, initial_dir: str | None,
     # matters here and not in the save dialog: the worker is started with
     # cwd=native/, and a dialog that quietly changes the process directory
     # would break the next worker launch rather than this conversion.
-    ofn.Flags = 0x00001000 | 0x00000800 | 0x00000008
+    ofn.Flags = (0x00001000 | 0x00000800 | 0x00000008
+                 | (OFN_MULTI if multi else 0))
     return ofn, buf
+
+
+def split_multiselect(raw: str) -> list[Path]:
+    """The files in a multi-select answer, as full paths.
+
+    Two shapes come back and both are ordinary: ONE file is its full path
+    alone; SEVERAL are the folder first and then each bare name, NUL between
+    them and two NULs at the end. Reading up to the first NUL - which is what
+    `buf.value` does - turns a pick of five files into the folder they were
+    in.
+    """
+    end = raw.find("\0\0")
+    body = raw if end < 0 else raw[:end]
+    parts = [part for part in body.split("\0") if part]
+    if not parts:
+        return []
+    if len(parts) == 1:
+        return [Path(parts[0])]
+    folder = Path(parts[0])
+    return [folder / name for name in parts[1:]]
 
 
 def ask_open_path(parent_hwnd: int, initial_dir: str | None = None,
@@ -198,6 +230,32 @@ def ask_open_path(parent_hwnd: int, initial_dir: str | None = None,
     except Exception as exc:
         print(f"[dialogs] open dialog unavailable ({exc})", file=sys.stderr)
         return None
+
+
+def ask_open_paths(parent_hwnd: int, initial_dir: str | None = None,
+                   title: str | None = None) -> list[Path]:
+    """The native "Open" dialog with several files allowed. [] on cancel.
+
+    The dialog remembers where the user last picked from by itself: Windows
+    returns to the most recent folder whenever it is handed the same initial
+    folder as the first time, so the caller passes a constant one and the
+    second visit opens where the first one ended.
+    """
+    try:
+        ofn, buf = _open_dialog_struct(parent_hwnd, initial_dir, title,
+                                       multi=True)
+        if not ctypes.windll.comdlg32.GetOpenFileNameW(ctypes.byref(ofn)):
+            error = ctypes.windll.comdlg32.CommDlgExtendedError()
+            if error:
+                # 0 is a plain cancel. Anything else would look exactly like
+                # one - FNERR_BUFFERTOOSMALL (0x3003) above all.
+                print(f"[dialogs] open dialog failed (CommDlgExtendedError "
+                      f"0x{error:04X})", file=sys.stderr)
+            return []
+        return split_multiselect(buf[:])
+    except Exception as exc:
+        print(f"[dialogs] open dialog unavailable ({exc})", file=sys.stderr)
+        return []
 
 
 def pick_directory(parent_hwnd: int, title: str) -> Path | None:
