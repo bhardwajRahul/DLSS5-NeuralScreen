@@ -194,7 +194,14 @@ def main() -> int:
     print("\n[1] minimising a foreign window that owns the foreground")
     user32.ShowWindow(foreign, SW_RESTORE)
     time.sleep(0.3)
-    user32.SetForegroundWindow(foreign)
+    # _force_foreground, not a bare SetForegroundWindow: Windows refuses the
+    # bare call for a process that does not own the foreground. Measured on
+    # this bench: the bare call left `foreign foreground=False`, so the window
+    # was never the foreground one and minimising it produced no activation at
+    # all - the step passed without ever reaching the bug it exists for.
+    if not _force_foreground(foreign):
+        failures.append("could not give the foreign window the foreground for "
+                        "the minimise check (Windows refused)")
     time.sleep(0.5)
     print(f"    foreign foreground={user32.GetForegroundWindow() == foreign}, "
           f"minimised={bool(user32.IsIconic(foreign))}")
@@ -215,7 +222,11 @@ def main() -> int:
     _arm(commands)
     user32.ShowWindow(foreign, SW_RESTORE)
     time.sleep(0.3)
-    user32.SetForegroundWindow(foreign)
+    # Same as step 1: the bare call is refused, so the foreign window never
+    # becomes the previous foreground one and the premise of this step is gone.
+    if not _force_foreground(foreign):
+        failures.append("could not give the foreign window the foreground for "
+                        "the minimised-window check (Windows refused)")
     time.sleep(0.4)
     user32.ShowWindow(foreign, SW_MINIMIZE)
     time.sleep(0.5)
@@ -227,6 +238,14 @@ def main() -> int:
     # runs - the other 7 passed vacuously.
     ours_in_front = _force_foreground(hwnd)
     time.sleep(0.3)
+    # Taking the foreground is a real activation and a real click path - it
+    # can emit on its own. Drain it so the assertion below can only be
+    # satisfied by the synthetic message this step sends. Without this the
+    # step failed on the emit caused by its own setup (measured: the emit came
+    # from taskbar.py:164, the WM_NCACTIVATE branch, at the moment our window
+    # took the foreground - the synthetic WM_ACTIVATE that follows was
+    # correctly rejected and there was nothing left to attribute it to).
+    _arm(commands)
     # Park here too: the guard reads the cursor at the moment of the message.
     parked = _park_before_send(failures, "step 1b")
     over_tray = taskbar.TaskbarWindow._cursor_over_taskbar(win)
@@ -244,6 +263,33 @@ def main() -> int:
         if got:
             failures.append("a WM_ACTIVATE carrying a minimised window opened the "
                             f"menu (issue #96, other message form): {got}")
+
+    # --- 1c. the same fallback in the WM_NCACTIVATE form --------------------
+    # Step 1b covers the WM_ACTIVATE branch; this is the other one. Measured:
+    # with the minimised-window condition removed from the WM_NCACTIVATE branch
+    # (the exact bug #96 reports), step 1 did not fail - on this bench Windows
+    # delivered the real fallback as WM_ACTIVATE, so that branch is never
+    # reached by a live minimise and needs to be driven directly. Both branches
+    # carry the condition and either one regressing reopens the report.
+    print("\n[1c] the fallback arriving as WM_NCACTIVATE with a minimised window")
+    _arm(commands)
+    # The state 1b left behind is what this needs: the foreign window
+    # minimised, our window in the foreground, the cursor over the taskbar.
+    prev_now = win._prev_minimised()
+    print(f"    previous minimised={prev_now}, "
+          f"ours foreground={user32.GetForegroundWindow() == hwnd}, "
+          f"cursor over taskbar={taskbar.TaskbarWindow._cursor_over_taskbar(win)}")
+    if not prev_now:
+        failures.append("the previous foreground window is not minimised any "
+                        "more - the WM_NCACTIVATE check cannot be trusted")
+    elif _park_before_send(failures, "step 1c"):
+        user32.SendMessageW(hwnd, WM_NCACTIVATE, 1, 0)
+        time.sleep(0.5)
+        got = _drain(commands)
+        print(f"    commands: {got}")
+        if got:
+            failures.append("a WM_NCACTIVATE with the previous window minimised "
+                            f"opened the menu (issue #96): {got}")
 
     # --- 2. a real click must still work -----------------------------------
     # Measured: a click activates OUR window (Windows makes us the foreground
@@ -348,6 +394,63 @@ def main() -> int:
                 failures.append("an activation with the cursor off the taskbar "
                                 f"opened the menu (#93 regression): {got}")
         _park_cursor_on_taskbar()
+
+    # --- 5b. the same, in the WM_NCACTIVATE form ---------------------------
+    # Step 5 drives the WM_ACTIVATE branch only; both branches carry the cursor
+    # and foreground conditions, and measured, removing either one from the
+    # WM_NCACTIVATE branch left the whole test green (mutations M6 and M7) -
+    # nothing exercised that branch's negative cases, so a wrong fix there
+    # would have shipped.
+    print("\n[5b] WM_NCACTIVATE with the cursor OFF the taskbar")
+    if not _force_foreground(hwnd):
+        failures.append("could not take the foreground for the off-taskbar "
+                        "WM_NCACTIVATE check (Windows refused)")
+    else:
+        time.sleep(0.3)
+        _arm(commands)
+        user32.SetCursorPos(600, 300)
+        time.sleep(0.2)
+        over_tray = taskbar.TaskbarWindow._cursor_over_taskbar(win)
+        print(f"    cursor over taskbar={over_tray}, "
+              f"foreground ours={user32.GetForegroundWindow() == hwnd}, "
+              f"previous minimised={win._prev_minimised()}")
+        if over_tray:
+            failures.append("could not move the cursor off the taskbar - the "
+                            "WM_NCACTIVATE cursor check cannot be trusted")
+        else:
+            user32.SendMessageW(hwnd, WM_NCACTIVATE, 1, 0)
+            time.sleep(0.5)
+            got = _drain(commands)
+            print(f"    commands: {got}")
+            if got:
+                failures.append("a WM_NCACTIVATE with the cursor off the taskbar "
+                                f"opened the menu (#93 regression): {got}")
+
+    # --- 5c. WM_NCACTIVATE while ANOTHER app holds the foreground ----------
+    # The reported #93 shape: the user clicks another app's taskbar icon, the
+    # cursor IS over the taskbar, and the activation arrives as
+    # WM_NCACTIVATE(1). The foreground test is the only thing rejecting it.
+    print("\n[5c] WM_NCACTIVATE while another app holds the foreground")
+    user32.ShowWindow(foreign, SW_RESTORE)
+    time.sleep(0.3)
+    if not _force_foreground(foreign):
+        failures.append("could not give the foreign window the foreground - "
+                        "the WM_NCACTIVATE foreground check cannot be trusted")
+    else:
+        time.sleep(0.3)
+        _arm(commands)
+        _park_before_send(failures, "step 5c")
+        print(f"    foreground ours={user32.GetForegroundWindow() == hwnd}, "
+              f"previous minimised={win._prev_minimised()}, "
+              f"cursor over taskbar="
+              f"{taskbar.TaskbarWindow._cursor_over_taskbar(win)}")
+        user32.SendMessageW(hwnd, WM_NCACTIVATE, 1, 0)
+        time.sleep(0.5)
+        got = _drain(commands)
+        print(f"    commands: {got}")
+        if got:
+            failures.append("a WM_NCACTIVATE while another app held the "
+                            f"foreground opened the menu (#93): {got}")
 
     user32.DestroyWindow(foreign)
     win.stop()
