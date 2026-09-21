@@ -77,7 +77,10 @@ _LOG_ALWAYS = ("[host]", "[pure]", "[arch]", "[cap]", "[dda]", "[present]",
                # halves are read together in #96/#107; a worker half dropped
                # here would leave a user's log looking like the worker never
                # made the decision at all.
-               "[z]")
+               "[z]",
+               # The GPU recorder (native/gpu_recorder.cpp): which encoder
+               # opened, what was refused, the frames written and dropped.
+               "[grec]")
 #: [video] lines that are a heartbeat rather than a diagnostic: the "delivered
 #: frame N" line is printed every 30 frames and would bury the log.
 _LOG_SKIP = ("delivered frame",)

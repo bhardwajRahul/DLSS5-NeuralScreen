@@ -27,6 +27,7 @@
   "frame_limit_custom": 90,
   "record_audio": true,
   "rec_indicator": true,
+  "gpu_record": true,
   "recording_dir": "",
   "screenshot_dir": "",
   "screenshot_mode": "ask",

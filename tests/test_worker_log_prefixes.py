@@ -48,7 +48,8 @@ GATED = {"[phase]", "[pw]"}
 #: The worker's sources. The .inl files are compiled into the same binary and
 #: log through the same function, so they count.
 SOURCES = ("native/dlss5-feed-host64.cpp", "native/frame_generation.inl",
-           "native/hdr_present.inl", "native/spout_bridge.cpp")
+           "native/hdr_present.inl", "native/spout_bridge.cpp",
+           "native/gpu_recorder.cpp")
 
 PREFIX = re.compile(r'Log(?:Once)?\(\s*"(\[[a-z]+\])')
 

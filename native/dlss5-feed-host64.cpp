@@ -35,6 +35,7 @@
 #include <dxgi1_6.h>   // IDXGIOutput6: the captured display's colour space (HDR)
 #include <d3dcompiler.h>
 #include "spout_bridge.h"
+#include "gpu_recorder.h"
 #include <cstdio>
 #include <cstdarg>
 #include <cstdint>
@@ -731,6 +732,53 @@ static void ProfileGpuEnd(ProfileStage stage, unsigned query_count = 2);
 static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms,
                         const char *where = nullptr);
 
+// ---------------------------------------------------------------------------
+// GPU recording (RECS/RECE, gpu_recorder.cpp). The recorder rides the export
+// copies: wherever the frame the viewer sees is copied for Spout, it is copied
+// for the recorder too, in the same command list - a recorded frame costs one
+// CopyResource and no submission of its own. EndCommands hands the list's
+// fence to the encoder thread, which waits for it before reading the copy.
+// ---------------------------------------------------------------------------
+static int      g_rec_slot = -1;       // a copy recorded into the open list
+static int64_t  g_rec_time = 0;        // its timestamp in the file
+static uint32_t g_rec_frames = 0;      // frames handed over since RECS
+
+static void RecordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src)
+{
+    // `src` is in COPY_SOURCE here, as it is at every export site. One copy
+    // per list: the Spout sites of one frame all show the same picture.
+    if (g_rec_slot >= 0 || !GpuRecActive()) return;
+    int64_t t = 0;
+    if (!GpuRecFrameDue(&t)) return;
+    const int slot = GpuRecReserve(src);
+    if (slot < 0) return;   // the encoder is behind: counted as dropped
+    GpuRecCopy(list, slot, src);
+    g_rec_slot = slot;
+    g_rec_time = t;
+}
+
+// The list carrying the copy was submitted (fence != 0), or never will be.
+static void RecordSubmitted(UINT64 fence)
+{
+    if (g_rec_slot < 0) return;
+    if (fence != 0)
+    {
+        GpuRecSubmit(g_rec_slot, h.fence, fence, g_rec_time);
+        ++g_rec_frames;
+    }
+    else
+        GpuRecCancel(g_rec_slot);
+    g_rec_slot = -1;
+}
+
+// Spout and the recorder take the same frame, so every export site calls this.
+static void ExportCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src,
+                       UINT width, UINT height)
+{
+    SpoutBridgeCopy(list, src, width, height);
+    RecordCopy(list, src);
+}
+
 static bool BeginCommands()
 {
     if (g_submission_failed || h.list == nullptr) return false;
@@ -811,6 +859,7 @@ static UINT64 EndCommands()
     if (FAILED(closed))
     {
         Log("[host] command list Close failed 0x%08X; nothing submitted", closed);
+        RecordSubmitted(0);
         g_ps_active = PS_NONE;
         FailGpuWork("command-close", "submission-error", closed);
         AbortCommands();
@@ -827,11 +876,13 @@ static UINT64 EndCommands()
     if (FAILED(sig))
     {
         Log("[host] queue Signal failed 0x%08X", sig);
+        RecordSubmitted(0);
         g_ps_active = PS_NONE;
         FailGpuWork("queue-signal", "submission-error", sig);
         return 0;
     }
     h.alloc_fence[h.frame_slot] = v;
+    RecordSubmitted(v);
     if (g_ps_active != PS_NONE && g_ps_slot_stage[h.frame_slot] != PS_NONE)
         g_ps_slot_fence[h.frame_slot] = v;
     h.frame_slot = (h.frame_slot + 1) % Host::kFrames;
@@ -928,6 +979,7 @@ static void CloseListGuarded()
 
 static void AbortCommands()   // never execute a list NGX crashed in
 {
+    RecordSubmitted(0);   // a recorder copy in the discarded list never runs
     if (h.list == nullptr) return;
     UINT64 retire = 0;
     for (int i = 0; i < Host::kFrames; ++i)
@@ -1855,6 +1907,13 @@ static constexpr uint32_t OUTS_MAGIC       = 0x5354554Fu; // "OUTS" -- client ->
 static constexpr uint32_t OUTS_ACK_MAGIC   = 0x324B414Fu; // "OAK2" -- worker -> client reply to OUTS
 // VideoResultHeader.bytes: the pixels are in the OUTS section, not in the pipe.
 static constexpr uint32_t OUT_BYTES_IN_SHM = 0xFFFFFFFFu;
+// RECS/RECE: record what the viewer sees, on the GPU (gpu_recorder.h). The
+// frames never leave the card; the client supplies only the sound, through a
+// PCM ring it names in RECS. REAK also comes unasked when the encoder fails.
+static constexpr uint32_t REC_START_MAGIC     = 0x53434552u; // "RECS" -- client -> worker: record into this file
+static constexpr uint32_t REC_START_ACK_MAGIC = 0x4B415352u; // "RSAK" -- worker -> client: recording (or why not)
+static constexpr uint32_t REC_STOP_MAGIC      = 0x45434552u; // "RECE" -- client -> worker: stop and finalize
+static constexpr uint32_t REC_DONE_MAGIC      = 0x4B414552u; // "REAK" -- worker -> client: the file is closed
 // WNDO flags
 static constexpr uint32_t WINDOW_FLAG_CAPTURABLE = 0x1u; // debug: do NOT hide the window from screen capture
 static constexpr uint32_t WINDOW_FLAG_DISABLE    = 0x2u; // tear the window down, go back to sending pixels
@@ -2060,6 +2119,33 @@ struct VideoGrayAck
     uint32_t magic, ok, reserved0, reserved1;
     int64_t pts;
 };
+struct VideoRecCmd
+{
+    uint32_t magic, fps, codec, bitrate;   // codec GPUREC_CODEC_*; bitrate 0 = auto
+    int64_t pts;
+    int64_t start_qpc;                     // when the audio ring's frame 0 was
+    uint32_t reserved0, reserved1;
+    char audio[64];                        // the PCM ring's mapping; "" = no sound
+    char path[1024];                       // UTF-8: the file to write
+};
+struct VideoRecAck
+{
+    uint32_t magic, ok, codec, hresult;
+    int64_t pts;
+    int64_t origin_qpc;                    // the file's time 0
+    uint32_t width, height, fps, audio;    // as recorded
+};
+struct VideoRecStop
+{
+    uint32_t magic, reserved0, reserved1, reserved2;
+    int64_t pts;
+};
+struct VideoRecDone
+{
+    uint32_t magic, ok, written, dropped;
+    int64_t pts;
+    uint32_t hresult, duration_ms, audio_frames, codec;
+};
 #pragma pack(pop)
 
 // The wire protocol, pinned. Every size below is what main.py's struct format
@@ -2087,6 +2173,13 @@ static_assert(sizeof(VideoGrayCmd) == 88, "VideoGrayCmd != GRAY_FMT");
 static_assert(sizeof(VideoGrayAck) == 24, "VideoGrayAck != GRAY_ACK_FMT");
 static_assert(sizeof(VideoOutCmd) == 88, "VideoOutCmd != OUTS_FMT");
 static_assert(sizeof(VideoOutAck) == 24, "VideoOutAck != OUTS_ACK_FMT");
+static_assert(sizeof(VideoRecCmd) == 1128, "VideoRecCmd != REC_START_FMT");
+static_assert(sizeof(VideoRecAck) == 48, "VideoRecAck != REC_START_ACK_FMT");
+static_assert(sizeof(VideoRecStop) == 24, "VideoRecStop != REC_STOP_FMT");
+static_assert(sizeof(VideoRecDone) == 40, "VideoRecDone != REC_DONE_FMT");
+// RECS lands here rather than in another out-parameter of ReadVideoMessage,
+// like WGCW's command: the path alone is a kilobyte.
+static VideoRecCmd g_rec_cmd = {};
 // The offset of pts is what a mis-packed struct gets wrong first: the four
 // leading uint32s are followed by an 8-byte field that natural alignment
 // would push to 24.
@@ -2881,8 +2974,8 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
         };
         h.list->ResourceBarrier(_countof(pre), pre);
         h.list->CopyResource(bb, v.output);
-        SpoutBridgeCopy(h.list, v.output, v.upscale ? v.full_w : v.w,
-                        v.upscale ? v.full_h : v.hgt);
+        ExportCopy(h.list, v.output, v.upscale ? v.full_w : v.w,
+                   v.upscale ? v.full_h : v.hgt);
         D3D12_RESOURCE_BARRIER post[] = {
             Transition(bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
             Transition(v.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
@@ -2961,8 +3054,8 @@ static bool PresentBypass(VideoState &v)
         };
         h.list->ResourceBarrier(_countof(pre), pre);
         h.list->CopyResource(bb, v.color.tex);
-        SpoutBridgeCopy(h.list, v.color.tex, v.upscale ? v.full_w : v.w,
-                        v.upscale ? v.full_h : v.hgt);
+        ExportCopy(h.list, v.color.tex, v.upscale ? v.full_w : v.w,
+                   v.upscale ? v.full_h : v.hgt);
         D3D12_RESOURCE_BARRIER post[] = {
             Transition(bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
             Transition(v.color.tex, D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -5979,6 +6072,9 @@ static bool DownloadVideoFrame(VideoState &v, std::vector<BYTE> &packed,
     d.pResource = v.readback; d.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     d.PlacedFootprint = v.out_fp;
     h.list->CopyTextureRegion(&d, 0, 0, 0, &s, nullptr);
+    // Without a present window this is the only copy of the frame the viewer
+    // sees; with one, the present already took this slot and it is a no-op.
+    RecordCopy(h.list, src);
     D3D12_RESOURCE_BARRIER b = Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE,
                                            src_after);
     h.list->ResourceBarrier(1, &b);
@@ -6030,6 +6126,43 @@ static bool ReShadeHasFeature18()
            strstr(data.data(), "inline feature 18 evaluation succeeded") != nullptr;
 }
 
+// The frame on screen, recorded once more when the recording stops. A still
+// screen sends no frames (skip-static), so without this the video track would
+// end at the last change while the sound runs on to the stop - the file's
+// last seconds would be sound over nothing in some players.
+static void RecordClosingFrame(VideoState &v)
+{
+    if (!GpuRecActive() || g_rec_frames == 0 || g_submission_failed) return;
+    ID3D12Resource *src = g_last_out_bypass ? v.color.tex : v.output;
+    if (src == nullptr) return;
+    const D3D12_RESOURCE_STATES rest = g_last_out_bypass
+        ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+        : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    if (!BeginCommands()) return;
+    D3D12_RESOURCE_BARRIER pre = Transition(src, rest, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    h.list->ResourceBarrier(1, &pre);
+    RecordCopy(h.list, src);   // nothing when the last frame is still current
+    D3D12_RESOURCE_BARRIER post = Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE, rest);
+    h.list->ResourceBarrier(1, &post);
+    EndCommands();
+}
+
+// Stop and report. `pts` is the RECE's, or 0 when the worker stops by itself.
+static bool FinishRecording(VideoState &v, int64_t pts, bool closing_frame)
+{
+    const bool was = GpuRecActive();
+    if (was && closing_frame) RecordClosingFrame(v);
+    const GpuRecStats st = GpuRecStop();
+    g_rec_frames = 0;
+    const bool ok = was && st.hr == S_OK && st.written > 0;
+    const VideoRecDone done = {
+        REC_DONE_MAGIC, ok ? 1u : 0u, st.written, st.dropped, pts,
+        static_cast<uint32_t>(was ? st.hr : S_FALSE), st.duration_ms,
+        st.audio_frames, st.codec
+    };
+    return WriteExact(g_wire, &done, sizeof(done));
+}
+
 // Reads the next 24-byte message header. Returns:
 //   1 = frame ready (color_ptr/mv_ptr point at the pixels, either at the
 //       std::vectors filled from the pipe or straight into the shared mapping),
@@ -6039,6 +6172,8 @@ static bool ReShadeHasFeature18()
 //   5 = motion-size command read into mc,
 //   6 = desktop-capture command read into dc,
 //   7 = gray-downsample command read into gc (88 bytes: 24 hdr + 64 name),
+//  11 = recording start read into g_rec_cmd (1128 bytes),
+//  12 = recording stop (24 bytes, all in fh),
 //   0 = EOF/error.
 static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYTE> &color,
                             std::vector<BYTE> &mv, VideoResizeCmd &rc, VideoShmCmd &sc,
@@ -6155,6 +6290,14 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
         if (!ReadExact(stdin, p + sizeof(fh), sizeof(oc) - sizeof(fh))) return 0;
         return 8;
     }
+    if (fh.magic == REC_START_MAGIC)
+    {
+        BYTE *p = reinterpret_cast<BYTE *>(&g_rec_cmd);
+        memcpy(p, &fh, sizeof(fh));
+        if (!ReadExact(stdin, p + sizeof(fh), sizeof(g_rec_cmd) - sizeof(fh))) return 0;
+        return 11;
+    }
+    if (fh.magic == REC_STOP_MAGIC) return 12;
     if (fh.magic == RESIZE_MAGIC)
     {
         // The first 24 bytes of the 64-byte command already sit in fh; read the rest.
@@ -6478,7 +6621,7 @@ static int RunVideo()
         const BYTE *mv_ptr = nullptr;
         const int msg = ReadVideoMessage(v, fh, color, mv, rc, sc, wc, mc, dc, gc,
                                          oc, &color_ptr, &mv_ptr);
-        if (msg != 1 && msg != 10) prepared = false;
+        if (msg != 1 && msg != 10 && msg != 11 && msg != 12) prepared = false;
         if (msg == 0)
         {
             if (live)
@@ -6490,6 +6633,10 @@ static int RunVideo()
                 // NGX) are freed only when the process dies, and a quick
                 // restart of a new worker conflicts with the leftovers of the
                 // old one (exit 127 / a hang).
+                //
+                // A recording the client never stopped is closed first: the
+                // file is finished properly and nobody is left to be told.
+                if (GpuRecActive()) GpuRecStop();
                 CleanupVideoNgx();
                 CloseSharedInput();
                 ClosePresent();
@@ -6814,6 +6961,66 @@ static int RunVideo()
             VideoResultHeader ack = {OUT_MAGIC, fh.index, OUT_STATUS_OK, 0u, 0u, fh.pts};
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
+        }
+        if (msg == 11)
+        {
+            // RECS: record what the viewer sees, on the GPU, into this file.
+            // Blocks for the encoder's setup (0.1-0.5 s): the frame rate
+            // hiccups once at the start of a recording, never during it.
+            VideoRecAck ack = { REC_START_ACK_MAGIC, 0u, 0u,
+                                static_cast<uint32_t>(E_INVALIDARG), g_rec_cmd.pts,
+                                0, 0u, 0u, 0u, 0u };
+            g_rec_cmd.path[sizeof(g_rec_cmd.path) - 1] = '\0';
+            g_rec_cmd.audio[sizeof(g_rec_cmd.audio) - 1] = '\0';
+            static wchar_t wpath[1024];
+            if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, g_rec_cmd.path, -1,
+                                    wpath, _countof(wpath)) > 0)
+            {
+                GpuRecParams p = {};
+                p.path = wpath;
+                p.width = v.upscale ? v.full_w : v.w;
+                p.height = v.upscale ? v.full_h : v.hgt;
+                p.fps = g_rec_cmd.fps;
+                p.codec = g_rec_cmd.codec;
+                p.bitrate = g_rec_cmd.bitrate;
+                p.start_qpc = g_rec_cmd.start_qpc;
+                p.audio_name = g_rec_cmd.audio[0] != '\0' ? g_rec_cmd.audio : nullptr;
+                GpuRecStarted started = {};
+                g_rec_slot = -1;
+                g_rec_frames = 0;
+                const bool ok = GpuRecStart(h.dev, p, &started);
+                ack.ok = ok ? 1u : 0u;
+                ack.codec = started.codec;
+                ack.hresult = static_cast<uint32_t>(started.hr);
+                ack.origin_qpc = started.origin_qpc;
+                ack.width = started.width;
+                ack.height = started.height;
+                ack.fps = started.fps;
+                ack.audio = started.audio ? 1u : 0u;
+                // The first frame goes into the file at once, even on a
+                // screen that is not changing.
+                if (ok) g_force_next_frame = true;
+            }
+            else
+                Log("[grec] RECS: the file name is not valid UTF-8");
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
+            continue;
+        }
+        if (msg == 12)
+        {
+            // RECE: stop, finalize the file, report what went into it.
+            if (!FinishRecording(v, fh.pts, true)) return 10;
+            continue;
+        }
+        // A recording whose encoder failed (a full disk, a lost encoder) is
+        // closed here and reported at once with an unasked REAK, so the
+        // client tells the user now rather than when they press stop. Here,
+        // at the top of every frame, and not after the frame: a still
+        // screen skips the rest of the loop for as long as it stays still.
+        if (GpuRecActive() && GpuRecFailed())
+        {
+            Log("[grec] the recording stopped itself after an encoder error");
+            if (!FinishRecording(v, 0, false)) return 10;
         }
         ConfigureFgFrame(fh.reserved);
         const double t_frame = PhaseNow();
@@ -7160,6 +7367,7 @@ static int RunVideo()
     }
     FlushProfileFrames();
     Log("[pure] complete: %u frames delivered, %u direct evaluations", frame, g_eval_count);
+    if (GpuRecActive()) GpuRecStop();
     CleanupVideoNgx();
     CloseOut();
     CloseSharedInput();
@@ -7482,6 +7690,15 @@ int main(int argc, char **argv)
     SpoutBridgeInit(h.dev);
 
     if (test) return RunTest();
-    if (video) return RunVideo();
+    if (video)
+    {
+        const int code = RunVideo();
+        // A recording still open here means RunVideo left on an error. Close
+        // the file while the device answers; after a GPU failure the copies
+        // can never be proven complete, and the fragments already on disk
+        // (fragmented MP4) are what the recording keeps.
+        if (GpuRecActive() && !g_submission_failed) GpuRecStop();
+        return code;
+    }
     return Serve(pid);
 }

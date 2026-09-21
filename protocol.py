@@ -426,6 +426,28 @@ GRAY_ACK_MAGIC = 0x4B434147  # 'GAK'
 GRAY_FMT = "<4Iq64s"    # magic, width, height, flags, pts, name (88 bytes)
 GRAY_ACK_FMT = "<4Iq"   # magic, ok, reserved0, reserved1, pts
 
+# GPU recording (native/gpu_recorder.cpp): the worker encodes the frame the
+# viewer sees on the card, so no recorded pixel crosses the pipe. The client
+# supplies only the sound, as 16-bit PCM in a ring it names in RECS.
+REC_START_MAGIC = 0x53434552      # 'RECS'
+REC_START_ACK_MAGIC = 0x4B415352  # 'RSAK'
+REC_STOP_MAGIC = 0x45434552       # 'RECE'
+REC_DONE_MAGIC = 0x4B414552       # 'REAK' - also sent unasked when the encoder fails
+# magic, fps, codec, bitrate, pts, start_qpc, reserved x2, ring name, UTF-8 path (1128)
+REC_START_FMT = "<4Iqq2I64s1024s"
+# magic, ok, codec, hresult, pts, origin_qpc, width, height, fps, audio (48)
+REC_START_ACK_FMT = "<4Iqq4I"
+REC_STOP_FMT = "<4Iq"             # magic, reserved x3, pts (24)
+# magic, ok, written, dropped, pts, hresult, duration_ms, audio_frames, codec (40)
+REC_DONE_FMT = "<4Iq4I"
+REC_CODEC_AUTO, REC_CODEC_H264, REC_CODEC_HEVC, REC_CODEC_AV1 = 0, 1, 2, 3
+REC_CODEC_NAMES = {REC_CODEC_H264: "H.264", REC_CODEC_HEVC: "HEVC",
+                   REC_CODEC_AV1: "AV1"}
+# The PCM ring's header (GpuRecAudioRing): magic, rate, channels, capacity,
+# frames written ever, reserved. The samples follow it, int16 interleaved.
+AUDIO_RING_MAGIC = 0x474E5241     # 'ARNG'
+AUDIO_RING_FMT = "<4Iqq"
+
 
 def _read_exact(stream, size: int) -> bytes:
     """Read exactly size bytes from the stream (the worker may give fewer)."""
@@ -604,6 +626,61 @@ def send_gray(worker: subprocess.Popen, width: int, height: int,
     worker.stdin.flush()
 
 
+def send_rec_start(worker: subprocess.Popen, path: str, *, fps: int,
+                   codec: int = REC_CODEC_AUTO, bitrate: int = 0,
+                   start_qpc: int = 0, audio_ring: str = "",
+                   pts: int = 0) -> None:
+    """RECS: record the frame the viewer sees into `path`, on the GPU.
+
+    The worker answers with RSAK (WorkerReader.rec_started). `audio_ring` is
+    the name of an AudioRing section, "" for a silent file; `start_qpc` is
+    the QueryPerformanceCounter reading that the ring's frame 0 belongs to.
+    """
+    raw_path = str(path).encode("utf-8")
+    if len(raw_path) >= 1024:
+        raise ValueError("the recording path is longer than 1023 bytes")
+    if len(audio_ring) >= 64:
+        raise ValueError("the audio ring name is longer than 63 characters")
+    worker.stdin.write(struct.pack(
+        REC_START_FMT, REC_START_MAGIC, int(fps), int(codec), int(bitrate),
+        int(pts), int(start_qpc), 0, 0, audio_ring.encode("ascii"), raw_path))
+    worker.stdin.flush()
+
+
+def send_rec_stop(worker: subprocess.Popen, pts: int = 0) -> None:
+    """RECE: stop the GPU recording; the worker answers with REAK."""
+    worker.stdin.write(struct.pack(REC_STOP_FMT, REC_STOP_MAGIC, 0, 0, 0,
+                                   int(pts)))
+    worker.stdin.flush()
+
+
+@dataclass(frozen=True)
+class RecStartReply:
+    """RSAK: whether the worker is recording, and how."""
+
+    ok: bool
+    codec: int
+    hresult: int
+    origin_qpc: int
+    width: int
+    height: int
+    fps: int
+    audio: bool
+
+
+@dataclass(frozen=True)
+class RecDoneReply:
+    """REAK: the file is closed - what went into it."""
+
+    ok: bool
+    written: int
+    dropped: int
+    hresult: int
+    duration_ms: int
+    audio_frames: int
+    codec: int
+
+
 def send_out(worker: subprocess.Popen, width: int, height: int,
              name: str, flags: int = 0, pts: int = 0) -> None:
     """OUTS: give the worker the name of the section for the result pixels.
@@ -643,6 +720,15 @@ class WorkerReader:
         # The pixels arrive through it once the OUTS channel is agreed.
         self._shm = shm
         self._queue: queue.Queue = queue.Queue()
+        # The GPU recording's answers do not go through the queue: recv()
+        # drops what it is not waiting for, and a REAK can come at any moment
+        # (the worker closes a recording whose encoder failed by itself). The
+        # reply is stored first and the event set after it; both events are
+        # also set when the reader dies, with no reply - "the worker is gone".
+        self.rec_started = threading.Event()
+        self.rec_start_reply: RecStartReply | None = None
+        self.rec_done = threading.Event()
+        self.rec_done_reply: RecDoneReply | None = None
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="worker-reader")
         self._thread.start()
@@ -702,6 +788,24 @@ class WorkerReader:
                     rest = _read_exact(self._worker.stdout, struct.calcsize(GRAY_ACK_FMT) - 4)
                     _magic, ok, _r0, _r1, _pts = struct.unpack(GRAY_ACK_FMT, magic_raw + rest)
                     self._queue.put(("gak", ok))
+                elif magic == REC_START_ACK_MAGIC:
+                    rest = _read_exact(self._worker.stdout,
+                                       struct.calcsize(REC_START_ACK_FMT) - 4)
+                    (_magic, ok, codec, hresult, _pts, origin, width, height,
+                     fps, audio) = struct.unpack(REC_START_ACK_FMT, magic_raw + rest)
+                    self.rec_start_reply = RecStartReply(
+                        bool(ok), codec, hresult, origin, width, height, fps,
+                        bool(audio))
+                    self.rec_started.set()
+                elif magic == REC_DONE_MAGIC:
+                    rest = _read_exact(self._worker.stdout,
+                                       struct.calcsize(REC_DONE_FMT) - 4)
+                    (_magic, ok, written, dropped, _pts, hresult, duration_ms,
+                     audio_frames, codec) = struct.unpack(REC_DONE_FMT, magic_raw + rest)
+                    self.rec_done_reply = RecDoneReply(
+                        bool(ok), written, dropped, hresult, duration_ms,
+                        audio_frames, codec)
+                    self.rec_done.set()
                 elif magic == OUT_MAGIC:
                     rest = _read_exact(self._worker.stdout, struct.calcsize(OUT_FMT) - 4)
                     _magic, out_index, status, byte_count, ngx_result, _pts = struct.unpack(OUT_FMT, magic_raw + rest)
@@ -763,6 +867,14 @@ class WorkerReader:
         except Exception as exc:
             # EOF (the worker exited or was killed) or a protocol error - sentinel
             self._queue.put((None, exc))
+            # Whoever waits on a recording answer learns it will not come.
+            self.rec_started.set()
+            self.rec_done.set()
+
+    @property
+    def alive(self) -> bool:
+        """Whether the reader thread still reads (the worker is there)."""
+        return self._thread.is_alive()
 
     def set_output_size(self, width: int, height: int) -> None:
         """Change the expected size of the output frames (right after RNSZ)."""

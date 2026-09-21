@@ -37,7 +37,8 @@ from hotkeys import build_bindings, parse_binding
 from i18n import STRINGS as UI_STRINGS
 from paths import BASE_DIR
 from pipeline import restart_worker
-from recorder import (RecordingError, RecordingStatus, VideoRecorder)
+from recorder import (GpuRecorder, RecordingError, RecordingStatus,
+                      VideoRecorder)
 from settings_io import (CHANNEL_URL, PROFILES, REPO_URL,
                          WORK_SCALE_MIN, WORK_SCALE_STEP,
                          _autostart_enabled, _next_preset_name,
@@ -300,6 +301,41 @@ def drain_save_dialog(st) -> None:
         pass
 
 
+#: The GPU recorder's frame rate. The frames cost the pipeline nothing
+#: there, so the old recorder's 30 fps compromise does not apply.
+GPU_RECORD_FPS = 60
+
+
+def start_recorder(st, path: str):
+    """The recorder for a new recording: on the GPU when that is switched on
+    and the worker takes it, the old CPU path otherwise.
+
+    The GPU recorder is the worker encoding the frame it presents - no pixel
+    comes back to Python (recorder.GpuRecorder). The old one stays for two
+    reasons: it is what "Record on the GPU" off asks for (it draws the open
+    menu into the video, which the GPU path cannot see), and it is the
+    fallback whenever the GPU one does not start - an encoder the driver
+    refuses, a worker that is not there. A recording should not fail for
+    want of the faster path.
+    """
+    worker = getattr(st, "worker", None)
+    reader = getattr(st, "reader", None)
+    if (bool(st.cfg.get("gpu_record", True)) and worker is not None
+            and reader is not None and worker.poll() is None):
+        try:
+            return GpuRecorder(worker, reader, path, fps=GPU_RECORD_FPS,
+                               audio=st.record_audio)
+        except Exception as exc:
+            print(f"[main] GPU recording did not start ({exc}) - "
+                  f"recording on the CPU instead", file=sys.stderr)
+    # 30 fps, not 60: every recorded frame is a full 33 MB round-trip from
+    # the worker (FRAME_FLAG_WANT_PIXELS -> pipe), and the measurement showed
+    # 60 fps recording costs ~36% of the FPS (101 -> 65). Halving the frame
+    # rate halves that cost; the picture quality per frame is identical.
+    return VideoRecorder(path, st.width, st.height, fps=30,
+                         audio=st.record_audio)
+
+
 def begin_recording_finalization(st, *, announce: bool = True) -> bool:
     """Move the active recorder to background finalization without waiting."""
     rec = getattr(st, "recorder", None)
@@ -359,9 +395,16 @@ def poll_recording_finalizer(st) -> None:
         print(f"[main] recording published: {metadata['path']} | {detail} | "
               f"{rec.written} frames, {rec.duration_ms / 1000.0:.1f}s, "
               f"dropped {rec.dropped}")
+        # A GPU recording the worker ended by itself (a failed write, a
+        # worker that died) is published with what reached the disk - and
+        # the user is told it is shorter than they asked for.
+        cut = bool(getattr(rec, "cut_short", False))
+        if cut:
+            print("[main] the recording was cut short by the worker",
+                  file=sys.stderr)
         st.display.alert(UI_STRINGS[st.lang].get(
-            "record_saved", "Recording saved: {path}").format(
-                path=metadata["path"]))
+            "record_saved_cut" if cut else "record_saved",
+            "Recording saved: {path}").format(path=metadata["path"]))
         return
 
     error = result.error
@@ -660,6 +703,12 @@ def apply_menu_action(st, action: tuple) -> None:
         st.cfg["rec_indicator"] = not bool(st.cfg.get("rec_indicator", True))
         settings_io.save_menu_layout(st)
         print(f"[main] recording indicator: {'on' if st.cfg['rec_indicator'] else 'off'}")
+    elif kind == "toggle" and action[1] == "gpu_record":
+        # How the NEXT recording is made; one already running keeps its path.
+        st.cfg["gpu_record"] = not bool(st.cfg.get("gpu_record", True))
+        settings_io.save_menu_layout(st)
+        print(f"[main] record on the GPU: "
+              f"{'on' if st.cfg['gpu_record'] else 'off'}")
     elif kind == "toggle" and action[1] == "frame_generation":
         st.cfg["frame_generation"] = not bool(st.cfg.get("frame_generation", False))
         # A fresh attempt re-arms the refusal alert: if the runtime says no
@@ -1279,15 +1328,7 @@ def drain_commands(st) -> bool:
                             st.cfg.get("recording_dir"), BASE_DIR / "recordings")
                         path = str(_unique_media_path(
                             rec_dir, "neuralscreen", ".mp4"))
-                        # 30 fps, not 60: every recorded frame is a
-                        # full 33 MB round-trip from the worker
-                        # (FRAME_FLAG_WANT_PIXELS -> pipe), and the
-                        # measurement showed 60 fps recording costs
-                        # ~36% of the FPS (101 -> 65). Halving the
-                        # frame rate halves that cost; the picture
-                        # quality per frame is identical.
-                        st.recorder = VideoRecorder(path, st.width, st.height, fps=30,
-                                                 audio=st.record_audio)
+                        st.recorder = start_recorder(st, path)
                     except Exception as exc:
                         print(f"[main] recording did not start: {exc}", file=sys.stderr)
                         st.display.alert(f"REC ERROR: {exc}")
@@ -1296,7 +1337,10 @@ def drain_commands(st) -> bool:
                         audio = "AAC" if st.recorder.audio_enabled else "no audio"
                         detail = (f"MP4 | {st.recorder.codec} | "
                                   f"{st.recorder.fps:g} fps | {audio}")
-                        print(f"[main] recording started: {path} | {detail}")
+                        engine = ("CPU" if getattr(st.recorder, "takes_pixels", True)
+                                  else "GPU")
+                        print(f"[main] recording started: {path} | {detail} | "
+                              f"encoded on the {engine}")
                         st.display.alert(UI_STRINGS[st.lang].get(
                             "record_started", "Recording: {details}").format(
                                 details=detail))

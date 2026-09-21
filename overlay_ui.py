@@ -374,6 +374,8 @@ class OverlayMenu:
             "theme": "light",
             "rec_seconds": 0.0,
             "rec_indicator": True,
+            # How a recording is made (GpuRecorder or the CPU path).
+            "gpu_record": True,
             # Which corner the on-screen counter sits in, or "off" (#109).
             "fps_overlay": "off",
             # What the taskbar's minimise and close buttons do (#93).
@@ -1581,6 +1583,11 @@ class OverlayMenu:
                                   pygame.Rect(pad, cy, inner_w, ctrl_h),
                                   extra={"label": record_label}))
                 cy += ctrl_h + gap
+            # On the GPU the recording costs no frame rate, but the worker
+            # never sees the menu window; off, the old path draws it in.
+            toggle("gpu_record", s.get("gpu_record", "Record on the GPU"),
+                   bool(self.state.get("gpu_record", True)),
+                   hint=s.get("gpu_record_hint", ""))
             toggle("spout", s.get("spout", "Spout2 output (OBS)"),
                    bool(self.state.get("spout")),
                    hint=s.get("spout_hint", ""))

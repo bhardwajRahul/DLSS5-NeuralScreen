@@ -16,11 +16,15 @@ inside - exactly the NR result that is on screen.
 
 from __future__ import annotations
 
+import ctypes
+import mmap
 import os
 import queue
+import struct
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from fractions import Fraction
@@ -30,6 +34,8 @@ import av
 import numpy as np
 
 from audio import LoopbackCapture
+from protocol import (AUDIO_RING_FMT, AUDIO_RING_MAGIC, REC_CODEC_AUTO,
+                      REC_CODEC_NAMES, send_rec_start, send_rec_stop)
 
 
 class RecordingStatus(str, Enum):
@@ -80,6 +86,9 @@ class VideoRecorder:
     display and screenshots.
     """
 
+    #: main.py hands this recorder the pixels of every frame it wants (and
+    #: bakes the open menu into them first); GpuRecorder never needs them.
+    takes_pixels = True
     #: How many frames wait for the encoder. More means more memory (33 MB per
     #: frame at 4K), less means we start dropping frames earlier on spikes.
     QUEUE_DEPTH = 4
@@ -767,6 +776,525 @@ class VideoRecorder:
         finally:
             self._audio = None
             self._resampler = None
+
+    def stopped_elsewhere(self) -> bool:
+        """Never: this recorder stops only when told (see GpuRecorder)."""
+        return False
+
+    @property
+    def duration_ms(self) -> float:
+        end = self._stopped_at if self._stopped_at is not None else time.perf_counter()
+        return (end - self._started) * 1000.0
+
+
+def _qpc() -> int:
+    """QueryPerformanceCounter, raw: the clock the worker's recorder runs on."""
+    value = ctypes.c_int64()
+    ctypes.windll.kernel32.QueryPerformanceCounter(ctypes.byref(value))
+    return value.value
+
+
+def _qpf() -> int:
+    value = ctypes.c_int64()
+    ctypes.windll.kernel32.QueryPerformanceFrequency(ctypes.byref(value))
+    return value.value
+
+
+class AudioRing:
+    """The PCM ring a GPU recording takes its sound from (GpuRecAudioRing).
+
+    A named section the worker maps read-only: the header (AUDIO_RING_FMT),
+    then `capacity` frames of int16, interleaved. This side is the only
+    writer and keeps one order - the samples first, the running count after
+    them - which is all the worker's reader relies on.
+    """
+
+    def __init__(self, rate: int = 48_000, channels: int = 2,
+                 seconds: float = 4.0):
+        self.rate = int(rate)
+        self.channels = int(channels)
+        self.capacity = int(self.rate * seconds)
+        header = struct.calcsize(AUDIO_RING_FMT)
+        # ASCII and unique per process, like the other sections: the worker
+        # opens it with OpenFileMappingA in the same session.
+        self.name = f"NeuralScreenRec_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        self._mm = mmap.mmap(-1, header + self.capacity * self.channels * 2,
+                             tagname=self.name)
+        struct.pack_into(AUDIO_RING_FMT, self._mm, 0, AUDIO_RING_MAGIC,
+                         self.rate, self.channels, self.capacity, 0, 0)
+        self._samples: np.ndarray | None = np.ndarray(
+            (self.capacity, self.channels), dtype=np.int16, buffer=self._mm,
+            offset=header)
+        # The count as one aligned 8-byte store: the worker reads it while
+        # this side writes it, and a torn value would be a jump in time.
+        self._count: ctypes.c_int64 | None = ctypes.c_int64.from_buffer(self._mm, 16)
+        self.written = 0
+
+    def write(self, frames: np.ndarray) -> None:
+        """Append (n, channels) int16 frames, then publish the new count."""
+        n = int(frames.shape[0])
+        if n <= 0 or self._samples is None:
+            return
+        if n > self.capacity:
+            # More than the ring holds: only the newest part can survive.
+            self.written += n - self.capacity
+            frames = frames[n - self.capacity:]
+            n = self.capacity
+        start = self.written % self.capacity
+        first = min(n, self.capacity - start)
+        self._samples[start:start + first] = frames[:first]
+        if first < n:
+            self._samples[:n - first] = frames[first:]
+        self._publish(n)
+
+    def silence(self, n: int) -> None:
+        """Append n frames of silence."""
+        n = int(n)
+        if n <= 0 or self._samples is None:
+            return
+        if n >= self.capacity:
+            self._samples[:] = 0
+        else:
+            start = self.written % self.capacity
+            first = min(n, self.capacity - start)
+            self._samples[start:start + first] = 0
+            if first < n:
+                self._samples[:n - first] = 0
+        self._publish(n)
+
+    def _publish(self, n: int) -> None:
+        self.written += n
+        self._count.value = self.written
+
+    def close(self) -> None:
+        # The two views export the buffer, and mmap refuses to close under
+        # an export. The worker keeps its own view: closing here never pulls
+        # the samples out from under it.
+        self._samples = None
+        self._count = None
+        try:
+            self._mm.close()
+        except (BufferError, ValueError):
+            pass
+
+
+class GpuRecorder:
+    """Records on the GPU, inside the worker (RECS/RECE, gpu_recorder.cpp).
+
+    VideoRecorder pulls every recorded frame back to Python - 33 MB at 4K,
+    then an RGBA->YUV conversion on the CPU - which is why it records at 30
+    fps and still costs a good part of the frame rate. Here the worker copies
+    the frame the viewer sees into the encoder's ring on the card, converts it
+    there and hands it to the hardware encoder (NVENC, through Media
+    Foundation); the frame never leaves the GPU. Only the sound comes from
+    this side, through an AudioRing. So it records at 60 fps for the price of
+    one texture copy a frame.
+
+    The lifecycle is VideoRecorder's, so commands.py, pipeline.py and main.py
+    drive either one the same way: finish() starts the finalization and never
+    waits, wait()/close() report the RecordingResult, and the file is written
+    as `.partial` and published only once it reads back.
+
+    What it does not record is the open menu: that is a separate window the
+    worker never sees (VideoRecorder draws it onto each frame itself). The
+    Media tab's "Record on the GPU" switch picks the old path for that.
+    """
+
+    #: The frame's pixels never come to Python for this recorder.
+    takes_pixels = False
+    FINISH_TIMEOUT_S = 30.0
+    #: The worker blocks on the encoder's setup while it answers: 0.1-0.3 s
+    #: measured, about half a second more for each codec refused first.
+    START_TIMEOUT_S = 8.0
+    AUDIO_RATE = 48_000
+    AUDIO_RING_S = 4.0
+    AUDIO_PUMP_S = 0.02
+    AUDIO_GAP_S = VideoRecorder.AUDIO_GAP_S
+    AUDIO_LAG_S = VideoRecorder.AUDIO_LAG_S
+
+    def __init__(self, worker, reader, path: str, *, fps: int = 60,
+                 audio: bool = True, codec: int = REC_CODEC_AUTO):
+        self.path = str(Path(path))
+        self.partial_path = f"{self.path}.partial"
+        self.fps = float(fps)
+        self.width = 0
+        self.height = 0
+        self.codec = "unknown"
+        self.written = 0
+        self.dropped = 0
+        self.audio_padded = 0
+        #: The file ends where the worker stopped, not where the user did.
+        self.cut_short = False
+        self._worker = worker
+        self._reader = reader
+        self._state_lock = threading.RLock()
+        self._status = RecordingStatus.RECORDING
+        self._result: RecordingResult | None = None
+        self._done = threading.Event()
+        self._abort_publish = threading.Event()
+        self._started = time.perf_counter()
+        self._stopped_at: float | None = None
+        self._audio: LoopbackCapture | None = None
+        self._ring: AudioRing | None = None
+        self._resampler: av.AudioResampler | None = None
+        self._in_samples = 0
+        self._qpf = _qpf()
+        self._start_qpc = 0
+        self._audio_stop = threading.Event()
+        self._audio_thread: threading.Thread | None = None
+        self._finalizer: threading.Thread | None = None
+        self._audio_track = False
+
+        if audio:
+            self._open_audio()
+        if self._start_qpc == 0:
+            self._start_qpc = _qpc()
+        # The answers land on the reader, not in its frame queue. Cleared
+        # BEFORE the alive check: a reader that dies after it sets them again.
+        reader.rec_start_reply = None
+        reader.rec_started.clear()
+        reader.rec_done_reply = None
+        reader.rec_done.clear()
+        if not reader.alive:
+            self._close_audio()
+            raise RecordingError("start", EOFError("the worker is not running"))
+        try:
+            send_rec_start(worker, self.partial_path, fps=int(round(fps)),
+                           codec=codec, start_qpc=self._start_qpc,
+                           audio_ring=self._ring.name if self._ring else "")
+        except (OSError, ValueError) as exc:
+            self._close_audio()
+            raise RecordingError("start", exc) from exc
+        if not reader.rec_started.wait(self.START_TIMEOUT_S):
+            # No answer in time. The worker may still start: make it stop.
+            try:
+                send_rec_stop(worker)
+            except (OSError, ValueError):
+                pass
+            self._close_audio()
+            raise RecordingError("start", TimeoutError(
+                f"the worker did not answer within {self.START_TIMEOUT_S:g} s"))
+        reply = reader.rec_start_reply
+        if reply is None:
+            self._close_audio()
+            raise RecordingError("start", EOFError("the worker stopped"))
+        if not reply.ok:
+            self._close_audio()
+            raise RecordingError("start", RuntimeError(
+                f"the GPU encoder did not start "
+                f"(0x{reply.hresult & 0xFFFFFFFF:08X})"))
+        self.codec = REC_CODEC_NAMES.get(reply.codec, "unknown")
+        self.width, self.height = int(reply.width), int(reply.height)
+        self.fps = float(reply.fps)
+        if self._ring is not None and not reply.audio:
+            # The worker could not open an AAC stream: the capture is moot.
+            print("[record] the GPU recording has no sound track "
+                  "(the AAC encoder was refused)", file=sys.stderr)
+            self._close_audio()
+        self._audio_track = self._ring is not None
+        self._started = time.perf_counter()
+        if self._ring is not None:
+            self._audio_thread = threading.Thread(
+                target=self._audio_loop, name="nr-gpu-audio", daemon=True)
+            self._audio_thread.start()
+
+    # -- sound --------------------------------------------------------------
+
+    def _open_audio(self) -> None:
+        """Start the loopback and the ring; the sound stays optional."""
+        cap = LoopbackCapture()
+        try:
+            if not cap.start():
+                print(f"[record] no audio: {cap.error or 'endpoint unavailable'}",
+                      file=sys.stderr)
+                cap.close()
+                return
+            self._resampler = av.AudioResampler(format="s16", layout="stereo",
+                                                rate=self.AUDIO_RATE)
+            self._ring = AudioRing(self.AUDIO_RATE, 2, self.AUDIO_RING_S)
+            # The spin-up samples belong before the recording, as in
+            # VideoRecorder; the ring's frame 0 is this moment.
+            cap.discard()
+            self._start_qpc = _qpc()
+            self._audio = cap
+            print(f"[record] audio: WASAPI loopback {cap.sample_rate} Hz -> "
+                  f"the worker's AAC at {self.AUDIO_RATE} Hz")
+        except Exception as exc:                      # noqa: BLE001
+            print(f"[record] audio not set up: {exc}", file=sys.stderr)
+            cap.close()
+            if self._ring is not None:
+                self._ring.close()
+            self._ring = None
+            self._audio = None
+            self._resampler = None
+
+    def _audio_loop(self) -> None:
+        while not self._audio_stop.wait(self.AUDIO_PUMP_S):
+            self._pump_audio()
+        self._pump_audio(final=True)
+
+    def _pump_audio(self, final: bool = False) -> None:
+        """Move captured sound into the ring; pad the gaps with silence.
+
+        The same rule as VideoRecorder._pad_audio: loopback hands out nothing
+        while the device is idle, and the worker times the sound by its
+        position in the ring - so a gap left unpadded would pull everything
+        after it early. At the end the pad goes all the way to the clock.
+        """
+        if self._audio is None or self._ring is None:
+            return
+        try:
+            chunk = self._audio.read()
+            frames = []
+            if chunk is not None and len(chunk):
+                planar = np.ascontiguousarray(chunk.T)
+                frame = av.AudioFrame.from_ndarray(planar, format="fltp",
+                                                   layout="stereo")
+                frame.sample_rate = self._audio.sample_rate
+                frame.time_base = Fraction(1, self._audio.sample_rate)
+                frame.pts = self._in_samples
+                self._in_samples += planar.shape[1]
+                frames.extend(self._resampler.resample(frame))
+            if final:
+                frames.extend(self._resampler.resample(None))
+            for converted in frames:
+                if converted is not None and converted.samples > 0:
+                    # s16 is packed: one row of interleaved samples.
+                    self._ring.write(converted.to_ndarray().reshape(-1, 2))
+            rate = self.AUDIO_RATE
+            due = (_qpc() - self._start_qpc) * rate // self._qpf
+            deficit = int(due) - self._ring.written
+            if final or deficit >= int(self.AUDIO_GAP_S * rate):
+                need = deficit - (0 if final else int(self.AUDIO_LAG_S * rate))
+                if need > 0:
+                    self._ring.silence(need)
+                    self.audio_padded += need
+        except Exception as exc:                      # noqa: BLE001
+            # The sound is a bonus: the picture goes on without it.
+            print(f"[record] audio stopped: {exc}", file=sys.stderr)
+            try:
+                self._audio.close()
+            except Exception:
+                pass
+            self._audio = None
+
+    def _stop_audio_thread(self) -> None:
+        self._audio_stop.set()
+        thread = self._audio_thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+            self._audio_thread = None
+
+    def _close_audio(self) -> None:
+        self._stop_audio_thread()
+        if self._audio is not None:
+            try:
+                self._audio.close()
+            except Exception:
+                pass
+            self._audio = None
+        if self._ring is not None:
+            secs = self._ring.written / float(self.AUDIO_RATE)
+            padded = self.audio_padded / float(self.AUDIO_RATE)
+            if secs > 0:
+                print(f"[record] audio: {secs:.1f} s handed to the worker"
+                      + (f", {padded:.1f} s of it silence in gaps"
+                         if padded > 0.05 else ""))
+            self._ring.close()
+            self._ring = None
+        self._resampler = None
+
+    # -- the VideoRecorder surface -------------------------------------------
+
+    def needs_frame(self) -> bool:
+        """Never: the worker takes the frames itself."""
+        return False
+
+    def write(self, rgba: np.ndarray) -> None:
+        """Nothing to do - kept so a stray call is harmless."""
+        return None
+
+    def stopped_elsewhere(self) -> bool:
+        """The worker closed the recording by itself, or is gone.
+
+        Polled by the main loop, so a full disk or a crashed worker ends the
+        recording at once - with what reached the disk - rather than when the
+        user next presses the key.
+        """
+        with self._state_lock:
+            if self._status is not RecordingStatus.RECORDING:
+                return False
+        return self._reader.rec_done.is_set() or not self._reader.alive
+
+    def finish(self) -> bool:
+        """Ask the worker to close the file; returns without waiting."""
+        with self._state_lock:
+            if self._status is not RecordingStatus.RECORDING:
+                return False
+            self._status = RecordingStatus.FINALIZING
+            self._stopped_at = time.perf_counter()
+        # The sound up to this moment reaches the ring before the worker is
+        # told to drain it.
+        self._stop_audio_thread()
+        if not self._reader.rec_done.is_set():
+            try:
+                send_rec_stop(self._worker)
+            except (OSError, ValueError) as exc:
+                print(f"[record] could not ask the worker to stop: {exc}",
+                      file=sys.stderr)
+        self._finalizer = threading.Thread(target=self._finalize,
+                                           name="nr-gpu-finalize", daemon=True)
+        self._finalizer.start()
+        return True
+
+    def _finalize(self) -> None:
+        """Wait for REAK, verify, publish; the finalizer thread only."""
+        got = self._reader.rec_done.wait(self.FINISH_TIMEOUT_S)
+        reply = self._reader.rec_done_reply if got else None
+        self._close_audio()
+        stage = "verify"
+        if reply is None:
+            # A worker that died mid-recording still leaves every fragment
+            # it finished: that is what gets published.
+            self.cut_short = True
+            stage = "worker"
+            why = ("the worker stopped" if got else
+                   f"the worker did not answer within {self.FINISH_TIMEOUT_S:g} s")
+            print(f"[record] {why} before the recording was closed - "
+                  f"keeping what reached the disk", file=sys.stderr)
+        else:
+            self.written = int(reply.written)
+            self.dropped = int(reply.dropped)
+            if not reply.ok:
+                stage = "encode"
+                self.cut_short = reply.written > 0
+                print(f"[record] the GPU recorder reported "
+                      f"0x{reply.hresult & 0xFFFFFFFF:08X} after "
+                      f"{reply.written} frames", file=sys.stderr)
+        error: BaseException | None = None
+        if not self._abort_publish.is_set():
+            try:
+                frames = self._verify_partial(count=reply is None)
+                if reply is None:
+                    self.written = frames
+            except BaseException as exc:             # noqa: BLE001
+                error = RecordingError(stage, exc)
+                print(f"[record] the recording does not read back: {exc}",
+                      file=sys.stderr)
+        with self._state_lock:
+            if self._result is None:
+                if error is None:
+                    try:
+                        os.replace(self.partial_path, self.path)
+                    except BaseException as exc:     # noqa: BLE001
+                        error = RecordingError("publish", exc)
+                        print(f"[record] publish failed: {exc}", file=sys.stderr)
+                if error is None:
+                    self._status = RecordingStatus.PUBLISHED
+                    self._result = RecordingResult(
+                        RecordingStatus.PUBLISHED, self.path, None)
+                else:
+                    self._status = RecordingStatus.FAILED
+                    self._result = RecordingResult(
+                        RecordingStatus.FAILED, self._remaining_partial_path(),
+                        error)
+                self._done.set()
+        if self.dropped:
+            print(f"[record] frames dropped: {self.dropped} "
+                  f"(the encoder could not keep up)", file=sys.stderr)
+
+    def _verify_partial(self, count: bool = False) -> int:
+        """Read back enough of the file to reject a broken or empty one.
+
+        With `count`, also the number of video frames in it - demuxed, not
+        decoded - for a recording whose REAK never came. A fragmented file
+        cut mid-fragment ends in a partial one; counting stops there.
+        """
+        partial = Path(self.partial_path)
+        if not partial.is_file() or partial.stat().st_size <= 0:
+            raise RuntimeError("the recording file is missing or empty")
+        with av.open(str(partial), mode="r", format="mp4") as container:
+            if not container.streams.video:
+                raise RuntimeError("the recording has no video stream")
+            if next(container.decode(video=0), None) is None:
+                raise RuntimeError("the recording has no decodable video frame")
+        if not count:
+            return 0
+        frames = 0
+        try:
+            with av.open(str(partial), mode="r", format="mp4") as container:
+                for packet in container.demux(video=0):
+                    if packet.size:
+                        frames += 1
+        except Exception:                            # noqa: BLE001
+            pass
+        return frames
+
+    def wait(self, timeout: float | None = None) -> RecordingResult | None:
+        """Return the terminal result, or None when *timeout* expires."""
+        if not self._done.wait(timeout):
+            return None
+        with self._state_lock:
+            return self._result
+
+    def close(self, timeout: float | None = FINISH_TIMEOUT_S) -> RecordingResult:
+        """finish(), wait, then return or raise - as VideoRecorder.close()."""
+        self.finish()
+        result = self.wait(timeout)
+        if result is None:
+            result = self._fail_after_timeout(timeout)
+        if result.status is RecordingStatus.FAILED:
+            raise result.error or RecordingError(
+                "finalize", RuntimeError("recording failed without an error"))
+        return result
+
+    def _fail_after_timeout(self, timeout: float | None) -> RecordingResult:
+        seconds = self.FINISH_TIMEOUT_S if timeout is None else timeout
+        error = RecordingError("timeout", TimeoutError(
+            f"the worker did not close the recording within {seconds:g} s"))
+        with self._state_lock:
+            if self._result is not None:
+                return self._result
+            self._abort_publish.set()
+            self._status = RecordingStatus.FAILED
+            self._result = RecordingResult(
+                RecordingStatus.FAILED, self._remaining_partial_path(), error)
+            self._done.set()
+            print(f"[record] {error}; partial file was not published",
+                  file=sys.stderr)
+            return self._result
+
+    def _remaining_partial_path(self) -> str | None:
+        return self.partial_path if Path(self.partial_path).is_file() else None
+
+    @property
+    def status(self) -> RecordingStatus:
+        with self._state_lock:
+            return self._status
+
+    @property
+    def result(self) -> RecordingResult | None:
+        with self._state_lock:
+            return self._result
+
+    @property
+    def error(self) -> BaseException | None:
+        with self._state_lock:
+            return self._result.error if self._result is not None else None
+
+    @property
+    def result_path(self) -> str | None:
+        with self._state_lock:
+            return self._result.path if self._result is not None else None
+
+    @property
+    def audio_enabled(self) -> bool:
+        """Whether the file has a sound track (the worker said so in RSAK)."""
+        return self._audio_track
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
 
     @property
     def duration_ms(self) -> float:

@@ -124,6 +124,8 @@ from protocol import (  # noqa: F401
     GRAY_ACK_FMT, GRAY_ACK_MAGIC, GRAY_FMT, GRAY_MAGIC, HEADER_FMT,
     MOTION_ACK_FMT, MOTION_ACK_MAGIC, MOTION_FMT, MOTION_MAGIC,
     OUTS_ACK_FMT, OUTS_ACK_MAGIC, OUTS_FMT, OUTS_MAGIC, OUT_BYTES_IN_SHM,
+    AUDIO_RING_FMT, REC_DONE_FMT, REC_START_ACK_FMT, REC_START_FMT,
+    REC_STOP_FMT,
     FrameReply, OUT_FMT, OUT_MAGIC, OUT_STATUS_OK, OUT_STATUS_SKIPPED, RACK_FMT,
     RESIZE_ACK_MAGIC, RESIZE_FLAG_NR_SMALL,
     RESIZE_FMT, RESIZE_MAGIC, SHM_ACK_FMT, SHM_ACK_MAGIC, SHM_FMT,
@@ -572,6 +574,18 @@ def main() -> int:
             # announced here, where the display may be touched.
             commands.service_conversions(st)
             commands.poll_recording_finalizer(st)
+            # A GPU recording the worker closed by itself (its encoder failed)
+            # or lost with it (the worker died): finalize it now, with what
+            # reached the disk, rather than when the user next presses record.
+            if (st.recorder is not None
+                    and getattr(st.recorder, "stopped_elsewhere", lambda: False)()):
+                print("[main] the recording ended in the worker - finalizing it",
+                      file=sys.stderr)
+                try:
+                    commands.begin_recording_finalization(st)
+                except Exception as exc:
+                    print(f"[main] recording finalization could not start: {exc}",
+                          file=sys.stderr)
 
             # NR OFF is a real idle state unless an explicit consumer still
             # needs bypass frames.  No code below this branch captures, sends,
@@ -1045,7 +1059,9 @@ def main() -> int:
 
             t0 = time.perf_counter()
             try:
-                if st.recorder is not None and st.output_rgba is not None:
+                if (st.recorder is not None
+                        and getattr(st.recorder, "takes_pixels", True)
+                        and st.output_rgba is not None):
                     # Our layer is excluded from capture
                     # (WDA_EXCLUDEFROMCAPTURE), so we bake the open menu onto
                     # the frame ourselves. frombuffer references the numpy

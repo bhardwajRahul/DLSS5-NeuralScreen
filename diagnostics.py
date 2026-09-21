@@ -569,7 +569,7 @@ _SETTINGS_KEYS = (
     # of overlay bug.
     "worker_present", "capture_in_worker", "pixels_in_shm", "motion_on_gpu",
     "fullscreen", "warmup", "split", "record_audio",
-    "rec_indicator", "open_menu_on_start",
+    "rec_indicator", "gpu_record", "open_menu_on_start",
     "screenshot_format", "screenshot_mode",
     # The conversion page's output choices: a report about a conversion
     # that came out silent or in the wrong codec starts here. The folder
