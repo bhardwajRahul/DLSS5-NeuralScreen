@@ -8,9 +8,9 @@ in UTC, not the tag timestamps.
 
 Scope and honesty notes:
 
-* The list starts at `v1.0.0` and ends at `v1.15.1`; every tag in that range has a
-  published GitHub release, 34 of them. GitHub returns 35 releases for the
-  repository because the count includes the one tag listed as out of scope below.
+* The list starts at `v1.0.0` and ends at `v2.0.2`; every tag in that range has a
+  published GitHub release. GitHub returns more releases than the tag count
+  because the count includes the tags listed as out of scope below.
   The tag `v0.1.0-alpha` (2026-09-06) is **not** part of this history: it is a tag
   from the other project line that shares this repository's history (the AMD
   fork), not a NeuralScreen version. It is excluded rather than guessed at. The tag
@@ -29,6 +29,107 @@ Scope and honesty notes:
   (the early releases carried a different set - see the individual entries).
 
 ---
+
+## v2.0.2 - 2026-09-21 - the fixes from the tracker
+
+The reported defects, and one of them was a bug in an earlier fix. Verified on
+the bench with the full suite before tagging.
+
+* **The v2.0.0 reveal fix never ran on an ordinary launch.** The panel publishes
+  its handle so the worker can reveal the picture *under* it rather than over it,
+  but the worker was started before the panel existed: it read the variable once,
+  found nothing, and kept that answer forever. A reporter's log still showed the
+  old fallback line on a build that was supposed to have fixed it. The panel is
+  built first now.
+* **The taskbar, our Save As dialog and our own windows were all read as
+  "something covered us".** The worker re-checks the topmost slot every 300
+  frames and raises the picture when anything has taken it. The shell's taskbar
+  is a topmost window, so interacting with it lifted the picture over the panel;
+  our own dialog did the same for as long as it was open, which is the flicker
+  filmed while taking a screenshot. Both sides now decide by **process** - the
+  shell's windows and our own program's windows are not occlusion - and a real
+  application window still lifts the picture, which is what this exists for.
+* **A saved PNG carried a transparent hole where the panel was.** Measured on a
+  reporter's screenshot: alpha 255 over the desktop, alpha 0 over the whole panel
+  rectangle, with the panel's colours still in the file. The PNG path kept the
+  frame's fourth byte as the alpha channel and JPEG dropped it, which is why it
+  showed only in the default format. A capture is opaque by construction, so that
+  byte is forced opaque.
+* **Changing monitor in window mode kept the old window target.** A monitor
+  switch rebuilds the pipeline for the new monitor's size but never cleared the
+  handle of the captured window - only leaving window mode did. The stale handle
+  was still found alive, and the worker was asked to capture that window on top
+  of a pipeline rebuilt for the whole monitor: two sources in one session.
+* **Two fixes from a contributor.** HDR tone-mapping followed the presentation
+  setting instead of the captured monitor's own HDR state, so the two could
+  disagree; and the worker now waits for the GPU before freeing a neural pass,
+  refusing safely rather than releasing from under it, and releases the passes it
+  is not using - which a reporter's log had been showing all along
+  (`asked=4 have=3 live=3`, then down and never released).
+* **The taskbar test was passing two of its steps vacuously.** It gave a foreign
+  window the foreground with a call Windows refuses, so the steps never reached
+  the bug they existed for, and an assertion blamed the test's own setup for a
+  message the click path had correctly sent. One message branch had no negative
+  coverage at all. Five mutations now caught.
+
+## v2.0.1 - 2026-09-20 - the log tells the truth, and the guard can see
+
+A maintenance release. **Nothing changes on screen** - every control, default and
+measurement from v2.0.0 is unchanged. What changes is the program's ability to
+explain itself when something goes wrong, because an open report spent a week
+unanswerable while three diagnostic packages looked perfectly healthy.
+
+* **The guard that keeps the panel above the picture was walking sixteen windows
+  and giving up.** Helper windows (invisible input-method entries, a 1x1 system
+  thumbnail helper, an off-screen accessibility window) are skipped but still
+  spend steps, so on a busy desktop the walk ended with "found nothing" and did
+  nothing at all. In a reporter's two packages the healthy verdict appears **zero**
+  times, against 63 on a machine where the same code works.
+* **"I gave up looking" and "nothing is above us" were printed as the same
+  line** - two different facts, and printing them as one is why those packages
+  read as healthy.
+* **The guard said nothing about our own panel.** Every decision now records the
+  panel's position, its visibility, whether it is still topmost, and its actual
+  transparency read back from the window rather than remembered.
+* **Nine kinds of worker diagnostic never reached the log.** The failure report
+  itself, every shader and pipeline setup failure, and the line that says Boost
+  quietly fell back to full resolution were written and then dropped one layer
+  later. A line that is never printed looks exactly like a line that was never
+  reached.
+* **The NR cascade was told to the first worker and no other.** The pass count
+  travels with a resize command and was sent once at startup, so every restart
+  brought the worker back at one pass while the panel still showed four.
+* **A number in the v2.0.0 notes was wrong.** "About 440 MB" per extra pass was
+  an estimate printed as a measurement; measured at a 2560x1440 work size it is
+  about 640 MB per pass, and it scales with the work resolution.
+* **The diagnostic package had stopped saying how the program was configured** -
+  it could not say whether the cascade was running, where the counter was, or how
+  large the panel had been made.
+
+## v2.0.0 - 2026-09-20 - Multipass, the redesign, and the tray
+
+* **Boost** - the network runs at a reduced resolution and only its DELTA is
+  composed onto the native frame, so text and edges keep full resolution. On by
+  default.
+* **DLSS 4.5 Frame Generation, x2 / x3 / x4**, with or without the neural pass.
+  Ada or newer.
+* **Whole screen or one window**, picked from a list or by pointing at it and
+  pressing Num5; the overlay follows it as it moves and resizes.
+* **NR passes** - the network over the same frame more than once, 1 to 4, an
+  experiment rather than a finished feature. Every pass gets its OWN network
+  instance: calling one instance twice inside a frame hands it two evaluations
+  with no motion between them, which is a lie to its temporal history. Off by
+  default and only available with Boost on.
+* **The panel fits the screen** and carries a scale control, 80 to 130%. At 100%
+  the main page does not fit a 1080p desktop.
+* **Minimise to tray and Close to tray** (#93), both off by default; neither
+  stops the neural pass.
+* **The frame rate on screen** (#109) with the panel closed, in the corner you
+  choose - `NR 55.1`, or `FG 167 (55.1)`.
+* **Fixes:** the panel no longer flashes while the picture is on (#107) - it was
+  never a foreign window but our own, shown above the panel instead of below it;
+  eight NGX parameters the runtime does not have were being set on every create;
+  the English interface said a Russian word in the theme label.
 
 ## v1.17.0 - 2026-09-20 - the panel redesign, and fixes from the tracker
 
