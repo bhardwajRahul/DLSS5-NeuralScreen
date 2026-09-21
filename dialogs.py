@@ -171,8 +171,22 @@ def save_image(path: Path, rgba) -> bool:
 
     The result is checked on disk before the answer: "the encoder said yes"
     is not the same as "the file is there".
+
+    THE FOURTH CHANNEL IS FORCED OPAQUE. A screenshot is pixels of a desktop
+    capture, which is opaque by construction - the alpha byte carries no
+    information about the picture. It is not zero either: the frame surface is
+    built with pygame.image.frombuffer(..., "RGBX"), where the X byte is
+    "unused" as far as pygame's renderer is concerned, and the panel is drawn
+    onto it through an SRCALPHA scratch. Whatever that compositing leaves in
+    the byte is what the file gets, because frombuffer does not copy and the
+    PNG path keeps the channel (COLOR_RGBA2BGRA). Measured on a reporter's
+    v2.0.1 screenshot (#107): alpha 255 over the desktop, alpha 0 over the
+    whole panel rectangle - colours present, transparency zeroed - so any
+    viewer that honours alpha showed a hole where the panel was, and he
+    reported it as "the transparent section".
     """
     import cv2
+    import numpy as np
 
     suffix = path.suffix.lower()
     if suffix in (".jpg", ".jpeg"):
@@ -181,7 +195,19 @@ def save_image(path: Path, rgba) -> bool:
         options = [cv2.IMWRITE_JPEG_QUALITY, 100]
     elif suffix == ".png":
         extension = ".png"
-        pixels = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+        # Opaque before the conversion: the byte above is not a fact about
+        # the capture, and writing it out invents transparency that was
+        # never on screen. JPEG already drops the channel, which is why the
+        # fault only ever showed in a PNG - the default format.
+        #
+        # np.array(..., copy=True), NOT ascontiguousarray: the latter returns
+        # the SAME buffer when it is already contiguous, and the write below
+        # would then reach back into the caller's frame - a screenshot that
+        # silently edits the picture it was taken from.
+        opaque = np.array(rgba, copy=True)
+        if opaque.ndim == 3 and opaque.shape[2] == 4:
+            opaque[..., 3] = 255
+        pixels = cv2.cvtColor(opaque, cv2.COLOR_RGBA2BGRA)
         options = [cv2.IMWRITE_PNG_COMPRESSION, 3]
     else:
         raise ValueError(f"unsupported screenshot extension: {path.suffix or '<none>'}")
