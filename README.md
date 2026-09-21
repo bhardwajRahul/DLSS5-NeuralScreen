@@ -135,10 +135,10 @@ on it, red when it is not.
   50-series; adapters beyond it are unconfirmed.
 
 Everything else is behind the sliders icon: monitor/GPU, a 30/60/custom/off
-frame limiter, HDR, media folders, Spout2, the recording indicator, an
-on-screen frame counter, minimise/close to tray, static frame skipping, key
-assignments, keyboard navigation, theme and **12** languages, and **Scale**
-above Quit, which sizes the panel.
+frame limiter, HDR, media folders, file conversion, Spout2, the recording
+indicator, an on-screen frame counter, minimise/close to tray, static frame
+skipping, key assignments, keyboard navigation, theme and **12** languages,
+and **Scale** above Quit, which sizes the panel.
 
 ## Swapping a runtime
 
@@ -148,11 +148,11 @@ bundled copy; `nr_dll` / `NS_NR_DLL` remain the NR override.
 
 ## Recording and screenshots
 
-**Num0** records to the configured folder. Stop is non-blocking: the encoder
-drains into a `.partial`, verifies the final MP4, then publishes it atomically
-and shows the codec, FPS, audio state and exact path. **Num3** freezes the
-processed frame before any dialog; choose **Save As** or quiet unique-name
-saving, plus PNG or JPEG, in settings. The open menu appears in both.
+**Num0** records to the configured folder, on the GPU by default (NVENC, 60 fps,
+sound, no frame-rate cost; a recording an error cuts short is kept). The open
+menu is not in it: turn **Record on the GPU** off for the older 30 fps path,
+which draws it in. **Num3** freezes the frame, menu included, before any
+dialog; choose **Save As** or quiet saving, plus PNG or JPEG, in settings.
 
 **Recording externally:**
 

@@ -52,9 +52,65 @@ only moves the windows.
 ## Recording (Num0)
 
 `Num0` starts/stops recording of the **NR-processed frame** into
-`recordings/neuralscreen-<timestamp>.mp4`:
+`recordings/neuralscreen-<timestamp>.mp4`. Two encoders can make it, and
+**Record on the GPU** in the Media tab chooses between them (on by default).
+Whichever records, stopping never blocks the UI and the file is published only
+once it reads back (see *For both paths*).
 
-- AV1 NVENC hardware encoding at your desktop resolution, **60 fps**,
+### On the GPU (the default)
+
+The worker records the frame the viewer sees without the frame ever leaving
+the card (`native/gpu_recorder.cpp`):
+
+- **One copy a frame, no submission of its own.** Wherever the frame is copied
+  for Spout - the SDR, bypass, Frame Generation and HDR presents, and the pixel
+  download - it is copied into a three-slot ring too, in the same command list.
+  `EndCommands` hands that list's fence to the encoder thread.
+- **The encoder thread** waits for the fence, converts RGBA to NV12 with the
+  D3D11 video processor on the same adapter (matched by LUID, as the Spout
+  bridge does) and hands the surface to a Media Foundation sink writer running
+  NVENC: AV1, then HEVC, then H.264 - the first one the driver opens. The file
+  is tagged BT.709 studio range, which is what players assume for HD video.
+- **Fragmented MP4** where the system offers it (for AV1 and H.264 here, not
+  HEVC): a worker that dies mid-recording still leaves a file that plays up to
+  its last fragment. "Auto" takes any codec in a fragmented file before the
+  best codec in a plain one.
+- **60 fps on the clock.** A frame goes into each 16.7 ms slot the pipeline
+  fills; a still screen fills none, and the file is variable-rate rather than
+  padded. On stop, the frame on screen is written once more, so the picture
+  lasts as long as the sound.
+- **A frame of another size** (a captured window resized mid-recording) is
+  scaled into the recording and letterboxed instead of ending it.
+- **Sound** comes from the client: the WASAPI loopback described below,
+  resampled to 48 kHz 16-bit stereo and written into a shared PCM ring
+  (`AUDIO_RING_FMT`). The encoder thread muxes it into the same file as AAC,
+  timed by its position in the ring - so there is no remux at the end. The
+  file's time 0 is the moment the encoder is ready: a slow setup delays the
+  whole recording instead of opening it with a gap.
+- **Failures end cleanly.** A write error (a full disk) ends the recording in
+  the worker, which says so with an unasked `REAK`; a worker that dies is
+  noticed from the client's side. Either way the client publishes what reached
+  the disk and says the recording was **cut short**. If the GPU recorder cannot
+  start at all, the CPU path records instead.
+- **The open menu is not in the file:** it is a separate window the worker
+  never sees. Switch Record on the GPU off to have it drawn in.
+
+Measured on an RTX 5080 (`tests/test_gpu_recorder.py`, which also runs the
+recorder on its own through `native/gpu_recorder_check.cpp`): all three codecs
+120/120 frames at 60 fps with none dropped; four colour bars within one code
+value of BT.709 studio range; frame spacing 16.67 ms throughout; picture and
+sound 0.0 ms apart (white flashes against tone bursts at the same instants).
+In a headless loop that pays the readback either way, GPU recording at 60 fps
+cost no measurable frame rate and the CPU path at 30 fps cost 6%.
+
+### On the CPU (Record on the GPU off, and the fallback)
+
+The client asks the worker for the pixels of each recorded frame
+(`FRAME_FLAG_WANT_PIXELS`), draws the open menu onto them and encodes them
+itself:
+
+- AV1 NVENC hardware encoding through PyAV (HEVC or H.264 on cards without an
+  AV1 encoder) at your desktop resolution, **30 fps**,
   quality-targeted VBR (`cq 16`, ~64 Mbps in practice, ceiling 250 Mbps),
   preset p6 + tune hq, sRGB/BT.709 color tags (metadata written both on the
   stream and on every frame — players render colors identical to the screen).
@@ -63,16 +119,19 @@ only moves the windows.
   Raising quality costs no encoding time — that is dominated by the colour
   conversion, not by the preset (measured: 1.6–1.7 s per 3 s of video at
   every setting tried).
-- Recording runs at **60 fps** because the pipeline delivers ~55 frames per
-  second. The previous 30 fps time base could not represent them: frames were
-  squeezed into half as many ticks, which is what made fast motion fall apart
-  regardless of bitrate.
+- **30 fps, not 60:** every recorded frame is a full trip of the picture from
+  the worker, and at 60 fps that measured ~36% of the frame rate (101 -> 65
+  FPS). Half the rate is half the cost, and each frame is the same picture. The
+  timestamps come from the clock, so the file still plays at real speed.
 - **Only the open menu is burned into the recording** — nothing else. Our
   own layer is hidden from external capture, so anything that must reach the
   file is drawn onto the frame before encoding. The same applies to
   screenshots. The HUD panel and the watermark used to be burned in as well;
   they are gone from the screen, and in a file they read as someone else's
   caption.
+
+### For both paths
+
 - Recording works in both NR ON and NR OFF (bypass) modes; the file duration
   matches real time (PTS is built from the wall clock).
 - **External recorders see the picture through Spout2** (off by default,
@@ -101,10 +160,11 @@ publishes the final path with `os.replace`. Until that verification succeeds,
 the UI says *finalizing* and never reports the recording as saved. A failure
 keeps the recoverable `.partial` and reports the exact lifecycle stage.
 
-### What recording costs, and why it is not the bitrate
+### What the CPU path costs, and why it is not the bitrate
 
-Recording used to halve the frame rate. Measured at 4K with `NS_PHASE=1`,
-per frame:
+These are the costs the GPU path does away with; they still apply when Record
+on the GPU is off. Recording used to halve the frame rate. Measured at 4K with
+`NS_PHASE=1`, per frame:
 
 ```
                     idle    recording   after both fixes
@@ -146,6 +206,29 @@ Lowering the bitrate does nothing for any of this: the time goes into the
 colour conversion, not into the encoder. Which is why there is no bitrate
 slider in the menu — it would be a knob that looks like it helps and does
 not.
+
+## Converting files (the Media tab)
+
+The Media tab's conversion page runs images and videos from disk through the
+same network, with the profile and sliders on screen. Each file runs on its
+own worker in the shape the compatibility gate uses - synthetic frames, no
+capture, no window - so the overlay keeps running beside it (`media_convert.py`,
+the queue in `convert_jobs.py`):
+
+- **Stills** are one frame with `reset` and zero motion: a still has no history
+  to correlate against.
+- **Videos** run the live optical-flow guides at the live work size and are
+  re-encoded through NVENC (AV1, HEVC or H.264; H.264 on the CPU for sizes NVENC
+  refuses). The original audio is copied, or re-encoded to AAC when the
+  container needs it.
+- **The queue** takes several files at once (the picker, or drag and drop onto
+  the panel), converts them in order and shows progress, speed and time left
+  for each, with Stop, Remove, Retry and Show. The output choices - where to
+  save, codec, quality, image format, keep audio - apply to files added after
+  the change.
+- Output goes to a `.partial` name first and is published when complete, as a
+  recording is; the format is named explicitly because neither Pillow nor PyAV
+  can guess it from that suffix.
 
 ## config.json
 
@@ -206,6 +289,8 @@ They talk over stdin/stdout with a binary protocol:
 | `OUT1` | result: RGBA8 full-res, or `bytes=0` — the worker already presented it |
 | `RNSZ` / `RACK` | change work resolution on the fly, no process restart |
 | `OUTS` / `OAK2` | named section the worker writes result pixels into; the reply then carries `bytes = 0xFFFFFFFF` instead of a payload |
+| `RECS` / `RSAK` | record the frame the viewer sees into an MP4, on the GPU; the answer names the codec, the size and the file's time 0 |
+| `RECE` / `REAK` | stop and close the recording; `REAK` also comes unasked when the encoder fails |
 
 **Capture.** On `DDA1` the worker opens Desktop Duplication on the GPU: each
 frame is copied into a cross-device shared texture and swizzled to RGBA.
@@ -385,6 +470,38 @@ attributed to transport.
 
 The 1440p figures previously published here (64 FPS) predate the DDA fence
 fix and understate current performance; they have not been re-measured.
+
+### The client off the critical path: the early reply
+
+The loop used to run in lockstep: send the frame, wait while the worker
+evaluated **and presented** it, then do the client's own work - the HUD, the
+commands, the next capture request - while the GPU sat idle. With
+`FRAME_FLAG_EARLY_REPLY` (bit 13 of the frame flags) the worker answers as soon
+as the frame's work is on the GPU queue, then waits for it and presents as
+before; the client's work runs in that time. Nothing is reordered: the worker
+reads the next message only once this frame is on screen, and a dead worker
+still shows as a missing answer. It is honoured only on the plain present path
+(a processed frame, worker capture, no pixels, wipe or HDR); Frame Generation,
+HDR, screenshots and CPU recording keep the old timing. `NS_EARLY_REPLY=0`
+turns it off.
+
+Measured off-screen on an RTX 5080 at 2560×1440 - window capture, worker
+present, NVOFA - with the client's per-frame work simulated at the 1.6 ms a
+user's log shows:
+
+```
+                             lockstep   early reply
+full-resolution NR  FPS        119.6       147.7     (+23.6%)
+  client waits per frame       6.70        0.65 ms
+Boost (work 1664x936) FPS      170.6       177.2     (+3.9%, at the display's refresh)
+```
+
+What remains between two frames is the capture round trip: in the Boost run
+the GPU idled 2.07 ms a frame between presenting one frame and starting the
+network on the next (`gap` in the `NS_PHASE` boundary report). With NVOFA the
+client needs the capture before `FRM1` for one thing only - the scene-cut test,
+the mean difference of two 320×180 grays against 0.24. Done in the worker, that
+round trip could go too.
 
 ### work_scale costs nothing (in upscale mode)
 
