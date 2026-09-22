@@ -175,6 +175,46 @@ def main() -> int:
     except Exception as exc:
         failures.append(f"the GPU stage raised {type(exc).__name__}: {exc}")
 
+    # 8. The three channels a conversion asks the worker for. They are what
+    #    keeps a frame out of the pipe (SHMI in, OUTS back) and the motion
+    #    field off the CPU (MOTS), each is refusable, and a worker that
+    #    quietly stopped taking one would cost about 15 ms a frame at 1080p
+    #    with nothing failing. This is what would notice.
+    try:
+        from settings_io import PROFILES
+        params = dict(PROFILES["Natural"])
+        params["style"] = 1
+        work_w, work_h = processing_size(640, 360, 0.65, True, 1)
+        with media_convert._Engine(params, 640, 360, work_w, work_h) as engine:
+            if engine.shm is None or not engine.shm.negotiated:
+                failures.append("the frame does not travel through shared "
+                                "memory - SHMI was refused")
+            if not engine.motion_small:
+                failures.append("the motion field is still built at work "
+                                "size - MOTS was refused")
+            if not engine.out_shm:
+                failures.append("the processed frame comes back through the "
+                                "pipe - OUTS was refused")
+            flow_w, flow_h = media_convert.flow_size(work_w, work_h)
+            if engine.motion_size != (flow_w, flow_h):
+                failures.append(f"the motion size is {engine.motion_size}, "
+                                f"expected {(flow_w, flow_h)}")
+            frame = np.zeros((360, 640, 4), np.uint8)
+            frame[..., :3] = 96
+            frame[..., 3] = 255
+            frame[90:270, 160:480, 0] = 200
+            motion = np.zeros((flow_h, flow_w, 2), np.float16)
+            pixels = engine.evaluate(0, frame, motion, True)
+            if pixels is None:
+                failures.append("no pixels came back through the section")
+            elif pixels.shape != (360, 640, 4):
+                failures.append(f"the section returned {pixels.shape}, "
+                                f"expected (360, 640, 4)")
+            elif int(pixels[..., :3].max()) == 0:
+                failures.append("the frame from the section is black")
+    except Exception as exc:
+        failures.append(f"the channel stage raised {type(exc).__name__}: {exc}")
+
     print("=" * 60)
     if failures:
         print(f"FAIL: {len(failures)} - {failures}")
