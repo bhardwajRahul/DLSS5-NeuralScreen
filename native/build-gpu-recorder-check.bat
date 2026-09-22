@@ -14,6 +14,6 @@ call "%~dp0vcvars.bat" || (echo NO_COMPILER& exit /b 1)
 cl /nologo /O2 /EHsc /W3 /MD /std:c++17 /Fo"%OUT%\\" ^
    "%SRC%gpu_recorder_check.cpp" "%SRC%gpu_recorder.cpp" ^
    /Fe:"%OUT%\gpu_recorder_check.exe" ^
-   /link d3d12.lib d3d11.lib dxgi.lib mfplat.lib mfreadwrite.lib mfuuid.lib ole32.lib
+   /link d3d12.lib d3d11.lib dxgi.lib d3dcompiler.lib mfplat.lib mfreadwrite.lib mfuuid.lib ole32.lib
 if errorlevel 1 exit /b 1
 endlocal

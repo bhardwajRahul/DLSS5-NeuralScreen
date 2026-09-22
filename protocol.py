@@ -484,7 +484,8 @@ REC_START_MAGIC = 0x53434552      # 'RECS'
 REC_START_ACK_MAGIC = 0x4B415352  # 'RSAK'
 REC_STOP_MAGIC = 0x45434552       # 'RECE'
 REC_DONE_MAGIC = 0x4B414552       # 'REAK' - also sent unasked when the encoder fails
-# magic, fps, codec, bitrate, pts, start_qpc, reserved x2, ring name, UTF-8 path (1128)
+# magic, fps, codec, bitrate, pts, start_qpc, flags, reserved, ring name,
+# UTF-8 path (1128)
 REC_START_FMT = "<4Iqq2I64s1024s"
 # magic, ok, codec, hresult, pts, origin_qpc, width, height, fps, audio (48)
 REC_START_ACK_FMT = "<4Iqq4I"
@@ -492,6 +493,11 @@ REC_STOP_FMT = "<4Iq"             # magic, reserved x3, pts (24)
 # magic, ok, written, dropped, pts, hresult, duration_ms, audio_frames, codec (40)
 REC_DONE_FMT = "<4Iq4I"
 REC_CODEC_AUTO, REC_CODEC_H264, REC_CODEC_HEVC, REC_CODEC_AV1 = 0, 1, 2, 3
+# RECS flags: record HDR10 where the worker's frames are HDR.
+REC_FLAG_HDR = 0x1
+# Or-ed into RSAK's and REAK's codec when the file is HDR10 (10-bit, BT.2020,
+# PQ): the name is REC_CODEC_NAMES[codec & 0xFF].
+REC_CODEC_HDR10 = 0x100
 REC_CODEC_NAMES = {REC_CODEC_H264: "H.264", REC_CODEC_HEVC: "HEVC",
                    REC_CODEC_AV1: "AV1"}
 # The PCM ring's header (GpuRecAudioRing): magic, rate, channels, capacity,
@@ -713,12 +719,14 @@ def send_gray(worker: subprocess.Popen, width: int, height: int,
 def send_rec_start(worker: subprocess.Popen, path: str, *, fps: int,
                    codec: int = REC_CODEC_AUTO, bitrate: int = 0,
                    start_qpc: int = 0, audio_ring: str = "",
-                   pts: int = 0) -> None:
+                   pts: int = 0, hdr: bool = False) -> None:
     """RECS: record the frame the viewer sees into `path`, on the GPU.
 
     The worker answers with RSAK (WorkerReader.rec_started). `audio_ring` is
     the name of an AudioRing section, "" for a silent file; `start_qpc` is
     the QueryPerformanceCounter reading that the ring's frame 0 belongs to.
+    `hdr` allows HDR10: the worker records it when its frames are HDR, and
+    says so in RSAK (REC_CODEC_HDR10).
     """
     raw_path = str(path).encode("utf-8")
     if len(raw_path) >= 1024:
@@ -727,7 +735,8 @@ def send_rec_start(worker: subprocess.Popen, path: str, *, fps: int,
         raise ValueError("the audio ring name is longer than 63 characters")
     worker.stdin.write(struct.pack(
         REC_START_FMT, REC_START_MAGIC, int(fps), int(codec), int(bitrate),
-        int(pts), int(start_qpc), 0, 0, audio_ring.encode("ascii"), raw_path))
+        int(pts), int(start_qpc), REC_FLAG_HDR if hdr else 0, 0,
+        audio_ring.encode("ascii"), raw_path))
     worker.stdin.flush()
 
 

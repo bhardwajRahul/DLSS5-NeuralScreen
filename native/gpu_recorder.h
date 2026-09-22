@@ -38,6 +38,15 @@ enum : uint32_t
     GPUREC_CODEC_H264 = 1,
     GPUREC_CODEC_HEVC = 2,
     GPUREC_CODEC_AV1  = 3,
+    // Or-ed into the codec of RSAK and REAK when the file is HDR10: 10-bit,
+    // BT.2020 primaries and matrix, SMPTE ST 2084 (PQ).
+    GPUREC_CODEC_HDR10 = 0x100,
+};
+
+// RECS.flags (reserved0 on the wire until it was needed).
+enum : uint32_t
+{
+    GPUREC_FLAG_HDR = 0x1,   // record HDR10 where the frames are HDR
 };
 
 // The PCM ring the client writes and the encoder thread reads. The client
@@ -65,6 +74,11 @@ struct GpuRecParams
     uint32_t bitrate;            // bits per second; 0 = chosen from size and rate
     int64_t start_qpc;           // when the audio ring's frame 0 was (QueryPerformanceCounter)
     const char *audio_name;      // the client's PCM ring, or nullptr for no sound
+    // HDR10: the frames come as R10G10B10A2 PQ BT.2020 (or FP16 scRGB) and
+    // the file is 10-bit PQ. Falls back to SDR when no 10-bit encoder opens
+    // (GpuRecStarted.hdr says which).
+    bool hdr;
+    UINT hdr_max_nits;           // the mastering display's peak for the metadata; 0 = 1000
 };
 
 struct GpuRecStarted
@@ -75,6 +89,7 @@ struct GpuRecStarted
     int64_t origin_qpc;          // the file's time 0 (QueryPerformanceCounter)
     UINT width, height, fps;     // as recorded (odd sizes rounded down)
     uint32_t bitrate;
+    bool hdr;                    // the file is HDR10
 };
 
 struct GpuRecStats

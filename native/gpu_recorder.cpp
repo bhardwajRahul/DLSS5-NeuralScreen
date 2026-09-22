@@ -2,6 +2,7 @@
 #include "gpu_recorder.h"
 
 #include <d3d11_4.h>
+#include <d3dcompiler.h>
 #include <dxgi1_4.h>
 #include <mfapi.h>
 #include <mferror.h>
@@ -58,6 +59,7 @@ struct Slot
 {
     ID3D11Texture2D *tex11 = nullptr;   // the video processor reads this
     ID3D12Resource *tex12 = nullptr;    // the worker copies into this - the same memory
+    ID3D11ShaderResourceView *srv = nullptr;   // the HDR10 conversion reads this
     HANDLE nt = nullptr;
     UINT w = 0, h = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -104,6 +106,9 @@ private:
 struct Surface
 {
     ID3D11Texture2D *tex = nullptr;
+    // HDR10: the P010 surface's two planes as render targets - 10-bit luma,
+    // and chroma at half the size (HdrConvert).
+    ID3D11RenderTargetView *rtv_y = nullptr, *rtv_uv = nullptr;
     // Our reference to the sample while the surface is free; nullptr while
     // the encoder holds it (SampleReturn puts it back).
     IMFSample *sample = nullptr;
@@ -151,6 +156,17 @@ struct Recorder
     Surface surfaces[kSurfaces];
     UINT w = 0, h = 0, fps = 60;
     uint32_t bitrate = 0;
+    // HDR10: 10-bit BT.2020 PQ from the frame to the file - P010 surfaces, a
+    // Main10 profile, the colour tagged. Asked for at the start; cleared when
+    // no 10-bit encoder takes it, and the recording goes on in SDR.
+    bool hdr = false;
+    UINT max_nits = 1000;
+    // The HDR10 conversion's pipeline (EnsureHdrConverter), made once.
+    ID3D11VertexShader *hdr_vs = nullptr;
+    ID3D11PixelShader *hdr_ps_y = nullptr, *hdr_ps_uv = nullptr;
+    ID3D11SamplerState *hdr_sampler = nullptr;
+    ID3D11Buffer *hdr_cb = nullptr;
+    UINT hdr_cb_w = 0, hdr_cb_h = 0;           // the slot size the constants are for
     // client_qpc: when the client's ring frame 0 was (its clock). origin_qpc:
     // when the file's time 0 is - the moment the encoder was ready, so a slow
     // setup (half a second when a codec is refused first) delays the whole
@@ -315,7 +331,8 @@ const CodecChoice kAv1 = { MFVideoFormat_AV1, GPUREC_CODEC_AV1, "AV1" };
 const CodecChoice kHevc = { MFVideoFormat_HEVC, GPUREC_CODEC_HEVC, "HEVC" };
 const CodecChoice kH264 = { MFVideoFormat_H264, GPUREC_CODEC_H264, "H.264" };
 
-void SetVideoFormat(IMFMediaType *t, const GUID &subtype, UINT w, UINT h, UINT fps)
+void SetVideoFormat(IMFMediaType *t, const GUID &subtype, UINT w, UINT h, UINT fps,
+                    bool hdr)
 {
     t->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     t->SetGUID(MF_MT_SUBTYPE, subtype);
@@ -327,6 +344,17 @@ void SetVideoFormat(IMFMediaType *t, const GUID &subtype, UINT w, UINT h, UINT f
     // encoder and in the file: BT.709 studio range - what every player
     // assumes for untagged HD video anyway, so nobody sees a contrast shift.
     t->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
+    if (hdr)
+    {
+        // HDR10, as the video processor writes it into P010: BT.2020
+        // primaries and matrix, the PQ curve. Tagged, a player tone-maps it;
+        // untagged, it would show PQ code values as if they were SDR - the
+        // washed-out grey an untagged HDR file is known for.
+        t->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT2020_10);
+        t->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT2020);
+        t->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_2084);
+        return;
+    }
     t->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
     t->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
     t->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
@@ -340,18 +368,30 @@ HRESULT AddVideo(Recorder *r, IMFSinkWriter *writer, const CodecChoice &c,
     HRESULT hr = MFCreateMediaType(&out);
     if (SUCCEEDED(hr))
     {
-        SetVideoFormat(out, c.subtype, r->w, r->h, r->fps);
+        SetVideoFormat(out, c.subtype, r->w, r->h, r->fps, r->hdr);
         out->SetUINT32(MF_MT_AVG_BITRATE, r->bitrate);
         if (c.id == GPUREC_CODEC_H264)
             out->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High);
         else if (c.id == GPUREC_CODEC_HEVC)
-            out->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH265VProfile_Main_420_8);
+            out->SetUINT32(MF_MT_MPEG2_PROFILE, r->hdr ? eAVEncH265VProfile_Main_420_10
+                                                      : eAVEncH265VProfile_Main_420_8);
+        else if (c.id == GPUREC_CODEC_AV1 && r->hdr)
+            out->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncAV1VProfile_Main_420_10);
+        if (r->hdr)
+        {
+            // The mastering display, for a player's tone mapping: this
+            // display's peak (ST 2086). The content's own light levels
+            // (MaxCLL/MaxFALL) are not known before it is recorded: unset.
+            out->SetUINT32(MF_MT_MAX_MASTERING_LUMINANCE, r->max_nits);
+            out->SetUINT32(MF_MT_MIN_MASTERING_LUMINANCE, 50);   // 0.005 nits (x0.0001)
+        }
         hr = writer->AddStream(out, stream);
     }
     if (SUCCEEDED(hr)) hr = MFCreateMediaType(&in);
     if (SUCCEEDED(hr))
     {
-        SetVideoFormat(in, MFVideoFormat_NV12, r->w, r->h, r->fps);
+        SetVideoFormat(in, r->hdr ? MFVideoFormat_P010 : MFVideoFormat_NV12,
+                       r->w, r->h, r->fps, r->hdr);
         if (with_params && SUCCEEDED(MFCreateAttributes(&params, 4)))
         {
             // Variable bitrate around the mean with room for motion, as the
@@ -454,10 +494,26 @@ HRESULT CreateWriter(Recorder *r, uint32_t want)
     // this system's MP4 sink takes AV1 and H.264 fragmented, not HEVC. A
     // codec asked for by name is kept over the container, with H.264 as the
     // last resort either way.
+    //
+    // HDR10 needs a 10-bit encoder: AV1 or HEVC Main10 (NVENC has no 10-bit
+    // H.264). They go first, by the same rules - any in a fragmented file
+    // first, or one asked for by name in either container - and when none
+    // opens, the recording goes on in SDR: a recording beats no recording.
     struct Attempt { const CodecChoice *codec; bool fragmented; };
     Attempt plan[6] = {};
     int n = 0;
-    if (want == GPUREC_CODEC_AUTO)
+    if (r->hdr && (want == GPUREC_CODEC_AV1 || want == GPUREC_CODEC_HEVC))
+    {
+        const bool hevc = want == GPUREC_CODEC_HEVC;
+        for (const CodecChoice *k : { hevc ? &kHevc : &kAv1, hevc ? &kAv1 : &kHevc })
+            for (bool frag : { true, false }) plan[n++] = { k, frag };
+    }
+    else if (r->hdr)
+    {
+        for (bool frag : { true, false })
+            for (const CodecChoice *k : { &kAv1, &kHevc }) plan[n++] = { k, frag };
+    }
+    else if (want == GPUREC_CODEC_AUTO)
     {
         for (bool frag : { true, false })
             for (const CodecChoice *k : { &kAv1, &kHevc, &kH264 }) plan[n++] = { k, frag };
@@ -485,8 +541,9 @@ HRESULT CreateWriter(Recorder *r, uint32_t want)
             HRESULT hr = TryWriter(r, codec, container, audio, with_params != 0);
             if (SUCCEEDED(hr))
             {
-                Log("[grec] %s encoder, %s MP4, %ux%u at %u fps, %u kbit/s%s%s",
-                    codec.name, kind, r->w, r->h, r->fps, r->bitrate / 1000,
+                Log("[grec] %s encoder%s, %s MP4, %ux%u at %u fps, %u kbit/s%s%s",
+                    codec.name, r->hdr ? " HDR10 (10-bit BT.2020 PQ)" : "", kind,
+                    r->w, r->h, r->fps, r->bitrate / 1000,
                     audio ? ", AAC audio" : ", no audio",
                     with_params ? "" : " (driver's rate control)");
                 return S_OK;
@@ -506,8 +563,15 @@ HRESULT CreateWriter(Recorder *r, uint32_t want)
                 }
             }
         }
-        Log("[grec] %s in %s MP4 refused: 0x%08X", codec.name, kind,
+        Log("[grec] %s%s in %s MP4 refused: 0x%08X", codec.name,
+            r->hdr ? " HDR10" : "", kind, static_cast<unsigned>(last));
+    }
+    if (r->hdr)
+    {
+        Log("[grec] no 10-bit encoder took HDR10 (0x%08X) - recording in SDR",
             static_cast<unsigned>(last));
+        r->hdr = false;
+        return CreateWriter(r, want);
     }
     return last;
 }
@@ -522,7 +586,7 @@ HRESULT CreateSurfaces(Recorder *r)
         d.Height = r->h;
         d.MipLevels = 1;
         d.ArraySize = 1;
-        d.Format = DXGI_FORMAT_NV12;
+        d.Format = r->hdr ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
         d.SampleDesc.Count = 1;
         d.Usage = D3D11_USAGE_DEFAULT;
         d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_VIDEO_ENCODER;
@@ -584,15 +648,17 @@ bool EnsureProcessor(Recorder *r, const Slot &slot)
     }
     hr = r->vdev->CreateVideoProcessor(r->vpe, 0, &r->vp);
     if (FAILED(hr)) { Fail(r, "video processor", hr); return false; }
+    // SDR only: HDR10 is converted by HdrConvert. The frame's colour, from
+    // its format: 8-bit sRGB (the network's output) or FP16 scRGB.
+    const DXGI_COLOR_SPACE_TYPE in_cs =
+        slot.format == DXGI_FORMAT_R16G16B16A16_FLOAT ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
+                                                      : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    const DXGI_COLOR_SPACE_TYPE out_cs = DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
     ID3D11VideoContext1 *vc1 = nullptr;
     if (SUCCEEDED(r->vctx->QueryInterface(IID_PPV_ARGS(&vc1))))
     {
-        const bool hdr = slot.format == DXGI_FORMAT_R16G16B16A16_FLOAT;
-        vc1->VideoProcessorSetStreamColorSpace1(
-            r->vp, 0, hdr ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
-                          : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-        vc1->VideoProcessorSetOutputColorSpace1(
-            r->vp, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
+        vc1->VideoProcessorSetStreamColorSpace1(r->vp, 0, in_cs);
+        vc1->VideoProcessorSetOutputColorSpace1(r->vp, out_cs);
         vc1->Release();
     }
     else
@@ -659,6 +725,193 @@ bool Blit(Recorder *r, const Slot &slot, ID3D11Texture2D *dst)
     SafeRelease(iv);
     SafeRelease(ov);
     if (FAILED(hr)) { Fail(r, "video processor blit", hr); return false; }
+    return true;
+}
+
+// --- HDR10 ------------------------------------------------------------------
+//
+// The video processor cannot make HDR10 here: asked with
+// CheckVideoProcessorFormatConversion (22.09.2026, RTX 5080), this driver's
+// converts within BT.709 only - no BT.2020, no PQ, and no FP16 input at all.
+// So an HDR10 frame is converted by two draws straight into the P010
+// surface's planes. The frame arrives as PQ code values (R10G10B10A2, the
+// worker's HDR composite), and the BT.2020 matrix is linear in them: there
+// is no curve to apply, only the matrix, the studio range and the chroma
+// downsample. A frame of another shape is fitted in with black around it,
+// as the video processor does for SDR.
+const char kHdr10Hlsl[] =
+    "Texture2D<float4> src : register(t0);\n"
+    "SamplerState lin : register(s0);\n"
+    // rect: where the frame lands in the recording, in its luma pixels.
+    "cbuffer P : register(b0) { float4 rect; };\n"
+    "static const float3 KY = float3(0.2627, 0.6780, 0.0593);\n"
+    "float3 Src(float2 luma) {\n"
+    "  float2 uv = (luma - rect.xy) / rect.zw;\n"
+    "  if (any(uv < 0) || any(uv > 1)) return 0;\n"       // the letterbox: PQ black
+    "  return src.SampleLevel(lin, uv, 0).rgb; }\n"
+    "float4 VS(uint id : SV_VertexID) : SV_Position {\n"
+    "  float2 t = float2((id << 1) & 2, id & 2);\n"
+    "  return float4(t * float2(2, -2) + float2(-1, 1), 0, 1); }\n"
+    // P010 keeps its 10 bits at the top of each 16-bit word: the code value is
+    // rounded here, so the word's low bits are zero rather than a remainder
+    // an encoder would truncate.
+    "float Word(float v) { return clamp(round(v), 0, 1023) * 64.0 / 65535.0; }\n"
+    "float PSY(float4 p : SV_Position) : SV_Target {\n"
+    "  return Word(64.0 + 876.0 * dot(Src(p.xy), KY)); }\n"
+    // Chroma, left-sited (BT.2020 / HEVC default): level with luma column 2i,
+    // between rows 2j and 2j+1 - a [1 2 1]/4 filter across, [1 1]/2 down.
+    // At the frame's edge the samples are held inside it; a block wholly in
+    // the letterbox is neutral, so no colour bleeds into the bars.
+    "float2 PSUV(float4 p : SV_Position) : SV_Target {\n"
+    "  float2 c = float2(floor(p.x) * 2.0 + 0.5, floor(p.y) * 2.0 + 1.0);\n"
+    "  if (c.x < rect.x || c.y < rect.y || c.x > rect.x + rect.z || c.y > rect.y + rect.w)\n"
+    "    return float2(Word(512.0), Word(512.0));\n"
+    "  float2 lo = rect.xy + 0.5, hi = rect.xy + rect.zw - 0.5;\n"
+    "  float3 sum = 0;\n"
+    "  [unroll] for (int dx = -1; dx <= 1; ++dx) {\n"
+    "    float w = dx == 0 ? 0.25 : 0.125;\n"
+    "    [unroll] for (int dy = 0; dy <= 1; ++dy)\n"
+    "      sum += w * Src(clamp(float2(c.x + dx, c.y - 0.5 + dy), lo, hi)); }\n"
+    "  float y = dot(sum, KY);\n"
+    "  return float2(Word(512.0 + 896.0 * (sum.b - y) / 1.8814),\n"
+    "                Word(512.0 + 896.0 * (sum.r - y) / 1.4746)); }\n";
+
+HRESULT CompileHdr(const char *entry, const char *target, ID3DBlob **code)
+{
+    ID3DBlob *errors = nullptr;
+    const HRESULT hr = D3DCompile(kHdr10Hlsl, sizeof(kHdr10Hlsl) - 1, "hdr10-convert",
+                                  nullptr, nullptr, entry, target, 0, 0, code, &errors);
+    if (FAILED(hr) && errors != nullptr)
+        Log("[grec] HDR10 shader %s: %s", entry,
+            static_cast<const char *>(errors->GetBufferPointer()));
+    SafeRelease(errors);
+    return hr;
+}
+
+bool EnsureHdrConverter(Recorder *r)
+{
+    if (r->hdr_ps_uv != nullptr) return true;
+    ID3DBlob *vs = nullptr, *y = nullptr, *uv = nullptr;
+    HRESULT hr = CompileHdr("VS", "vs_5_0", &vs);
+    if (SUCCEEDED(hr)) hr = CompileHdr("PSY", "ps_5_0", &y);
+    if (SUCCEEDED(hr)) hr = CompileHdr("PSUV", "ps_5_0", &uv);
+    if (SUCCEEDED(hr))
+        hr = r->d11->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(),
+                                        nullptr, &r->hdr_vs);
+    if (SUCCEEDED(hr))
+        hr = r->d11->CreatePixelShader(y->GetBufferPointer(), y->GetBufferSize(),
+                                       nullptr, &r->hdr_ps_y);
+    if (SUCCEEDED(hr))
+        hr = r->d11->CreatePixelShader(uv->GetBufferPointer(), uv->GetBufferSize(),
+                                       nullptr, &r->hdr_ps_uv);
+    SafeRelease(vs);
+    SafeRelease(y);
+    SafeRelease(uv);
+    if (SUCCEEDED(hr))
+    {
+        D3D11_SAMPLER_DESC sd = {};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.MaxLOD = D3D11_FLOAT32_MAX;
+        hr = r->d11->CreateSamplerState(&sd, &r->hdr_sampler);
+    }
+    if (SUCCEEDED(hr))
+    {
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth = 16;
+        bd.Usage = D3D11_USAGE_DEFAULT;
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        hr = r->d11->CreateBuffer(&bd, nullptr, &r->hdr_cb);
+    }
+    if (FAILED(hr))
+    {
+        Fail(r, "the HDR10 conversion", hr);
+        SafeRelease(r->hdr_vs);
+        SafeRelease(r->hdr_ps_y);
+        SafeRelease(r->hdr_ps_uv);
+        SafeRelease(r->hdr_sampler);
+        SafeRelease(r->hdr_cb);
+        return false;
+    }
+    Log("[grec] HDR10 conversion by shader (the video processor converts within BT.709 only)");
+    return true;
+}
+
+bool HdrConvert(Recorder *r, Slot &slot, Surface &dst)
+{
+    if (!EnsureHdrConverter(r)) return false;
+    HRESULT hr = S_OK;
+    if (slot.srv == nullptr)
+        hr = r->d11->CreateShaderResourceView(slot.tex11, nullptr, &slot.srv);
+    if (SUCCEEDED(hr) && dst.rtv_y == nullptr)
+    {
+        ID3D11Device3 *d3 = nullptr;
+        hr = r->d11->QueryInterface(IID_PPV_ARGS(&d3));
+        D3D11_RENDER_TARGET_VIEW_DESC1 rd = {};
+        rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        ID3D11RenderTargetView1 *y = nullptr, *uv = nullptr;
+        if (SUCCEEDED(hr))
+        {
+            rd.Format = DXGI_FORMAT_R16_UNORM;
+            rd.Texture2D.PlaneSlice = 0;
+            hr = d3->CreateRenderTargetView1(dst.tex, &rd, &y);
+        }
+        if (SUCCEEDED(hr))
+        {
+            rd.Format = DXGI_FORMAT_R16G16_UNORM;
+            rd.Texture2D.PlaneSlice = 1;
+            hr = d3->CreateRenderTargetView1(dst.tex, &rd, &uv);
+        }
+        SafeRelease(d3);
+        if (SUCCEEDED(hr)) { dst.rtv_y = y; dst.rtv_uv = uv; }
+        else { SafeRelease(y); SafeRelease(uv); }
+    }
+    if (FAILED(hr)) { Fail(r, "HDR10 conversion views", hr); return false; }
+
+    // Media Foundation drives this device from its own threads too: hold the
+    // device across the state and the draws, so nothing lands between them.
+    ID3D10Multithread *mt = nullptr;
+    r->d11->QueryInterface(IID_PPV_ARGS(&mt));
+    if (mt != nullptr) mt->Enter();
+    if (slot.w != r->hdr_cb_w || slot.h != r->hdr_cb_h)
+    {
+        // The same fit as the video processor's (EnsureProcessor).
+        const double scale = (std::min)(static_cast<double>(r->w) / slot.w,
+                                        static_cast<double>(r->h) / slot.h);
+        const float dw = static_cast<float>(static_cast<LONG>(slot.w * scale + 0.5) & ~1L);
+        const float dh = static_cast<float>(static_cast<LONG>(slot.h * scale + 0.5) & ~1L);
+        const float rect[4] = { static_cast<float>((static_cast<LONG>(r->w) - static_cast<LONG>(dw)) / 2),
+                                static_cast<float>((static_cast<LONG>(r->h) - static_cast<LONG>(dh)) / 2),
+                                dw, dh };
+        r->ctx->UpdateSubresource(r->hdr_cb, 0, nullptr, rect, 0, 0);
+        if (slot.w != r->w || slot.h != r->h)
+            Log("[grec] frames are %ux%u now - fitted into the %ux%u HDR10 recording",
+                slot.w, slot.h, r->w, r->h);
+        r->hdr_cb_w = slot.w;
+        r->hdr_cb_h = slot.h;
+    }
+    r->ctx->ClearState();
+    r->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    r->ctx->VSSetShader(r->hdr_vs, nullptr, 0);
+    r->ctx->PSSetShaderResources(0, 1, &slot.srv);
+    r->ctx->PSSetSamplers(0, 1, &r->hdr_sampler);
+    r->ctx->PSSetConstantBuffers(0, 1, &r->hdr_cb);
+    D3D11_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(r->w), static_cast<float>(r->h), 0.0f, 1.0f };
+    ID3D11RenderTargetView *target = dst.rtv_y;
+    r->ctx->OMSetRenderTargets(1, &target, nullptr);
+    r->ctx->RSSetViewports(1, &vp);
+    r->ctx->PSSetShader(r->hdr_ps_y, nullptr, 0);
+    r->ctx->Draw(3, 0);
+    vp.Width = static_cast<float>(r->w / 2);
+    vp.Height = static_cast<float>(r->h / 2);
+    target = dst.rtv_uv;
+    r->ctx->OMSetRenderTargets(1, &target, nullptr);
+    r->ctx->RSSetViewports(1, &vp);
+    r->ctx->PSSetShader(r->hdr_ps_uv, nullptr, 0);
+    r->ctx->Draw(3, 0);
+    // Nothing of ours stays bound to the surface the encoder is about to read.
+    r->ctx->ClearState();
+    if (mt != nullptr) { mt->Leave(); mt->Release(); }
     return true;
 }
 
@@ -804,7 +1057,7 @@ void EncodeItem(Recorder *r, const Item &it)
     Surface &s = r->surfaces[j];
     // 3. RGBA -> NV12, then wait for the GPU to have read the slot, which is
     // what lets the worker copy the next frame into it.
-    const bool ok = Blit(r, slot, s.tex);
+    const bool ok = r->hdr ? HdrConvert(r, slot, s) : Blit(r, slot, s.tex);
     r->ctx->End(r->blit_done);
     r->ctx->Flush();
     for (int spin = 0; spin < 2000 &&
@@ -868,11 +1121,18 @@ void Teardown(Recorder *r)
     for (Surface &s : r->surfaces)
     {
         if (s.sample != nullptr) SafeRelease(s.sample);
+        SafeRelease(s.rtv_y);
+        SafeRelease(s.rtv_uv);
         SafeRelease(s.tex);
         if (s.callback != nullptr) { s.callback->Release(); s.callback = nullptr; }
     }
     SafeRelease(r->vp);
     SafeRelease(r->vpe);
+    SafeRelease(r->hdr_vs);
+    SafeRelease(r->hdr_ps_y);
+    SafeRelease(r->hdr_ps_uv);
+    SafeRelease(r->hdr_sampler);
+    SafeRelease(r->hdr_cb);
     SafeRelease(r->blit_done);
     SafeRelease(r->vctx);
     SafeRelease(r->vdev);
@@ -953,6 +1213,7 @@ void EncoderMain(Recorder *r, const char *audio_name)
 
 void ReleaseSlot(Slot &s)
 {
+    SafeRelease(s.srv);
     SafeRelease(s.tex12);
     SafeRelease(s.tex11);
     if (s.nt != nullptr) { CloseHandle(s.nt); s.nt = nullptr; }
@@ -1017,6 +1278,8 @@ bool GpuRecStart(ID3D12Device *dev, const GpuRecParams &p, GpuRecStarted *out)
         (std::min)(400000000.0, (std::max)(4000000.0,
                                            0.15 * r->w * r->h * r->fps)));
     r->codec = p.codec;
+    r->hdr = p.hdr;
+    r->max_nits = p.hdr_max_nits != 0 ? p.hdr_max_nits : 1000;
     r->client_qpc = p.start_qpc;
     char stage[32] = {};
     GetEnvironmentVariableA("NS_TEST_FAIL_STAGE", stage, sizeof(stage));
@@ -1041,8 +1304,10 @@ bool GpuRecStart(ID3D12Device *dev, const GpuRecParams &p, GpuRecStarted *out)
     // The copy slots are made now, at the frame's own size, rather than on
     // the first frames of the recording, where making one is a hitch.
     for (Slot &s : r->slots)
-        EnsureSlot(r, s, p.width, p.height, DXGI_FORMAT_R8G8B8A8_UNORM);
+        EnsureSlot(r, s, p.width, p.height,
+                   r->hdr ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM);
     o.codec = r->codec;
+    o.hdr = r->hdr;
     o.audio = r->has_audio;
     o.origin_qpc = r->origin_qpc;
     o.width = r->w;

@@ -4,9 +4,10 @@ Everything here runs on this machine's card and none of it opens a window.
 
 1. gpu_recorder_check.exe - the recorder with no worker: the codecs the
    driver offers, the colour conversion (BT.709 studio range, measured on
-   four bars), a mid-recording resize (letterboxed, not stretched), and the
-   A/V sync of the file (white flashes against tone bursts at the same
-   instants).
+   four bars), a mid-recording resize (letterboxed, not stretched), the A/V
+   sync of the file (white flashes against tone bursts at the same
+   instants), and HDR10 - 10-bit PQ bars in, their exact BT.2020 code values
+   and the HDR tags out, in AV1 and in HEVC Main10 through a resize.
 2. A worker in the converter's shape (no capture, no window) recording what
    it processes, driven by GpuRecorder - the real client class, the real
    RECS/RECE, the real loopback ring. The file must publish, run at the
@@ -44,6 +45,13 @@ WORK = BASE / "_work" / "grec"
 #: BT.709 studio range of the four bars (red, green, blue, grey 128).
 BARS_YUV = {"red": (63, 102, 240), "green": (173, 42, 26),
             "blue": (32, 240, 118), "grey": (126, 128, 128)}
+#: HDR10 (the check's hdr 1): PQ code values in, 10-bit Y'CbCr out - BT.2020
+#: non-constant luminance, studio range. The greys carry the curve, the PQ
+#: red the matrix: BT.709's would put its luma at 157, not 179.
+HDR_BARS = {"PQ grey 0.25": (283, 512, 512), "PQ grey 0.5": (502, 512, 512),
+            "PQ grey 0.75": (721, 512, 512), "PQ red 0.5": (179, 449, 736)}
+#: AVCOL_PRI_BT2020, AVCOL_TRC_SMPTE2084, AVCOL_SPC_BT2020_NCL.
+HDR_TAGS = (9, 16, 9)
 
 
 def build_check(failures: list) -> Path | None:
@@ -91,6 +99,60 @@ def run_check(exe: Path, out: Path, *args) -> dict:
 def yuv_at(frame, x: int, y: int) -> tuple:
     yuv = frame.reformat(format="yuv444p").to_ndarray()
     return tuple(int(yuv[c, y, x]) for c in range(3))
+
+
+def yuv10_at(frame, x: int, y: int) -> tuple:
+    """10-bit Y, Cb, Cr at a luma position of a 4:2:0 frame."""
+    a = frame.to_ndarray(format="yuv420p10le")
+    h, w = frame.height, frame.width
+    u = a[h:h + h // 4].reshape(h // 2, w // 2)
+    v = a[h + h // 4:].reshape(h // 2, w // 2)
+    return int(a[y, x]), int(u[y // 2, x // 2]), int(v[y // 2, x // 2])
+
+
+def stage_hdr(exe: Path, failures: list) -> None:
+    """HDR10 through the recorder alone: 640x360, 2 s at the 60 fps clock."""
+    for name, codec, resize in (("HDR10", 0, 0), ("HDR10 HEVC, resized", 2, 1)):
+        out = WORK / f"hdr10_{codec}.mp4"
+        st = run_check(exe, out, 2, 640, 360, codec, 60, resize, 0, 0, 1)
+        if st["exit"] != 0 or not st.get("hdr"):
+            failures.append(f"{name}: no HDR10 recording ({st}); log:\n{st['log'][-800:]}")
+            continue
+        early = late = None
+        count, fmt = 0, ""
+        with av.open(str(out)) as c:
+            vs = c.streams.video[0]
+            cc = vs.codec_context
+            tags = (cc.color_primaries, cc.color_trc, cc.colorspace)
+            for f in c.decode(vs):
+                count += 1
+                t = float(f.pts * vs.time_base)
+                if early is None and t >= 0.5:
+                    fmt = f.format.name
+                    early = {k: yuv10_at(f, int(640 * (i + 0.5) / 4), 90)
+                             for i, k in enumerate(HDR_BARS)}
+                if resize and late is None and t >= 1.6:
+                    # 320x240 fitted into 640x360: 480 wide, from x = 80.
+                    late = {k: yuv10_at(f, int(80 + 480 * (i + 0.5) / 4), 90)
+                            for i, k in enumerate(HDR_BARS)}
+                    late["letterbox"] = yuv10_at(f, 8, 180)
+        print(f"    {name}: codec {st['codec']}, {fmt}, tags {tags}, {count} frames, "
+              f"{st['dropped']} dropped")
+        if tags != HDR_TAGS:
+            failures.append(f"{name}: tagged {tags}, not BT.2020 / PQ / BT.2020 {HDR_TAGS}")
+        if "10" not in fmt:
+            failures.append(f"{name}: the frames decode as {fmt!r}, not 10-bit")
+        if abs(count - 120) > 6:
+            failures.append(f"{name}: {count} frames in a 2 s recording at 60 fps")
+        want = dict(HDR_BARS, letterbox=(64, 512, 512))
+        for when, got in (("", early), (" after the resize", late)):
+            if got is None:
+                if when == "" or resize:
+                    failures.append(f"{name}: no frame to measure{when}")
+                continue
+            for k, have in got.items():
+                if max(abs(a - b) for a, b in zip(have, want[k])) > 2:
+                    failures.append(f"{name}: {k}{when} is {have}, expected {want[k]}")
 
 
 def stage_native(failures: list) -> None:
@@ -161,6 +223,7 @@ def stage_native(failures: list) -> None:
     # by ~7% of the recording.
     check_sync(exe, failures, "sync", 4, 0, tolerance=(-2.0, 2.0))
     check_sync(exe, failures, "sync at ~30 fps", 9, 30, tolerance=(-5.0, 55.0))
+    stage_hdr(exe, failures)
 
 
 def check_sync(exe: Path, failures: list, name: str, seconds: float,
@@ -395,8 +458,8 @@ def main() -> int:
         for f in failures:
             print("FAIL:", f)
         return 1
-    print("OK: GPU recording - codecs, colour, resize, sync, and the worker's "
-          "stop, failure and loss")
+    print("OK: GPU recording - codecs, colour, resize, sync, HDR10, and the "
+          "worker's stop, failure and loss")
     return 0
 
 

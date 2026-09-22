@@ -35,7 +35,8 @@ import numpy as np
 
 from audio import LoopbackCapture
 from protocol import (AUDIO_RING_FMT, AUDIO_RING_MAGIC, REC_CODEC_AUTO,
-                      REC_CODEC_NAMES, send_rec_start, send_rec_stop)
+                      REC_CODEC_HDR10, REC_CODEC_NAMES, send_rec_start,
+                      send_rec_stop)
 
 
 class RecordingStatus(str, Enum):
@@ -913,13 +914,17 @@ class GpuRecorder:
     AUDIO_LAG_S = VideoRecorder.AUDIO_LAG_S
 
     def __init__(self, worker, reader, path: str, *, fps: int = 60,
-                 audio: bool = True, codec: int = REC_CODEC_AUTO):
+                 audio: bool = True, codec: int = REC_CODEC_AUTO,
+                 hdr: bool = False):
         self.path = str(Path(path))
         self.partial_path = f"{self.path}.partial"
         self.fps = float(fps)
         self.width = 0
         self.height = 0
         self.codec = "unknown"
+        #: The file is HDR10 - asked for with `hdr`, given when the worker's
+        #: frames are HDR and a 10-bit encoder opened.
+        self.hdr = False
         self.written = 0
         self.dropped = 0
         self.audio_padded = 0
@@ -961,7 +966,8 @@ class GpuRecorder:
         try:
             send_rec_start(worker, self.partial_path, fps=int(round(fps)),
                            codec=codec, start_qpc=self._start_qpc,
-                           audio_ring=self._ring.name if self._ring else "")
+                           audio_ring=self._ring.name if self._ring else "",
+                           hdr=hdr)
         except (OSError, ValueError) as exc:
             self._close_audio()
             raise RecordingError("start", exc) from exc
@@ -983,7 +989,9 @@ class GpuRecorder:
             raise RecordingError("start", RuntimeError(
                 f"the GPU encoder did not start "
                 f"(0x{reply.hresult & 0xFFFFFFFF:08X})"))
-        self.codec = REC_CODEC_NAMES.get(reply.codec, "unknown")
+        self.hdr = bool(reply.codec & REC_CODEC_HDR10)
+        self.codec = REC_CODEC_NAMES.get(reply.codec & 0xFF, "unknown") + (
+            " HDR10" if self.hdr else "")
         self.width, self.height = int(reply.width), int(reply.height)
         self.fps = float(reply.fps)
         if self._ring is not None and not reply.audio:

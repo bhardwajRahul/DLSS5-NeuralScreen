@@ -697,22 +697,40 @@ static uint32_t g_rec_frames = 0;      // frames handed over since RECS
 // was encoded twice (224 frames made 448 export calls in a measured run).
 static uint64_t g_frame_serial = 0;    // counts the frames RunVideo processes
 static uint64_t g_rec_frame_done = UINT64_MAX;   // the last one recorded
+// This recording is HDR10: the HDR composite feeds it, as 10-bit PQ BT.2020
+// (PresentHdr), and no other export site does.
+static bool g_rec_hdr = false;
 
-static void RecordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src)
+// Whether this frame goes into the recording: its slot has come due and no
+// other export site of the frame took it. The slot's time lands in *t.
+static bool RecordWanted(int64_t *t)
 {
-    // `src` is in COPY_SOURCE here, as it is at every export site. One copy
-    // per list, and one per frame: the sites of one frame all show the same
-    // picture. The first site whose slot is due takes it.
     if (g_rec_slot >= 0 || !GpuRecActive() || g_rec_frame_done == g_frame_serial)
-        return;
-    int64_t t = 0;
-    if (!GpuRecFrameDue(&t)) return;
+        return false;
+    return GpuRecFrameDue(t);
+}
+
+// The copy of `src` (in COPY_SOURCE) into the recorder's ring, as this frame.
+static void RecordCopyAt(ID3D12GraphicsCommandList *list, ID3D12Resource *src, int64_t t)
+{
     const int slot = GpuRecReserve(src);
     if (slot < 0) return;   // the encoder is behind: counted as dropped
     GpuRecCopy(list, slot, src);
     g_rec_slot = slot;
     g_rec_time = t;
     g_rec_frame_done = g_frame_serial;
+}
+
+static void RecordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src)
+{
+    // `src` is in COPY_SOURCE here, as it is at every export site. One copy
+    // per list, and one per frame: the sites of one frame all show the same
+    // picture. The first site whose slot is due takes it. Not for an HDR10
+    // recording: every site but the HDR composite hands over the SDR
+    // picture, which is not what that file holds.
+    if (g_rec_hdr) return;
+    int64_t t = 0;
+    if (RecordWanted(&t)) RecordCopyAt(list, src, t);
 }
 
 // The list carrying the copy was submitted (fence != 0), or never will be.
@@ -6040,8 +6058,9 @@ static bool FinishRecording(VideoState &v, int64_t pts, bool closing_frame)
     const VideoRecDone done = {
         REC_DONE_MAGIC, ok ? 1u : 0u, st.written, st.dropped, pts,
         static_cast<uint32_t>(was ? st.hr : S_FALSE), st.duration_ms,
-        st.audio_frames, st.codec
+        st.audio_frames, st.codec | (g_rec_hdr ? GPUREC_CODEC_HDR10 : 0u)
     };
+    g_rec_hdr = false;
     return WriteExact(g_wire, &done, sizeof(done));
 }
 
@@ -6932,13 +6951,20 @@ static int RunVideo()
                 p.bitrate = g_rec_cmd.bitrate;
                 p.start_qpc = g_rec_cmd.start_qpc;
                 p.audio_name = g_rec_cmd.audio[0] != '\0' ? g_rec_cmd.audio : nullptr;
+                // HDR10 when the client allows it and the frames are HDR: the
+                // composite then feeds the file (PresentHdr). The mastering
+                // peak stays the nominal 1000 nits - the display query does
+                // not read the panel's own.
+                p.hdr = (g_rec_cmd.reserved0 & GPUREC_FLAG_HDR) != 0 && g_hdr_capture;
+                p.hdr_max_nits = 0;
                 GpuRecStarted started = {};
                 g_rec_slot = -1;
                 g_rec_frames = 0;
                 g_rec_frame_done = UINT64_MAX;
                 const bool ok = GpuRecStart(h.dev, p, &started);
+                g_rec_hdr = ok && started.hdr;
                 ack.ok = ok ? 1u : 0u;
-                ack.codec = started.codec;
+                ack.codec = started.codec | (g_rec_hdr ? GPUREC_CODEC_HDR10 : 0u);
                 ack.hresult = static_cast<uint32_t>(started.hr);
                 ack.origin_qpc = started.origin_qpc;
                 ack.width = started.width;
