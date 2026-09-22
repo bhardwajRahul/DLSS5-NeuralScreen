@@ -175,6 +175,15 @@ struct Recorder
     // many frames, the way a full disk would (0 = never). The release tests
     // drive the worker's auto-stop with it.
     uint32_t fail_after = 0;
+    // The converted frame waiting for its successor. A frame's duration is
+    // the gap to the next one, and that is only known when the next one
+    // arrives: when the pipeline runs slower than the recording's clock most
+    // slots are empty, and a fixed 1/fps duration made the fragmented MP4 lay
+    // each fragment's frames end to end - the picture ran ahead of the sound
+    // by ~7% of the recording at 30 fps. Held with its allocator set, so its
+    // surface is simply one more in flight.
+    IMFSample *held = nullptr;
+    int64_t held_time = 0;
 };
 
 Recorder *g_rec = nullptr;
@@ -719,6 +728,33 @@ void PumpAudio(Recorder *r, bool drain)
     }
 }
 
+// Write the frame held back, lasting until `next_time` (at least one slot).
+// Returns false when the write failed; the error is recorded either way.
+bool WriteHeld(Recorder *r, int64_t next_time)
+{
+    IMFSample *sample = r->held;
+    if (sample == nullptr) return true;
+    r->held = nullptr;
+    const int64_t slot = 10000000LL / r->fps;
+    sample->SetSampleDuration((std::max)(slot, next_time - r->held_time));
+    HRESULT hr = S_OK;
+    if (r->fail_after != 0 && r->written.load() >= r->fail_after)
+    {
+        Log("[grec] injecting a write failure (NS_TEST_FAIL_STAGE)");
+        hr = HRESULT_FROM_WIN32(ERROR_DISK_FULL);
+    }
+    if (SUCCEEDED(hr)) hr = r->writer->WriteSample(r->video_stream, sample);
+    sample->Release();   // the last of ours: SampleReturn fires once the writer is done too
+    if (FAILED(hr))
+    {
+        Fail(r, "video write", hr);
+        r->dropped.fetch_add(1);
+        return false;
+    }
+    r->written.fetch_add(1);
+    return true;
+}
+
 int AcquireSurface(Recorder *r)
 {
     std::unique_lock<std::mutex> lock(r->mu);
@@ -782,8 +818,10 @@ void EncodeItem(Recorder *r, const Item &it)
         r->dropped.fetch_add(1);
         return;
     }
-    // 4. To the writer. The sample is lent: our reference goes with it, and
-    // SampleReturn brings it back when the encoder has let go.
+    // 4. The sample is lent from here on: our reference goes with it, and
+    // SampleReturn brings it back when the encoder has let go. It waits as
+    // the held frame until the next one fixes its duration (see `held`), and
+    // the frame held before it goes to the writer now.
     IMFSample *sample = nullptr;
     {
         std::lock_guard<std::mutex> lock(r->mu);
@@ -791,29 +829,30 @@ void EncodeItem(Recorder *r, const Item &it)
         s.sample = nullptr;
     }
     sample->SetSampleTime(it.time);
-    sample->SetSampleDuration(10000000LL / r->fps);
     IMFTrackedSample *tracked = nullptr;
     HRESULT hr = sample->QueryInterface(IID_PPV_ARGS(&tracked));
     if (SUCCEEDED(hr)) hr = tracked->SetAllocator(s.callback, nullptr);
     SafeRelease(tracked);
-    if (SUCCEEDED(hr) && r->fail_after != 0 && r->written.load() >= r->fail_after)
-    {
-        Log("[grec] injecting a write failure (NS_TEST_FAIL_STAGE)");
-        hr = HRESULT_FROM_WIN32(ERROR_DISK_FULL);
-    }
-    if (SUCCEEDED(hr)) hr = r->writer->WriteSample(r->video_stream, sample);
-    sample->Release();   // the last of ours: SampleReturn fires once the writer is done too
     if (FAILED(hr))
     {
-        Fail(r, "video write", hr);
+        sample->Release();
+        Fail(r, "video sample", hr);
         r->dropped.fetch_add(1);
         return;
     }
-    r->written.fetch_add(1);
+    if (!WriteHeld(r, it.time))
+    {
+        sample->Release();
+        r->dropped.fetch_add(1);
+        return;
+    }
+    r->held = sample;
+    r->held_time = it.time;
 }
 
 void Teardown(Recorder *r)
 {
+    SafeRelease(r->held);   // after an error the last frame is never written
     SafeRelease(r->writer);
     // The encoder hands the last surfaces back as it shuts down, possibly
     // from one of its own threads: wait a moment for them. One that never
@@ -896,6 +935,12 @@ void EncoderMain(Recorder *r, const char *audio_name)
         else if (have) { r->slots[it.slot].busy.store(false); r->dropped.fetch_add(1); }
     }
     PumpAudio(r, true);
+    if (r->held != nullptr && r->error.load() == S_OK)
+    {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        WriteHeld(r, (now.QuadPart - r->origin_qpc) * 10000000LL / r->qpc_freq);
+    }
     r->stopped_tick = GetTickCount64();
     if (r->written.load() == 0)
         Log("[grec] no frame was recorded - the file will be empty");

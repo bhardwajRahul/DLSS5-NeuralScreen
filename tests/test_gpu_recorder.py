@@ -142,11 +142,22 @@ def stage_native(failures: list) -> None:
     if late["edge"][0] > 18:
         failures.append(f"the letterbox is not black: Y={late['edge'][0]}")
 
-    # A/V sync: flashes and bursts at the same instants.
-    out = WORK / "sync.mp4"
-    st = run_check(exe, out, 4, 1280, 720, 0, 60, 0, 1)
+    # A/V sync: flashes and bursts at the same instants - with a frame in
+    # every slot, then at an uneven ~30 fps the way a live pipeline slower
+    # than the recording's clock delivers them. The second is the case that
+    # used to drift: each fragment of the MP4 took the last frame's duration
+    # as 1/60 s whatever the real gap, and the picture ran ahead of the sound
+    # by ~7% of the recording.
+    check_sync(exe, failures, "sync", 4, 0, tolerance=(-2.0, 2.0))
+    check_sync(exe, failures, "sync at ~30 fps", 9, 30, tolerance=(-5.0, 55.0))
+
+
+def check_sync(exe: Path, failures: list, name: str, seconds: float,
+               pace: float, tolerance: tuple) -> None:
+    out = WORK / f"{name.replace(' ', '_').replace('~', '')}.mp4"
+    st = run_check(exe, out, seconds, 1280, 720, 0, 60, 0, 1, pace)
     if st["exit"] != 0:
-        failures.append(f"sync: the check failed ({st})")
+        failures.append(f"{name}: the check failed ({st})")
         return
     with av.open(str(out)) as c:
         vs = c.streams.video[0]
@@ -175,13 +186,15 @@ def stage_native(failures: list) -> None:
             on = True
         elif v < 0.01:
             on = False
-    offsets = [round((b - v) * 1000.0, 1) for v, b in zip(flashes, bursts)]
-    print(f"    sync: flashes {flashes}, bursts {[round(b, 3) for b in bursts]}, "
-          f"offset {offsets} ms")
-    if len(offsets) < 3:
-        failures.append(f"sync: {len(flashes)} flashes, {len(bursts)} bursts")
-    elif max(abs(o) for o in offsets) > 20.0:
-        failures.append(f"sync: sound and picture are {offsets} ms apart")
+    # Picture minus sound: positive when the flash comes later. At an uneven
+    # ~30 fps a flash can land up to one frame interval after its burst.
+    offsets = [round((v - b) * 1000.0, 1) for v, b in zip(flashes, bursts)]
+    print(f"    {name}: {len(flashes)} flashes, picture - sound {offsets} ms")
+    if len(offsets) < seconds - 1:
+        failures.append(f"{name}: {len(flashes)} flashes, {len(bursts)} bursts")
+    elif not all(tolerance[0] <= o <= tolerance[1] for o in offsets):
+        failures.append(f"{name}: picture and sound drift apart: {offsets} ms "
+                        f"(allowed {tolerance[0]:g}..{tolerance[1]:g})")
 
 
 def pattern(i: int, w: int, h: int) -> np.ndarray:

@@ -4,13 +4,16 @@
 // resize, checked on this machine's GPU. tests/test_gpu_recorder.py builds
 // it, runs it and checks the file it writes.
 //
-//   gpu_recorder_check <out.mp4> [seconds] [width] [height] [codec] [fps] [resize] [sync]
+//   gpu_recorder_check <out.mp4> [seconds] [width] [height] [codec] [fps] [resize] [sync] [pace]
 //
 // codec: 0 auto, 1 H.264, 2 HEVC, 3 AV1. resize 1: halfway through, the
 // source becomes 4:3 at two thirds of the size (it must come out letterboxed).
 // sync 1: the tone is silent except for a 50 ms burst at every whole second
 // from 0.5 s on, and the frames of those instants are white - the offset
 // between the two in the file is the recording's A/V sync error.
+// pace N: frames come at an uneven ~N fps instead of one per slot - a live
+// pipeline slower than the recording's clock, where most slots are empty and
+// the file is variable-rate. The sync marks must stay put over time then too.
 // The picture: the top half is four bars - red, green, blue, grey 128 - and
 // the bottom half is black with a white square that moves one step a frame.
 // Exit code 0 when the recording finished without an error.
@@ -112,7 +115,7 @@ int wmain(int argc, wchar_t **argv)
     if (argc < 2)
     {
         fprintf(stderr, "usage: gpu_recorder_check <out.mp4> [seconds] [width] [height] "
-                        "[codec] [fps] [resize] [sync]\n");
+                        "[codec] [fps] [resize] [sync] [pace]\n");
         return 2;
     }
     const wchar_t *path = argv[1];
@@ -123,6 +126,11 @@ int wmain(int argc, wchar_t **argv)
     const UINT fps = argc > 6 ? _wtoi(argv[6]) : 60;
     const bool resize = argc > 7 && _wtoi(argv[7]) != 0;
     const bool sync = argc > 8 && _wtoi(argv[8]) != 0;
+    const double pace = argc > 9 ? _wtof(argv[9]) : 0.0;
+    // Uneven, like a real pipeline: the intervals cycle around 1/pace.
+    const double jitter[5] = { 0.90, 1.08, 1.00, 1.20, 0.82 };
+    double next_frame = 0.0;
+    uint32_t paced = 0;
     // The instants of the sync marks, in seconds from the file's time 0.
     auto marked = [](double t) { return t >= 0.5 && std::fmod(t, 1.0) < 0.05; };
 
@@ -247,7 +255,9 @@ int wmain(int argc, wchar_t **argv)
                          freq.QuadPart;
         if (t >= seconds) break;
         int64_t sample_time = 0;
+        if (pace > 0.0 && t < next_frame) { Sleep(1); continue; }
         if (!GpuRecFrameDue(&sample_time)) { Sleep(1); continue; }
+        if (pace > 0.0) next_frame = t + jitter[paced++ % 5] / pace;
         Source &src = (resize && t >= seconds / 2) ? other : big;
         // The last copy has to be done before the upload buffer is rewritten.
         if (fence->GetCompletedValue() < fv)

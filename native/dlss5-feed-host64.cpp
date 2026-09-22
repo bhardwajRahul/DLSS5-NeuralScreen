@@ -690,12 +690,20 @@ static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms,
 static int      g_rec_slot = -1;       // a copy recorded into the open list
 static int64_t  g_rec_time = 0;        // its timestamp in the file
 static uint32_t g_rec_frames = 0;      // frames handed over since RECS
+// One recorded copy per worker frame. With HDR and Frame Generation both on,
+// a frame passes two export sites - the HDR compose, then the FG evaluate - and
+// the second, 10-20 ms later, often fell into the next slot: the same picture
+// was encoded twice (224 frames made 448 export calls in a measured run).
+static uint64_t g_frame_serial = 0;    // counts the frames RunVideo processes
+static uint64_t g_rec_frame_done = UINT64_MAX;   // the last one recorded
 
 static void RecordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src)
 {
     // `src` is in COPY_SOURCE here, as it is at every export site. One copy
-    // per list: the Spout sites of one frame all show the same picture.
-    if (g_rec_slot >= 0 || !GpuRecActive()) return;
+    // per list, and one per frame: the sites of one frame all show the same
+    // picture. The first site whose slot is due takes it.
+    if (g_rec_slot >= 0 || !GpuRecActive() || g_rec_frame_done == g_frame_serial)
+        return;
     int64_t t = 0;
     if (!GpuRecFrameDue(&t)) return;
     const int slot = GpuRecReserve(src);
@@ -703,6 +711,7 @@ static void RecordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src)
     GpuRecCopy(list, slot, src);
     g_rec_slot = slot;
     g_rec_time = t;
+    g_rec_frame_done = g_frame_serial;
 }
 
 // The list carrying the copy was submitted (fence != 0), or never will be.
@@ -5875,6 +5884,7 @@ static void RecordClosingFrame(VideoState &v)
     if (!BeginCommands()) return;
     D3D12_RESOURCE_BARRIER pre = Transition(src, rest, D3D12_RESOURCE_STATE_COPY_SOURCE);
     h.list->ResourceBarrier(1, &pre);
+    ++g_frame_serial;          // the same picture, recorded again at the stop
     RecordCopy(h.list, src);   // nothing when the last frame is still current
     D3D12_RESOURCE_BARRIER post = Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE, rest);
     h.list->ResourceBarrier(1, &post);
@@ -6724,6 +6734,7 @@ static int RunVideo()
                 GpuRecStarted started = {};
                 g_rec_slot = -1;
                 g_rec_frames = 0;
+                g_rec_frame_done = UINT64_MAX;
                 const bool ok = GpuRecStart(h.dev, p, &started);
                 ack.ok = ok ? 1u : 0u;
                 ack.codec = started.codec;
@@ -6758,6 +6769,7 @@ static int RunVideo()
             Log("[grec] the recording stopped itself after an encoder error");
             if (!FinishRecording(v, 0, false)) return 10;
         }
+        ++g_frame_serial;
         ConfigureFgFrame(fh.reserved);
         const double t_frame = PhaseNow();
         const bool phase_on = PhaseEnabled();
