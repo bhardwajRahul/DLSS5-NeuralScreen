@@ -40,7 +40,11 @@ def _state():
     return types.SimpleNamespace(
         pending_apply=None, pending_apply_due=0.0,
         cfg={"profile": "Natural"}, lang="en",
-        params={"intensity": 1.0}, work_scale=0.5, nr_small=False)
+        params={"intensity": 1.0}, work_scale=0.5, nr_small=False,
+        # The Boost toggle and the hotkey ladder size a worker, so the
+        # fixture carries the frame the real state always has.
+        width=3840, height=2160, nr_passes=1,
+        display=types.SimpleNamespace(alert=lambda *a, **k: None))
 
 
 def main() -> int:
@@ -118,6 +122,42 @@ def main() -> int:
         st = _state()
         if st.pending_apply is not None:
             failures.append("a fresh state came up with something queued")
+
+        # 7. The Boost switch still TOGGLES while an apply is waiting. The
+        #    running state is unchanged until the apply lands, so a control
+        #    that reads it would invert the same value twice - two clicks
+        #    both asked to turn Boost ON (found while merging the debounce
+        #    with the toggle).
+        import commands
+        import settings_io
+        st = _state()
+        switches = []
+        real_cmd_apply = commands.pipeline.request_apply
+        commands.pipeline.request_apply = (
+            lambda st_, s, p, pr, **kw: switches.append(kw.get("new_small")))
+        try:
+            for _ in range(2):
+                commands.apply_menu_action(st, ("toggle", "boost"))
+                # What the dispatcher does with the answer: queue it. The
+                # running state deliberately stays as it was, which is the
+                # window the toggle has to survive.
+                st.pending_apply = (0.5, "Natural", st.params, switches[-1])
+        finally:
+            commands.pipeline.request_apply = real_cmd_apply
+        if switches != [True, False]:
+            failures.append(f"two quick Boost clicks asked for {switches}, "
+                            f"expected [True, False] - the switch stopped "
+                            f"toggling while an apply was queued")
+        print(f"    two quick Boost clicks: {switches}")
+
+        # 8. queued_small reads the intent, not the running state.
+        st = _state()
+        if settings_io.queued_small(st) is not False:
+            failures.append("queued_small on a fresh state is not False")
+        st.pending_apply = (0.5, "Natural", {}, True)
+        if settings_io.queued_small(st) is not True:
+            failures.append("queued_small ignored a queued switch")
+        print(f"    queued_small follows the queue: yes")
     finally:
         pipeline.do_restart = real_restart
 

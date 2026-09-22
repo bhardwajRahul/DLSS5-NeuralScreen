@@ -95,6 +95,22 @@ def _work_size(width: int, height: int, scale: float,
     return min(w, int(width)), min(h, int(height))
 
 
+def queued_small(st) -> bool:
+    """The Boost state the user has ASKED for: the queued one, or the running.
+
+    The apply is debounced (#115), so between the click and the apply the
+    running state is still the old one. Anything that INVERTS or reads the
+    switch during that window has to see the user's latest intent, not the
+    state that is on its way out - two quick clicks on Boost both read
+    `st.nr_small` as False and both asked to turn it ON, so the switch
+    stopped toggling.
+    """
+    pending = getattr(st, "pending_apply", None)
+    if pending is not None and len(pending) > 3 and pending[3] is not None:
+        return bool(pending[3])
+    return bool(getattr(st, "nr_small", False))
+
+
 def cascade_passes(st) -> int:
     """The pass count to size the work by: the saved one under Boost, one
     without it.

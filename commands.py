@@ -662,7 +662,10 @@ def apply_menu_action(st, action: tuple) -> None:
         # The work scale is NOT touched here - it is the user's setting and
         # has to survive the switch going off and on again, so the slider
         # comes back where it was left.
-        want = not st.nr_small
+        # The user's latest intent, not the state that is still running: the
+        # apply is debounced, so two quick clicks would otherwise both read
+        # the old value and both ask for the same one (#115).
+        want = not settings_io.queued_small(st)
         scale = min(settings_io.work_scale_cap(st), st.work_scale) if want \
             else st.work_scale
         pipeline.request_apply(st, scale, st.cfg["profile"], st.params,
@@ -1460,7 +1463,12 @@ def drain_commands(st) -> bool:
                 # runs at the full size then whatever the scale says
                 # (measured bit for bit, 12.09).
                 cap = settings_io.work_scale_cap(st)
-                cur = st.work_scale if st.nr_small else cap + WORK_SCALE_STEP
+                # The user's latest intent, not the running state: the apply
+                # is debounced, so a second key press inside the debounce
+                # window would otherwise walk the ladder from the step the
+                # user has just left (#115).
+                cur = (st.work_scale if settings_io.queued_small(st)
+                       else cap + WORK_SCALE_STEP)
                 delta = WORK_SCALE_STEP if cmd == "scale_up" else -WORK_SCALE_STEP
                 new_scale = min(cap + WORK_SCALE_STEP,
                                 max(WORK_SCALE_MIN, cur + delta))
