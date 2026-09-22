@@ -463,6 +463,34 @@ def _estimate_frames(container, stream, rate) -> int:
     return max(0, int(round(seconds * float(rate)))) if seconds > 0 else 0
 
 
+MAX_TIMESCALE = 1_000_000
+
+
+def _encoder_grid(stream, rate: Fraction) -> Fraction:
+    """The clock the output encoder writes in.
+
+    The encoder's tick has to be at least as fine as the source's own, or two
+    frames land on the same tick and the muxer refuses the stream
+    ("Application provided invalid, non monotonically increasing dts"). A
+    variable-rate recording triggers it: `average_rate` is an average over the
+    whole file - 53.78 fps for a 60 fps grid the recorder dropped frames from -
+    so 1/rate is 0.0186 s while frames arrive every 0.0167 s, 1.12 frames per
+    tick, and the sixth frame rounds onto the tick the fifth one already took.
+
+    The source's own time_base is the grid its timestamps live on, so writing
+    in it is exact for any file, variable rate or not - but it also becomes the
+    mp4 timescale, and a container that declares nanoseconds would put a 32-bit
+    player past its limit in seconds. Anything finer than a microsecond is
+    therefore coarsened to it: no frame rate in use comes near that tick, so
+    frames still land on ticks of their own.
+    """
+    grid = Fraction(getattr(stream, "time_base", None) or 0)
+    if not grid:
+        return Fraction(1, 1) / rate
+    floor = Fraction(1, MAX_TIMESCALE)
+    return grid if grid >= floor else floor
+
+
 def _encoder_probe(av, name, rate, width, height, quality) -> bool:
     """Whether `name` opens for this size, tried in a throwaway container.
 
@@ -499,11 +527,23 @@ def _pick_video_encoder(av, chain, rate, width, height, quality) -> str:
     raise ConversionError("encode", f"no video encoder opens at {width}x{height}")
 
 
-def _add_video_stream(out_container, name, rate, width, height, quality):
+def _add_video_stream(out_container, name, rate, width, height, quality,
+                      grid=None):
     stream = out_container.add_stream(name, rate=rate)
     stream.width, stream.height = width, height
     stream.pix_fmt = "yuv420p"
     stream.time_base = Fraction(1, 1) / rate
+    if grid is not None:
+        # The encoder's clock, not the declared rate, decides where a frame
+        # lands: a tick coarser than the source's own grid makes two adjacent
+        # frames round onto the same one and the muxer rejects the stream.
+        #
+        # Both clocks are set, and the container's matters as much as the
+        # encoder's: it becomes the mp4 timescale, and 1/average_rate is an
+        # absurd one - 19620000 for a 53.78 fps file, which a 32-bit player
+        # overflows after six minutes. The source's grid is 60000 there.
+        stream.time_base = grid
+        stream.codec_context.time_base = grid
     if name == SOFTWARE_CODEC:
         stream.options = {"preset": "medium",
                           "crf": str(SOFTWARE_CRF.get(quality, 17))}
@@ -657,6 +697,11 @@ def convert_video(source: Path, output: Path, params: dict, *,
         audio_mode = "off" if not copy_audio else (
             "none" if audio_in is None else
             audio_plan(audio_in.codec_context.name, container_format))
+        # The clock the frames are written on. The source's own grid, not
+        # 1/average_rate: on a variable-rate recording the average is coarser
+        # than the frame spacing and two frames land on one tick, which the
+        # muxer refuses outright (media_convert._encoder_grid has the numbers).
+        grid = _encoder_grid(stream, rate)
         # The header is written HERE, before a single frame goes through the
         # network: a copied audio track the container refuses fails at this
         # point, and it is cheap to rebuild the output without it now - not
@@ -665,7 +710,7 @@ def convert_video(source: Path, output: Path, params: dict, *,
             out_container = av.open(str(partial), mode="w",
                                     format=container_format)
             out_stream = _add_video_stream(out_container, codec_used, rate,
-                                           even_w, even_h, quality)
+                                           even_w, even_h, quality, grid=grid)
             audio_out = None
             aac = None
             try:
