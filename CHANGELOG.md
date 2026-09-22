@@ -8,7 +8,7 @@ in UTC, not the tag timestamps.
 
 Scope and honesty notes:
 
-* The list starts at `v1.0.0` and ends at `v2.0.2`; every tag in that range has a
+* The list starts at `v1.0.0` and ends at `v2.1.0`; every tag in that range has a
   published GitHub release. GitHub returns more releases than the tag count
   because the count includes the tags listed as out of scope below.
   The tag `v0.1.0-alpha` (2026-09-06) is **not** part of this history: it is a tag
@@ -29,6 +29,40 @@ Scope and honesty notes:
   (the early releases carried a different set - see the individual entries).
 
 ---
+
+## v2.1.0 - 2026-09-22 - cheaper and smarter
+
+* **The second pass can run its own settings.** The cascade repeated the same
+  neural pass up to four times since v2.0.0, so pass 2 was pass 1 again: it cost
+  about a third of the frame rate and looked the same. Passes 2 and later now
+  take their own set of parameters - style and the four values - from a switch
+  that appears under **NR passes** once there are two of them, and the set
+  survives a launch, a resize and a restart. Pass 1 keeps following the profile,
+  so turning it on does not change the picture you already tuned.
+* **Recording moved to the GPU.** **Num0** encodes on the graphics card (NVENC)
+  at 60 fps with sound by default, so a recording no longer costs frame rate. It
+  records the frame the worker presents and nothing else: the panel, its menu and
+  the desktop around the picture stay out of the file, and a recording an error
+  cuts short is still kept. **Record on the GPU** off returns to the older CPU
+  path, which is also the automatic fallback.
+* **Files can be converted.** A new **Media** tab converts a video or an image
+  with the settings the sliders are set to - the same look the desktop gets - as
+  a queue with progress, stop and retry, drag and drop, and a choice of output
+  folder, codec, quality and audio. It runs without the overlay being on.
+* **The client is off the critical path.** The worker used to answer a frame only
+  after presenting it; it now answers as soon as the frame is queued, and the
+  client's own work runs in that window. Measured by a contributor off-screen at
+  2560x1440 on an RTX 5080, with the client's per-frame work simulated at the
+  1.6 ms a user's log shows: 147.7 FPS against 119.6 lockstep, +23.6%, picture
+  unchanged (Boost workloads gain 3.9%, already at the refresh).
+  `NS_EARLY_REPLY=0` turns it off.
+* **Fixes:** the Boost switch no longer drops presses while an apply is queued; a
+  monitor change in window mode clears the window being captured instead of
+  keeping a stale handle, and the pointer stopped jumping; GPU recordings no
+  longer run ahead of their own sound (each frame lasts until the next); a
+  parameter change at 1:1 with Boost on no longer rebuilds a working feature;
+  passes no longer size the work with Boost off, and the worker names Boost
+  instead of saying something is missing.
 
 ## v2.0.2 - 2026-09-21 - the fixes from the tracker
 
