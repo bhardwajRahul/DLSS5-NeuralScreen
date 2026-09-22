@@ -4858,10 +4858,15 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
         const D3D12_RESOURCE_DESC dd = v.color.tex->GetDesc();
         const UINT cw = (UINT)((sd.Width < dd.Width) ? sd.Width : dd.Width);
         const UINT ch = (UINT)((sd.Height < dd.Height) ? sd.Height : dd.Height);
-        if (cw != sd.Width || ch != sd.Height)
+        // Said once per mismatch, not per frame: it lasts until the client's
+        // resize, half a second or more of frames.
+        static bool clip_said = false;
+        const bool clipping = cw != sd.Width || ch != sd.Height;
+        if (clipping && !clip_said)
             Log("[cap] size mismatch %llux%llu vs %llux%llu - clipped",
                 (unsigned long long)sd.Width, (unsigned long long)sd.Height,
                 (unsigned long long)dd.Width, (unsigned long long)dd.Height);
+        clip_said = clipping;
         if (cw == 0 || ch == 0)
         { Log("[cap] zero copy size - skip"); return false; }
         D3D12_BOX box = { 0, 0, 0, cw, ch, 1 };

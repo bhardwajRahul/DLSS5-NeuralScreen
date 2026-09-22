@@ -47,9 +47,14 @@ static const char kHdrCompositeHlsl[] =
     "cbuffer Params : register(b0) { float white; uint bypass; uint split; uint hdrDisplay; };\n"
     "[numthreads(8,8,1)] void CSMain(uint3 p : SV_DispatchThreadID) {\n"
     " uint w,h; dst.GetDimensions(w,h); if(p.x>=w || p.y>=h) return;\n"
-    " float3 original=nativeFrame.Load(int3(p.xy,0)).rgb;\n"
     " float3 a=ToLinear(proxyIn.Load(int3(p.xy,0)).rgb);\n"
     " float3 b=ToLinear(proxyOut.Load(int3(p.xy,0)).rgb);\n"
+    // Until the client resizes after a window shrank, the capture is smaller
+    // than the output and does not cover all of it (PresentHdr). There the
+    // SDR proxy stands in, lifted by the capture's own scale, rather than
+    // the black an out-of-range Load returns.
+    " uint nw,nh; nativeFrame.GetDimensions(nw,nh);\n"
+    " float3 original=(p.x<nw && p.y<nh) ? nativeFrame.Load(int3(p.xy,0)).rgb : white*a;\n"
     " bool raw=bypass || (split!=0xffffffff && p.x<split);\n"
     // No inverse tone mapping: it becomes singular near white. Lift a bounded
     // linear residual using the same scale as capture, preserving signed gamut

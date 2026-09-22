@@ -109,9 +109,25 @@ static bool PresentHdr(VideoState &v, bool bypass)
     const UINT w = v.upscale ? v.full_w : v.w;
     const UINT height = v.upscale ? v.full_h : v.hgt;
     if (!g_dda_d12 || !g_dda_ready) return false;
+    // The capture changes size before the output does. A window going
+    // fullscreen hands WGC its new size at once, while the client resizes
+    // only once the new size has held for half a second (follow_window),
+    // with a live RNSZ. The SDR path clips for that half second (the
+    // swizzle copy); this one used to refuse the frame, and a refused frame
+    // ends the worker (exit 9): a restart at the old size and another for
+    // the new one, ~4 s, on EVERY fullscreen toggle with HDR on - four in
+    // one user's evening. The composite reads all three inputs by
+    // coordinate and copies nothing between them, so it clips the same
+    // way: the capture's top-left corner at the output size, and where the
+    // capture is the smaller one, the SDR proxy fills in (the shader).
     const auto native_desc = g_dda_d12->GetDesc();
-    if (native_desc.Width != w || native_desc.Height != height)
-    { Log("[hdr] capture/output size mismatch; refusing stale HDR frame"); return false; }
+    const bool clipped = native_desc.Width != w || native_desc.Height != height;
+    static bool clip_said = false;
+    if (clipped && !clip_said)
+        Log("[hdr] capture %llux%u vs output %ux%u - composed clipped until the "
+            "client resizes", (unsigned long long)native_desc.Width,
+            native_desc.Height, w, height);
+    clip_said = clipped;
     if (!EnsurePresentFormat(true, framegen) || !EnsureHdrPipeline(w, height, framegen)) return false;
 
     const UINT stride = h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
