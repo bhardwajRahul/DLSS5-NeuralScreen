@@ -8,7 +8,7 @@ in UTC, not the tag timestamps.
 
 Scope and honesty notes:
 
-* The list starts at `v1.0.0` and ends at `v2.1.1`; every tag in that range has a
+* The list starts at `v1.0.0` and ends at `v2.1.2`; every tag in that range has a
   published GitHub release. GitHub returns more releases than the tag count
   because the count includes the tags listed as out of scope below.
   The tag `v0.1.0-alpha` (2026-09-06) is **not** part of this history: it is a tag
@@ -29,6 +29,41 @@ Scope and honesty notes:
   (the early releases carried a different set - see the individual entries).
 
 ---
+
+## v2.1.2 - 2026-09-22 - fixes from a code audit, and a tidier root
+
+Patch release on the v2.1 line: the defects a full audit of the code found, and
+the program's modules moved out of the repository root.
+
+* **The settings panel no longer goes under the picture (#96).** In window mode
+  the worker re-inserted its picture at the top on every move or resize of the
+  captured window; in fullscreen a periodic check read helper windows (a 1x1 DWM
+  helper, hidden Start/Search hosts, the NVIDIA overlay) as covering it and raised
+  it over the panel - the flicker. A follow step only moves the picture now, the
+  check skips hidden, cloaked, tiny and off-picture windows, and the panel goes up
+  first with the picture placed directly under it. The client guard does the same
+  in one step; `[z]` lines carry `cloaked=` and the picture's own rectangle.
+* **Recorded sound no longer turns into a buzz on loud moments.** The limiter bent
+  every sample of a 10 ms block once one was loud (quiet sound came out as a
+  square wave at 0.8); only the peaks are bent now. A playback-device change
+  reopens the capture instead of silence to the end.
+* **A dying worker no longer freezes the window for up to a minute**; a hotkey
+  during a frame no longer loses that frame's answer; a failed window probe puts
+  the capture back as it was instead of showing a desktop corner.
+* **HDR:** Frame Generation at a refused 3x/4x no longer retries forever on the
+  HDR path; an HDR10 recording that leaves HDR is closed, not frozen.
+* **Updating over an old folder no longer runs old code**: the first start of a
+  release drops the compiled cache (a same-size module kept the old `.pyc` -
+  2.1.1 over 2.1.0 still said 2.1.0).
+* Smaller: `"gpu": null` broke every settings save; BOM/`"false"`-string configs
+  broke the launch; a second start now brings the running copy's menu up;
+  autostart set from another folder reads as off; a failed menu action is reported
+  instead of closing the program; showing the panel no longer takes the keyboard;
+  a hotkey onto a taken key is refused; converted videos carry their colour range
+  and HDR sources are refused; the compatibility dialog speaks the user's language;
+  support packages drop other programs' window titles.
+* **Modules moved to `app/`** (the root lists 23 entries instead of 52). Unpacking
+  over an old folder leaves the old root `*.py` files; nothing loads them.
 
 ## v2.1.1 - 2026-09-22 - cheaper and smarter
 
