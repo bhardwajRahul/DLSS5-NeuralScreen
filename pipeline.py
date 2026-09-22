@@ -39,7 +39,8 @@ from guides import TemporalGuideGenerator
 from i18n import STRINGS as UI_STRINGS
 from paths import NATIVE_DIR, WORKER_EXE
 from protocol import (HEADER_FMT, VIDEO_MAGIC, SharedFrameBuffer,
-                      WorkerReader, _negotiate_shm, send_dda, send_resize)
+                      WorkerReader, _negotiate_shm, send_dda, send_per_pass,
+                      send_resize)
 from settings_io import _work_size, hotkey_labels, nr_verdict
 from winapi import window_frame_rect
 
@@ -748,6 +749,10 @@ def resize_window_live(st, frame_w: int, frame_h: int) -> bool:
                     getattr(st, "nr_passes", 1))
         st.reader.wait_rack(timeout=RACK_TIMEOUT)
         st.reader.set_output_size(new_full_w or new_w, new_full_h or new_h)
+        # A resize rebuilds the cascade, and a rebuilt cascade reads the main
+        # set - so the second set has to follow every RNSZ, not just the ones
+        # the menu sends.
+        _send_per_pass_if_any(st)
     except Exception as exc:
         print(f"[main] live resize: RNSZ did not go through ({exc})",
               file=sys.stderr)
@@ -1117,6 +1122,39 @@ def follow_window(st) -> None:
         st.follow_resize = None
 
 
+def _send_per_pass_if_any(st, wait: bool = True,
+                          timeout: float | None = None) -> None:
+    """Tell the worker what passes 2..N should use, if the user set anything.
+
+    Silence means "every pass uses the main set", which is what a worker does
+    on its own - so a config that never touched the second set sends nothing at
+    all and the old behaviour is untouched.
+
+    Called after every RNSZ, including a full restart: a fresh feature is built
+    at ONE pass and knows nothing about a second set, so a cascade the user
+    configured has to be re-stated to each new worker. Skipping that is the same
+    class of bug the pass count itself once had - the panel says four, the
+    worker runs one, and the log says nothing.
+
+    `wait=False` for the path where the worker has just started and the stream
+    is not flowing yet: the command is out, the ack is picked up by the reader
+    on the next frame, and blocking here would stall the first RNSZ instead.
+    """
+    per_pass = getattr(st, "nr_pass_params", None)
+    if not per_pass or int(getattr(st, "nr_passes", 1)) < 2:
+        return
+    try:
+        send_per_pass(st.worker, per_pass, enabled=True)
+        if wait:
+            st.reader.wait_per_pass(timeout=timeout or RACK_TIMEOUT)
+    except Exception as exc:
+        # Not fatal: the frame is still correct, it just uses one set for
+        # every pass. Say so rather than letting the panel disagree with the
+        # picture in silence.
+        print(f"[main] the per-pass parameters did not go through ({exc}) - "
+              f"passes 2+ use the main set", file=sys.stderr)
+
+
 def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
                 full: bool = False, new_small: bool | None = None) -> None:
     """Change work_scale/profile/parameters WITHOUT recreating pygame or the capture.
@@ -1167,6 +1205,12 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
                         getattr(st, "nr_passes", 1))
             st.reader.wait_rack(timeout=RACK_TIMEOUT)
             st.reader.set_output_size(new_full_w or new_w, new_full_h or new_h)
+            # The per-pass set rides its own command, and it has to follow
+            # every RNSZ: a resize rebuilds the cascade, and a rebuilt cascade
+            # reads the main set unless it is told otherwise. Sending it here
+            # rather than only on the menu's own path is what makes the second
+            # set survive a resolution change - and a restart.
+            _send_per_pass_if_any(st)
             applied = True
             print(f"[main] RNSZ applied: {new_w}x{new_h} in "
                   f"{(time.perf_counter() - t_rnsz) * 1000:.0f} ms")
@@ -1192,6 +1236,10 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
         channels.forget_dda(st)
         channels.forget_out(st)
         channels.forget_verdict(st)
+        # And it knows nothing about a second parameter set either: a fresh
+        # process always starts at one pass with the main set. The ack is
+        # picked up by the reader on the next frame, so this does not block.
+        _send_per_pass_if_any(st, wait=False)
 
     # The order matters: work_w/work_h and guides change TOGETHER,
     # otherwise the motion size drifts away from what the worker

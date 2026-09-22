@@ -373,6 +373,37 @@ WINDOW_ACK_FMT = "<4Iq"        # magic, ok, reserved0, reserved1, pts
 WINDOW_FLAG_CAPTURABLE = 0x1   # debug: do NOT hide the window from screen capture
 WINDOW_FLAG_DISABLE = 0x2      # close the window, go back to sending pixels
 
+# PPRM: per-pass NR parameters. The cascade runs the network over one frame
+# more than once, and until now every pass got the SAME numbers - `send_resize`
+# carries one set and the worker memcpy's it into g_video_options, which both
+# passes read. So a second pass repeated the first exactly: the picture gained
+# nothing and the frame rate paid for it (the second pass costs about a third
+# of the frame rate, measured).
+#
+# This is a separate message rather than more fields on RNSZ on purpose.
+# RESIZE_FMT mirrors HEADER_FMT field for field, and seven tests build it by
+# POSITION - widening it would have to move in step with the worker's
+# VideoResizeCmd struct and every one of those tests at once. A new command
+# costs none of that.
+#
+# A worker that never receives PPRM keeps exactly today's behaviour: one set
+# of parameters for every pass (pass 2+ falls back to the main set). That is
+# also what makes the feature additive - an older client stays correct.
+#
+# The set applies to passes 2..N; pass 1 always uses the main parameters,
+# because that is the pass the user's profile describes.
+PER_PASS_MAGIC = 0x4D525050     # 'PPRM'
+PER_PASS_ACK_MAGIC = 0x50414150  # 'PAAP' - worker -> client reply to PPRM
+# magic, flags, style, auto_mask (4 x uint32 = 16) + the four strengths
+# (4 x float = 16) + pts (int64 = 8) = 40 bytes. The field order is NOT
+# arbitrary: the worker's struct holds an int64_t, so the 4-byte fields
+# before it must add up to a multiple of 8 or C++ inserts four bytes of
+# padding the Python format knows nothing about, and every struct.pack of
+# this command lands a frame's worth of fields out of step.
+PER_PASS_FMT = "<4I4fq"
+PER_PASS_ACK_FMT = "<4Iq"       # magic, ok, reserved0, reserved1, pts
+PER_PASS_FLAG_ENABLED = 0x1     # passes 2+ use this set; clear = fall back to main
+
 # RNSZ: change the work resolution on the fly (without restarting the worker
 # process). The worker recreates the NGX feature at the new sizes and answers
 # RACK.
@@ -539,6 +570,34 @@ def send_resize(worker: subprocess.Popen, params: dict, width: int, height: int,
     worker.stdin.flush()
 
 
+def send_per_pass(worker: subprocess.Popen, params: dict | None,
+                  enabled: bool = True, pts: int = 0) -> None:
+    """PPRM: give passes 2..N their own NR parameters.
+
+    `params` is a whole parameter set, shaped like a profile (style,
+    auto_mask, intensity, local_tone, local_structure, skin_structure).
+    `None` or enabled=False clears it: every pass goes back to the main set,
+    which is also what a worker that never hears PPRM does.
+
+    Pass 1 is not affected - it stays on the profile the user picked.
+
+    No feature is recreated: style and the strengths are read at EVALUATE
+    time (CreateFeature only takes sizes and the preset hint), so this
+    command is a parameter change and nothing else.
+    """
+    p = params or {}
+    flags = PER_PASS_FLAG_ENABLED if (enabled and params) else 0
+    worker.stdin.write(struct.pack(
+        PER_PASS_FMT,
+        PER_PASS_MAGIC, int(flags), int(p.get("style", 0)),
+        int(p.get("auto_mask", 1)),
+        float(p.get("intensity", 1.0)), float(p.get("local_tone", 0.0)),
+        float(p.get("local_structure", 1.0)), float(p.get("skin_structure", -1.0)),
+        int(pts),
+    ))
+    worker.stdin.flush()
+
+
 def send_motion_size(worker: subprocess.Popen, width: int, height: int,
                      flags: int = 0, pts: int = 0) -> None:
     """MOTS: at what resolution the motion field will arrive.
@@ -668,6 +727,12 @@ class WorkerReader:
                     rest = _read_exact(self._worker.stdout, struct.calcsize(WINDOW_ACK_FMT) - 4)
                     _magic, ok, _r0, _r1, _pts = struct.unpack(WINDOW_ACK_FMT, magic_raw + rest)
                     self._queue.put(("wack", ok))
+                elif magic == PER_PASS_ACK_MAGIC:
+                    # PAAP: acknowledgement of PPRM - passes 2+ have their own
+                    # parameters now (or have gone back to the main set)
+                    rest = _read_exact(self._worker.stdout, struct.calcsize(PER_PASS_ACK_FMT) - 4)
+                    _magic, ok, _r0, _r1, _pts = struct.unpack(PER_PASS_ACK_FMT, magic_raw + rest)
+                    self._queue.put(("paap", ok))
                 elif magic == SHM_ACK_MAGIC:
                     # SACK: acknowledgement of SHMI - the worker opened the mapping
                     rest = _read_exact(self._worker.stdout, struct.calcsize(SHM_ACK_FMT) - 4)
@@ -913,6 +978,29 @@ class WorkerReader:
             if got == "sack":
                 if not payload:
                     raise RuntimeError("the worker could not open the shared memory")
+                return
+
+    def wait_per_pass(self, timeout: float) -> None:
+        """Wait for PAAP - the acknowledgement of a per-pass change (PPRM).
+
+        Frames that arrive before it are skipped, exactly as in wait_rack.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"the worker did not acknowledge the per-pass parameters "
+                    f"within {timeout:.0f}s")
+            try:
+                got, payload = self._queue.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if got is None:
+                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
+            if got == "paap":
+                if not payload:
+                    raise RuntimeError("the worker rejected the per-pass parameters")
                 return
 
     def wait_rack(self, timeout: float) -> None:

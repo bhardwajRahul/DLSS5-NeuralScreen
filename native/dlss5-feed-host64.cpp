@@ -1841,6 +1841,9 @@ static constexpr uint32_t WINDOW_MAGIC     = 0x4F444E57u; // "WNDO" -- client ->
 static constexpr uint32_t WINDOW_ACK_MAGIC = 0x4B434157u; // "WACK" -- worker -> client reply to WNDO
 static constexpr uint32_t MOTION_MAGIC     = 0x53544F4Du; // "MOTS" -- client -> worker: motion arrives at this reduced size
 static constexpr uint32_t MOTION_ACK_MAGIC = 0x4B43414Du; // "MACK" -- worker -> client reply to MOTS
+static constexpr uint32_t PER_PASS_MAGIC     = 0x4D525050u; // "PPRM" -- client -> worker: passes 2..N get their own parameters
+static constexpr uint32_t PER_PASS_ACK_MAGIC = 0x50414150u; // "PAAP" -- worker -> client reply to PPRM
+static constexpr uint32_t PER_PASS_FLAG_ENABLED = 0x1u;     // passes 2+ use this set; clear = main set for every pass
 static constexpr uint32_t DDA_MAGIC        = 0x31414444u; // "DDA1" -- client -> worker: worker takes over capture
 static constexpr uint32_t DDA_ACK_MAGIC    = 0x4B434144u; // "DACK" -- worker -> client reply to DDA1
 static constexpr uint32_t WGC_MAGIC        = 0x57434757u; // "WGCW" -- client -> worker: capture ONE window, not the desktop
@@ -1993,6 +1996,30 @@ struct VideoMotionCmd
     int64_t pts;
 };
 struct VideoMotionAck
+{
+    uint32_t magic, ok, reserved0, reserved1;
+    int64_t pts;
+};
+// PPRM: client -> worker. "Passes 2..N get their own NR parameters."
+//
+// The field order is load-bearing: int64_t pts forces 8-byte alignment on
+// this struct, so the four uint32_t and four float fields before it add up to
+// exactly 32 bytes and no padding is inserted. Reorder them, or drop one, and
+// the struct silently grows to 48 while the client's "<4I4fq" still packs 40 -
+// every field after the gap then lands one slot out of step.
+//
+// Pass 1 is deliberately NOT affected by this command: it is the pass the
+// user's profile describes, and the cascade only differentiates from the
+// second pass on. flags bit0 = use these for passes 2+; clear it (or never
+// send the command) and every pass reads the main set, which is exactly the
+// behaviour that shipped before this existed.
+struct VideoPerPassCmd
+{
+    uint32_t magic, flags, style, auto_mask;
+    float intensity, local_tone, local_structure, skin_structure;
+    int64_t pts;
+};
+struct VideoPerPassAck
 {
     uint32_t magic, ok, reserved0, reserved1;
     int64_t pts;
@@ -2194,6 +2221,13 @@ static VideoHeader g_video_options = {};
 // to fall back to the shipped defaults there instead of writing a zero profile
 // that tells the runtime to do nothing.
 static bool g_video_profile_set = false;
+// Passes 2..N of the cascade, if the client has given them their own set
+// (PPRM). `g_per_pass_set` false means "no set": every pass reads
+// g_video_options, which is what a client that never sends PPRM gets, and
+// also what ships by default. Pass 1 ALWAYS reads g_video_options - the set
+// here describes the passes after the first, not a second profile.
+static VideoPerPassCmd g_per_pass = {};
+static bool g_per_pass_set = false;
 static uint32_t g_last_eval_result = 0;
 // Static-frame skipping (FRAME_FLAG_SKIP_STATIC): how many frames were skipped
 // since the last change, and whether the "idle" line was already written for
@@ -3856,6 +3890,9 @@ static bool                    g_dda_ready = false;      // current frame is in 
 static UINT                    g_capture_deep_bits = 8;
 // The WGCW command, filled by the dispatcher and read by its handler.
 static VideoWgcCmd             g_wgc_cmd = {};
+// The PPRM command, same arrangement: the dispatcher reads it into this and
+// returns a message number, the handler above applies it.
+static VideoPerPassCmd         g_per_pass_cmd = {};
 // Gray downsample (GRAY): write luminance (flow size) into a client mapping.
 static HANDLE                  g_gray_file = nullptr;   // client's mapping handle
 static BYTE                   *g_gray_map = nullptr;    // mapped view
@@ -5630,9 +5667,23 @@ static void SetTestVideoParams()
 static NVSDK_NGX_Result EvalNrPass(VideoState &v, NVSDK_NGX_Handle *feature,
                                    ID3D12Resource *nr_color,
                                    ID3D12Resource *nr_result,
-                                   UINT nw, UINT nh, int reset, DWORD *seh)
+                                   UINT nw, UINT nh, int reset, DWORD *seh,
+                                   unsigned pass = 0)
 {
     *seh = 0;
+    // Which parameter set this pass runs with. Pass 1 (index 0) always takes
+    // the user's profile; passes 2+ take the PPRM set when the client has
+    // given one, and fall back to the profile otherwise. Reading the numbers
+    // here rather than at create time is what makes this a parameter change:
+    // CreateFeature only receives sizes and the preset hint, so no feature is
+    // recreated when the set changes.
+    const bool own = (pass > 0) && g_per_pass_set;
+    const float p_intensity = own ? g_per_pass.intensity : g_video_options.intensity;
+    const float p_tone = own ? g_per_pass.local_tone : g_video_options.local_tone;
+    const float p_structure = own ? g_per_pass.local_structure : g_video_options.local_structure;
+    const float p_skin = own ? g_per_pass.skin_structure : g_video_options.skin_structure;
+    const unsigned p_auto_mask = own ? g_per_pass.auto_mask : g_video_options.auto_mask;
+    const unsigned p_style = own ? g_per_pass.style : g_video_options.style;
     h.params->Reset();
     h.params->Set("DLSSNR.Color", nr_color); h.params->Set("DLSSNR.Output", nr_result);
     h.params->Set("DLSSNR.MVec", v.mv.tex);
@@ -5647,12 +5698,12 @@ static NVSDK_NGX_Result EvalNrPass(VideoState &v, NVSDK_NGX_Handle *feature,
     bool verified = true;
     verified &= SetVerifiedU(h.params, "DLSSNR.Enabled", 1u);
     verified &= SetVerifiedU(h.params, "DLSSNR.Reset", (unsigned int)reset);
-    verified &= SetVerifiedF(h.params, "DLSSNR.Intensity", g_video_options.intensity);
-    verified &= SetVerifiedF(h.params, "DLSSNR.LocalToneStrength", g_video_options.local_tone);
-    verified &= SetVerifiedF(h.params, "DLSSNR.LocalStructureStrength", g_video_options.local_structure);
-    verified &= SetVerifiedF(h.params, "DLSSNR.SkinStructureStrength", g_video_options.skin_structure);
-    verified &= SetVerifiedU(h.params, "DLSSNR.UseAutoMask", g_video_options.auto_mask);
-    verified &= SetVerifiedU(h.params, "DLSSNR.Style", g_video_options.style);
+    verified &= SetVerifiedF(h.params, "DLSSNR.Intensity", p_intensity);
+    verified &= SetVerifiedF(h.params, "DLSSNR.LocalToneStrength", p_tone);
+    verified &= SetVerifiedF(h.params, "DLSSNR.LocalStructureStrength", p_structure);
+    verified &= SetVerifiedF(h.params, "DLSSNR.SkinStructureStrength", p_skin);
+    verified &= SetVerifiedU(h.params, "DLSSNR.UseAutoMask", p_auto_mask);
+    verified &= SetVerifiedU(h.params, "DLSSNR.Style", p_style);
     verified &= SetVerifiedU(h.params, "DLSSNR.UICorrection", g_video_options.ui_correction);
     if (!verified)
         Log("[host] NGX parameter read-back mismatch - a value did not stick");
@@ -5770,7 +5821,7 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             h.list->ResourceBarrier(1, &to_srv);
         }
-        result = EvalNrPass(v, feature, src, dst, nw, nh, reset, &code);
+        result = EvalNrPass(v, feature, src, dst, nw, nh, reset, &code, pass);
         g_last_eval_result = static_cast<uint32_t>(result);
         if (pass > 0)
         {
@@ -6131,6 +6182,16 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
         memcpy(p, &fh, sizeof(fh));
         if (!ReadExact(stdin, p + sizeof(fh), sizeof(rc) - sizeof(fh))) return 0;
         return 2;
+    }
+    if (fh.magic == PER_PASS_MAGIC)
+    {
+        // PPRM is 40 bytes: the 24-byte header is in fh, 16 more follow.
+        // Like WGCW it lands in a file-scope command rather than yet another
+        // out-parameter - this dispatcher already carries ten of them.
+        BYTE *p = reinterpret_cast<BYTE *>(&g_per_pass_cmd);
+        memcpy(p, &fh, sizeof(fh));
+        if (!ReadExact(stdin, p + sizeof(fh), sizeof(g_per_pass_cmd) - sizeof(fh))) return 0;
+        return 11;
     }
     return 0;
 }
@@ -6711,6 +6772,33 @@ static int RunVideo()
             // upscale it on the GPU.
             const uint32_t ok = OpenMotionScaler(mc.width, mc.height) ? 1u : 0u;
             VideoMotionAck ack = { MOTION_ACK_MAGIC, ok, 0u, 0u, mc.pts };
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
+            continue;
+        }
+        if (msg == 11)
+        {
+            // PPRM: passes 2..N get their own NR parameters.
+            //
+            // Nothing is recreated here on purpose. Style and the strengths
+            // are read at EVALUATE time (see EvalNrPass), while CreateFeature
+            // only takes sizes and the preset hint - so this command changes
+            // four numbers and no GPU object at all. The next frame shows it.
+            //
+            // A clear flag is not a failure: it means "every pass uses the
+            // main set", which is the behaviour a client that never sends
+            // this command also gets.
+            const bool enabled = (g_per_pass_cmd.flags & PER_PASS_FLAG_ENABLED) != 0;
+            g_per_pass = g_per_pass_cmd;
+            g_per_pass_set = enabled;
+            if (enabled)
+                Log("[video] PPRM: passes 2+ get style %u, intensity %.2f, "
+                    "tone %.2f, structure %.2f, skin %.2f",
+                    g_per_pass_cmd.style, g_per_pass_cmd.intensity,
+                    g_per_pass_cmd.local_tone,
+                    g_per_pass_cmd.local_structure, g_per_pass_cmd.skin_structure);
+            else
+                Log("[video] PPRM: cleared - every pass uses the main set");
+            const VideoPerPassAck ack = { PER_PASS_ACK_MAGIC, 1u, 0u, 0u, g_per_pass_cmd.pts };
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
