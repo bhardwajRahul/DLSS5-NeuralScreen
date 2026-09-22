@@ -6120,7 +6120,12 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
         BYTE *p = reinterpret_cast<BYTE *>(&g_per_pass_cmd);
         memcpy(p, &fh, sizeof(fh));
         if (!ReadExact(stdin, p + sizeof(fh), sizeof(g_per_pass_cmd) - sizeof(fh))) return 0;
-        return 11;
+        // 13, not 11: RECS (recording on the GPU) already claims 11, and two
+        // branches on the same number never both run - the first `msg == 11`
+        // below swallowed the record command and answered it with a PPRM ack,
+        // so the client waited for an ack that was never coming. Numbers are
+        // per-magic and must stay unique; 13 is the next free one.
+        return 13;
     }
     return 0;
 }
@@ -6437,7 +6442,11 @@ static int RunVideo()
         const BYTE *mv_ptr = nullptr;
         const int msg = ReadVideoMessage(v, fh, color, mv, rc, sc, wc, mc, dc, gc,
                                          oc, &color_ptr, &mv_ptr);
-        if (msg != 1 && msg != 10 && msg != 11 && msg != 12) prepared = false;
+        // 13 is PPRM (passes 2..N get their own set): a command that changes
+        // parameters, so like 1/10/11/12 it does not invalidate the prepared
+        // frame. Missing it here sent every PPRM through the "not prepared"
+        // path and threw away the frame that was ready.
+        if (msg != 1 && msg != 10 && msg != 11 && msg != 12 && msg != 13) prepared = false;
         if (msg == 0)
         {
             if (live)
@@ -6720,9 +6729,16 @@ static int RunVideo()
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
-        if (msg == 11)
+        if (msg == 13)
         {
             // PPRM: passes 2..N get their own NR parameters.
+            //
+            // 13, not 11: RECS already owns 11. Two `if (msg == N)` branches
+            // on the same number means only the first ever runs - this branch
+            // sat ABOVE the RECS one and answered every record command with a
+            // PPRM ack, so the client waited 8 s for an ack that never came.
+            // Numbers must stay unique across the dispatcher; the next free
+            // one is 13.
             //
             // Nothing is recreated here on purpose. Style and the strengths
             // are read at EVALUATE time (see EvalNrPass), while CreateFeature

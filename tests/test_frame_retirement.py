@@ -127,7 +127,7 @@ int main() {
         build.write_text(f'''@echo off
 call "{vcvars}" >nul
 if errorlevel 1 exit /b 1
-cl /nologo /O2 /EHsc /W3 /MD /std:c++17 /I"{native / 'include'}" /I"{native / 'src'}" "{source}" "{native / 'spout_bridge.cpp'}" /Fe:"{work / 'close_check.exe'}" /link "{native / 'lib/Windows_x86_64/x64/nvsdk_ngx_d.lib'}" "{native / 'SpoutDX.lib'}" version.lib kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib WindowsApp.lib dwmapi.lib
+cl /nologo /O2 /EHsc /W3 /MD /std:c++17 /I"{native / 'include'}" /I"{native / 'src'}" "{source}" "{native / 'spout_bridge.cpp'}" "{native / 'gpu_recorder.cpp'}" /Fe:"{work / 'close_check.exe'}" /link "{native / 'lib/Windows_x86_64/x64/nvsdk_ngx_d.lib'}" "{native / 'SpoutDX.lib'}" version.lib kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib WindowsApp.lib dwmapi.lib mfplat.lib mfreadwrite.lib mfuuid.lib
 ''', encoding='ascii')
         built = subprocess.run([os.environ['COMSPEC'], '/d', '/c', str(build)], cwd=work,
                                capture_output=True, text=True, timeout=120)

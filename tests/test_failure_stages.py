@@ -137,7 +137,7 @@ int main() {
         f'''@echo off
 call "{vcvars}" >nul
 if errorlevel 1 exit /b 1
-cl /nologo /O2 /EHsc /W3 /MD /std:c++17 /I"{NATIVE / 'include'}" /I"{NATIVE / 'src'}" "{source}" "{NATIVE / 'spout_bridge.cpp'}" /Fe:"{work / 'failure_stages.exe'}" /link "{NATIVE / 'lib/Windows_x86_64/x64/nvsdk_ngx_d.lib'}" "{NATIVE / 'SpoutDX.lib'}" version.lib kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib WindowsApp.lib dwmapi.lib
+cl /nologo /O2 /EHsc /W3 /MD /std:c++17 /I"{NATIVE / 'include'}" /I"{NATIVE / 'src'}" "{source}" "{NATIVE / 'spout_bridge.cpp'}" "{NATIVE / 'gpu_recorder.cpp'}" /Fe:"{work / 'failure_stages.exe'}" /link "{NATIVE / 'lib/Windows_x86_64/x64/nvsdk_ngx_d.lib'}" "{NATIVE / 'SpoutDX.lib'}" version.lib kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib WindowsApp.lib dwmapi.lib mfplat.lib mfreadwrite.lib mfuuid.lib
 ''',
         encoding="ascii",
     )
