@@ -41,7 +41,7 @@ from i18n import STRINGS as UI_STRINGS
 from paths import NATIVE_DIR, WORKER_EXE
 from protocol import (HEADER_FMT, VIDEO_MAGIC, SharedFrameBuffer,
                       WorkerReader, _negotiate_shm, send_dda, send_resize)
-from settings_io import _work_size, hotkey_labels, nr_verdict
+from settings_io import _work_size, cascade_passes, hotkey_labels, nr_verdict
 from winapi import window_frame_rect
 
 
@@ -704,7 +704,7 @@ def switch_monitor(st, new_monitor: int | str) -> None:
         st.display.alert(UI_STRINGS[st.lang]["mon_fail"])
     st.width, st.height = st.capture.resolution
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale,
-                                       getattr(st, 'nr_passes', 1))
+                                       cascade_passes(st))
     # The worker reads NS_OUTPUT / NS_WINDOW_POS at every OpenDda/OpenPresent,
     # and the overlay is rebuilt below - so the new monitor's identity goes
     # out before the rebuild (issues #28, #33).
@@ -790,7 +790,7 @@ def switch_window(st, hwnd: int) -> None:
         st.width, st.height = st.capture.resolution
         note = UI_STRINGS[st.lang]["win_mode_off"]
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale,
-                                       getattr(st, 'nr_passes', 1))
+                                       cascade_passes(st))
     st.follow_pos = None        # a fresh overlay starts at (0,0)
     st.follow_resize = None
     # The window size this pipeline was built for, as WE measure it. It is
@@ -863,7 +863,7 @@ def resize_window_live(st, frame_w: int, frame_h: int) -> bool:
     if aw < 64 or ah < 64:
         return False
     new_w, new_h = _work_size(int(aw), int(ah), st.work_scale,
-                              getattr(st, 'nr_passes', 1))
+                              cascade_passes(st))
     new_full_w = int(aw) if (new_w != aw or new_h != ah) else 0
     new_full_h = int(ah) if (new_w != aw or new_h != ah) else 0
     try:
@@ -1007,7 +1007,7 @@ def follow_monitor(st) -> None:
     st.width, st.height = st.capture.resolution
     st.mon_w, st.mon_h = st.width, st.height
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale,
-                                       getattr(st, 'nr_passes', 1))
+                                       cascade_passes(st))
     rebuild_pipeline(st, f"{st.width}x{st.height}")
 
 
@@ -1278,7 +1278,7 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
         os.environ["NS_NR_SMALL"] = "1" if st.nr_small else "0"
         settings_io.save_menu_layout(st)
     new_w, new_h = _work_size(st.width, st.height, st.work_scale,
-                                       getattr(st, 'nr_passes', 1))
+                                       cascade_passes(st))
     new_full_w = st.width if (new_w != st.width or new_h != st.height) else 0
     new_full_h = st.height if (new_w != st.width or new_h != st.height) else 0
     print(f"[main] applying: profile {new_profile!r}, "

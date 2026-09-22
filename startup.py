@@ -47,8 +47,8 @@ from paths import BASE_DIR
 from pipeline import require_compatibility, start_worker
 from protocol import SharedFrameBuffer, WorkerReader
 from recorder import VideoRecorder
-from settings_io import (APP_VERSION, _work_size, hotkey_labels, load_config,
-                         load_presets, resolve_params)
+from settings_io import (APP_VERSION, _work_size, cascade_passes, hotkey_labels,
+                         load_config, load_presets, resolve_params)
 from taskbar import TaskbarWindow
 from tray import TrayController
 
@@ -529,7 +529,7 @@ def bring_up(st) -> None:
     # The worker and guides run at the work resolution (the NGX feature is
     # created from the header sizes; guides' assert requires them to match)
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale,
-                                      getattr(st, 'nr_passes', 1))
+                                      cascade_passes(st))
     # The v3 protocol (full_w/full_h) ONLY when work != full: at work==full
     # (scale 1.0) the worker crashes or hangs in upscale mode (verified in
     # isolation) - we use legacy full_w=0, as in D5V2.

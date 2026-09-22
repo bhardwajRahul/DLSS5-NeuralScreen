@@ -95,6 +95,22 @@ def _work_size(width: int, height: int, scale: float,
     return min(w, int(width)), min(h, int(height))
 
 
+def cascade_passes(st) -> int:
+    """The pass count to size the work by: the saved one under Boost, one
+    without it.
+
+    The cascade runs only in Boost's small-network mode, which is why the
+    panel shows the count under the Boost switch and hides it with the switch
+    off. The saved count still travels to the worker either way (it comes back
+    with Boost), but sizing by it with Boost off stepped a native work size
+    aside for passes that cannot run - and moved Boost-off users off the 1:1
+    path for nothing.
+    """
+    if not getattr(st, "nr_small", False):
+        return 1
+    return int(getattr(st, "nr_passes", 1) or 1)
+
+
 def hotkey_labels(bindings: dict) -> dict:
     """Bindings -> {command: "Num1"} for the captions on the menu buttons."""
     return {cmd: name for _mods, _vk, cmd, name in bindings.values()}

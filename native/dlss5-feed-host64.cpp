@@ -1514,16 +1514,25 @@ static void ReleasePassFeatures()
 }
 
 // Why a cascade runs fewer passes than were asked for, for the build line.
-// The ping-pong partner exists only at the work resolution: at 1:1 the network
-// writes the full-size output directly and there is nothing to cascade through.
-static const char *CascadeShortfall(bool nr_small, unsigned asked,
-                                    unsigned effective)
+// The passes ping-pong between two work-resolution buffers, and those exist
+// only in the small-network mode: Boost on, and a work size below the frame.
+// Boost comes first - with it off the panel hides both the pass count and the
+// resolution slider, so "lower the processing resolution" pointed at a
+// control that is not on screen.
+static const char *CascadeShortfall(bool boost, bool upscale, bool nr_small,
+                                    unsigned asked, unsigned effective)
 {
     if (effective >= asked) return "";
-    return nr_small
-        ? " - the second work buffer was not created"
-        : " - the network runs at 1:1, which has no work-resolution scratch to "
-          "cascade through; lower the processing resolution to engage it";
+    if (!boost)
+        return " - Boost is off: the network runs on the whole frame, with no "
+               "work-resolution buffers to cascade through; turn Boost on to "
+               "engage it";
+    if (!upscale)
+        return " - the network runs at 1:1, which has no work-resolution "
+               "scratch to cascade through; lower the processing resolution "
+               "to engage it";
+    return nr_small ? " - the second work buffer was not created"
+                    : " - the work-resolution buffers could not be created";
 }
 
 // Reconcile executable passes, preserving the history of those still used.
@@ -2004,6 +2013,7 @@ struct VideoState
     // the present, the wipe, the recording, the bypass - keeps seeing full-res
     // textures and needs no changes at all.
     bool nr_small = false;
+    bool nr_small_asked = false;        // Boost, as asked; nr_small is what ran
     UINT nr_w = 0, nr_h = 0;
     ID3D12Resource *nr_in = nullptr;    // NON_PIXEL_SHADER_RESOURCE at rest
     ID3D12Resource *nr_out = nullptr;   // UNORDERED_ACCESS at rest
@@ -3075,6 +3085,7 @@ static bool CreateVideoResources(VideoState &v, UINT w, UINT hgt, UINT full_w = 
     // work == full there is nothing to scale and the two extra passes would
     // be pure loss.
     const bool asked = (want_small < 0) ? NrSmallRequested() : (want_small != 0);
+    v.nr_small_asked = asked;
     v.nr_small = v.upscale && asked;
     v.nr_w = v.nr_small ? w : 0;
     v.nr_h = v.nr_small ? hgt : 0;
@@ -6430,7 +6441,8 @@ static int RunVideo()
             // built them again: 113-148 ms of frozen picture per step, and
             // it was this release/create pair that leaked 420 MB a time
             // until 1.7.1 fixed which library does the releasing (#48).
-            const int want_small_now = (rc.flags & RESIZE_FLAG_NR_SMALL) != 0 ? 1 : 0;
+            const bool asked_small = (rc.flags & RESIZE_FLAG_NR_SMALL) != 0;
+            const int want_small_now = asked_small ? 1 : 0;
             const bool same_size = rc.width == v.w && rc.height == v.hgt &&
                                    want_small_now == (v.nr_small ? 1 : 0) &&
                                    (rup ? (v.upscale && rc.full_w == v.full_w &&
@@ -6446,6 +6458,7 @@ static int RunVideo()
                 g_nr_direct = (rc.flags & RESIZE_FLAG_NR_DIRECT) != 0;
                 // Keep the saved count, but allocate only passes EvaluateVideo
                 // can execute. Surplus features retire instead of occupying VRAM.
+                v.nr_small_asked = asked_small;   // Boost may flip here at 1:1
                 const unsigned want = NrPassesFromFlags(rc.flags);
                 const unsigned effective = (v.nr_small && v.nr_alt != nullptr) ? want : 1u;
                 // Said on EVERY parameter apply, not only when it changes:
@@ -6464,7 +6477,8 @@ static int RunVideo()
                     if (v.passes_live == 0) return 6;
                     Log("[video] NR cascade built: asked=%u effective=%u allocated=%u%s",
                         v.passes, effective, v.passes_live,
-                        CascadeShortfall(v.nr_small, v.passes, effective));
+                        CascadeShortfall(v.nr_small_asked, v.upscale,
+                                         v.nr_small, v.passes, effective));
                 }
                 v.residual = v.nr_small && !g_nr_direct;
                 v.residual_strength = v.residual ? ResidualStrengthRequested() : 1.0f;
@@ -6553,7 +6567,8 @@ static int RunVideo()
             if (v.passes_live == 0) return 6;
             Log("[video] NR cascade built: asked=%u effective=%u allocated=%u%s",
                 v.passes, effective, h.feature ? v.passes_live : 0u,
-                CascadeShortfall(v.nr_small, v.passes, effective));
+                CascadeShortfall(v.nr_small_asked, v.upscale,
+                                 v.nr_small, v.passes, effective));
             warmup_done = (h.feature == nullptr);   // only warm a real NR feature
             VideoResizeAck ack = { RESIZE_ACK_MAGIC, 1u, static_cast<uint32_t>(rr), 0u, fh.pts };
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;

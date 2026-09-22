@@ -1391,7 +1391,7 @@ def drain_commands(st) -> bool:
                     want_small = new_scale <= cap + 1e-6
                     applied = new_scale if want_small else st.work_scale
                     new_w, new_h = _work_size(st.width, st.height, applied,
-                                              getattr(st, 'nr_passes', 1))
+                                              settings_io.cascade_passes(st))
                     print(f"[main] work_scale -> {new_scale:.2f} ({new_w}x{new_h}), "
                           f"boost {'on' if want_small else 'off'}")
                     # Off the ladder's top step the numbers the user is shown

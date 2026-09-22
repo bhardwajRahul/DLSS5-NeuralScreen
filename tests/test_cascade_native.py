@@ -8,7 +8,11 @@ processed at native with four NR passes asked for:
   frame goes through the whole cascade and comes back full size;
 * at 1:1, what the slider at native used to produce, it builds ONE and the
   same line says why ("the network runs at 1:1 ...") instead of saying
-  nothing while the panel shows four.
+  nothing while the panel shows four;
+* with Boost off it builds one too, and the reason names Boost - at 1:1 and
+  with a work size below the frame alike. The second is what a user's log
+  showed: Boost off, four passes saved, and a line blaming "1:1" and advising
+  a resolution slider the panel hides without Boost.
 
 Headless, in the converter's shape: no capture, no window.
 
@@ -33,7 +37,7 @@ PASSES = 4
 BUILT = re.compile(r"NR cascade built: asked=(\d+) effective=(\d+) allocated=(\d+)(.*)")
 
 
-def run(work_w: int, work_h: int) -> tuple[list, object]:
+def run(work_w: int, work_h: int, boost: bool = True) -> tuple[list, object]:
     """One worker at this work size for a 1280x720 frame, four passes asked."""
     from pipeline import shutdown_worker, start_worker
     from protocol import send_frame, send_resize
@@ -49,7 +53,7 @@ def run(work_w: int, work_h: int) -> tuple[list, object]:
         # The pass count reaches the worker only on a resize - the stream
         # header has no field for it (test_nr_passes_wire).
         send_resize(worker, params, work_w, work_h, 2, full_w, full_h,
-                    True, False, PASSES)
+                    boost, False, PASSES)
         reader.wait_rack(timeout=120.0)
         reader.set_output_size(W, H)
         yy, xx = np.mgrid[0:H, 0:W]
@@ -113,12 +117,29 @@ def main() -> int:
             failures.append("at 1:1 the build line does not say why the "
                             "cascade runs one pass")
 
+    # Boost off: one pass, and the reason is the switch - never "1:1" and a
+    # slider that is not on screen.
+    for label, size in (("1:1", (W, H)), ("below the frame", work)):
+        logs, _ = run(*size, boost=False)
+        line = built(logs)
+        if line is None:
+            failures.append(f"Boost off, {label}: the worker never logged the "
+                            f"cascade build")
+            continue
+        effective, reason = int(line.group(2)), line.group(4).strip()
+        print(f"    Boost off, {label} ({size[0]}x{size[1]}): effective "
+              f"{effective} {reason}")
+        if effective != 1:
+            failures.append(f"Boost off, {label}: {effective} passes built")
+        if "Boost is off" not in reason or "1:1" in reason:
+            failures.append(f"Boost off, {label}: the reason is {reason!r}")
+
     for f in failures:
         print("FAIL:", f)
     if failures:
         return 1
     print(f"OK: native with {PASSES} passes builds and runs {PASSES} of {PASSES}; "
-          f"1:1 builds one and says why")
+          f"1:1 and Boost off build one and say why")
     return 0
 
 

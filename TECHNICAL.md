@@ -659,6 +659,16 @@ composites cache their descriptors on that pointer. An even pass count would
 then rewrite a shader-visible descriptor heap every frame while up to two
 earlier frames are still reading it.
 
+Those buffers exist only when the network runs below the frame's own size: at
+1:1 it writes the full-size output directly, and there is nothing to cascade
+through. So with Boost on and more than one pass, a work size equal to the
+frame - the slider at the top, on 1440p and below - steps 2 px under it on
+each axis (`settings_io._work_size`). That brings the matched residual
+composite in, and the cascade runs. It also keeps more detail than 1:1 did,
+because the composite anchors on the native frame. Without Boost the count is
+hidden and sizes nothing (`settings_io.cascade_passes`). A cascade that still
+runs short says why at the end of the worker's `NR cascade built` line.
+
 Measured on the bench at 2496x1404, Boost on:
 
 ```

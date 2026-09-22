@@ -266,11 +266,13 @@ def processing_size(width: int, height: int, work_scale: float,
     NGX cap is real (feature 18 goes silent above 2560x1440), and a work
     size must never exceed the frame it came from. With Boost off the
     network is handed the whole frame and the scale is inert - which is the
-    measurement in TECHNICAL.md, not a decision made here.
+    measurement in TECHNICAL.md, not a decision made here - and no cascade
+    runs, so the pass count does not size anything either
+    (settings_io.cascade_passes).
     """
     from settings_io import _work_size
     if not nr_small:
-        return _work_size(width, height, 1.0, nr_passes)
+        work_scale, nr_passes = 1.0, 1
     return _work_size(width, height, float(work_scale), nr_passes)
 
 
