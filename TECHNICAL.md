@@ -69,8 +69,18 @@ the card (`native/gpu_recorder.cpp`):
 - **The encoder thread** waits for the fence, converts RGBA to NV12 with the
   D3D11 video processor on the same adapter (matched by LUID, as the Spout
   bridge does) and hands the surface to a Media Foundation sink writer running
-  NVENC: AV1, then HEVC, then H.264 - the first one the driver opens. The file
-  is tagged BT.709 studio range, which is what players assume for HD video.
+  NVENC: AV1, then HEVC, then H.264 - the first one the driver opens. An SDR
+  file is tagged BT.709 studio range, which is what players assume for HD video.
+- **HDR10 when HDR is on.** An HDR session is recorded as the display gets it:
+  10-bit, BT.2020 primaries and matrix, the PQ curve, tagged so that a player
+  tone-maps it. The worker hands the recorder its HDR composite as 10-bit PQ -
+  with Frame Generation the composite already is that; without it, the
+  composite runs a second time with the PQ encode on. The D3D11 video processor
+  converts within BT.709 only on this driver (no BT.2020, no PQ, no FP16 input),
+  so two pixel-shader draws write the P010 planes instead: 10-bit luma, then
+  chroma at half size, left-sited. AV1 or HEVC Main10 encodes it (NVENC has no
+  10-bit H.264); when neither opens, the recording is SDR. The mastering
+  metadata gives a nominal 1000 nits. `NS_GREC_HDR=0` keeps recordings SDR.
 - **Fragmented MP4** where the system offers it (for AV1 and H.264 here, not
   HEVC): a worker that dies mid-recording still leaves a file that plays up to
   its last fragment. "Auto" takes any codec in a fragmented file before the
@@ -100,6 +110,10 @@ recorder on its own through `native/gpu_recorder_check.cpp`): all three codecs
 120/120 frames at 60 fps with none dropped; four colour bars within one code
 value of BT.709 studio range; frame spacing 16.67 ms throughout; picture and
 sound 0.0 ms apart (white flashes against tone bursts at the same instants).
+HDR10: 10-bit PQ bars decode to their exact BT.2020 code values in AV1 and in
+HEVC Main10, through a resize too; through a worker
+(`tests/test_hdr_recording.py`), the file carries the desktop's own levels -
+white at the PQ code of the SDR white - with Frame Generation off and on.
 In a headless loop that pays the readback either way, GPU recording at 60 fps
 cost no measurable frame rate and the CPU path at 30 fps cost 6%.
 

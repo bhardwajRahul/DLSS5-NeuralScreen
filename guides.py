@@ -80,6 +80,9 @@ class TemporalGuideGenerator:
         self.flow_height = max(64, int(round(height * scale / 2) * 2))
         self.emit_small = emit_small
         self.previous_gray: np.ndarray | None = None
+        # The last frame went out with the scene cut left to the worker
+        # (handoff); the first one after anything else resets.
+        self._handed_off = False
         self._zero_motion = np.zeros((self.height, self.width, 2), dtype=np.float16)
         self._zero_small = np.zeros((self.flow_height, self.flow_width, 2), dtype=np.float16)
         self._flow_f16 = np.empty((self.flow_height, self.flow_width, 2), dtype=np.float16)
@@ -282,6 +285,38 @@ class TemporalGuideGenerator:
         motion = self._zero_small if self.emit_small else self._zero_motion
         return GuideFrame(motion=motion, reset=True, scene_score=1.0)
 
+    def forget(self) -> None:
+        """Drop the scene history: the next frame starts fresh and resets.
+
+        NR off (bypass) calls it on every frame. Keeping the last pre-bypass
+        gray as history would compare against a screen minutes old the moment
+        NR comes back on; forgotten, the first NR frame is a reset - which is
+        what a resumed pipeline is.
+        """
+        self.previous_gray = None
+        self._handed_off = False
+
+    def handoff(self) -> GuideFrame:
+        """The frame's guides when the worker decides the scene cut.
+
+        FRAME_FLAG_WORKER_SCENE: the worker scores the gray it has just
+        captured - the same mean(|gray - previous|)/255 > 0.24 as process() -
+        and resets on a cut itself. What is left here is zero motion (NVOFA
+        makes the field in the worker) and a reset only for what the client
+        knows and the worker does not: a first frame, after a restart or a
+        stretch of NR off (forget).
+
+        The client's own history is dropped on the way: were the loop to fall
+        back to computing guides itself (NVOFA failing mid-session), its first
+        frame then compares against nothing and resets, not against a gray
+        from before the handoff.
+        """
+        reset = not self._handed_off
+        self._handed_off = True
+        self.previous_gray = None
+        motion = self._zero_small if self.emit_small else self._zero_motion
+        return GuideFrame(motion=motion, reset=reset, scene_score=0.0)
+
     def process(self, rgba: np.ndarray | None = None,
                 gray: np.ndarray | None = None, compute_motion: bool = True) -> GuideFrame:
         """Compute the guides: motion/reset/scene_score.
@@ -298,6 +333,7 @@ class TemporalGuideGenerator:
         else:
             current = self._small_gray(rgba)
         pixels = self.width * self.height
+        self._handed_off = False
         if self.previous_gray is None:
             motion = self._zero_small if self.emit_small else self._zero_motion
             reset = True

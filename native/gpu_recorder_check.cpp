@@ -4,7 +4,7 @@
 // resize, checked on this machine's GPU. tests/test_gpu_recorder.py builds
 // it, runs it and checks the file it writes.
 //
-//   gpu_recorder_check <out.mp4> [seconds] [width] [height] [codec] [fps] [resize] [sync] [pace]
+//   gpu_recorder_check <out.mp4> [seconds] [width] [height] [codec] [fps] [resize] [sync] [pace] [hdr]
 //
 // codec: 0 auto, 1 H.264, 2 HEVC, 3 AV1. resize 1: halfway through, the
 // source becomes 4:3 at two thirds of the size (it must come out letterboxed).
@@ -14,6 +14,10 @@
 // pace N: frames come at an uneven ~N fps instead of one per slot - a live
 // pipeline slower than the recording's clock, where most slots are empty and
 // the file is variable-rate. The sync marks must stay put over time then too.
+// hdr 1: the frames are 10-bit PQ BT.2020 (R10G10B10A2, what the worker's
+// HDR composite hands the recorder) and the file must be HDR10. The bars are
+// then PQ greys 0.25, 0.5 and 0.75 and a PQ red 0.5 - known code values, so
+// the file's luma says whether the curve and the BT.2020 matrix survived.
 // The picture: the top half is four bars - red, green, blue, grey 128 - and
 // the bottom half is black with a white square that moves one step a frame.
 // Exit code 0 when the recording finished without an error.
@@ -66,6 +70,32 @@ void Fill(BYTE *dst, UINT pitch, UINT w, UINT h, uint32_t frame, bool flash)
     }
 }
 
+// The HDR10 picture, packed R10G10B10A2: PQ code values straight in.
+void Fill10(BYTE *dst, UINT pitch, UINT w, UINT h, uint32_t frame, bool flash)
+{
+    auto pack = [](double r, double g, double b) {
+        auto q = [](double v) { return static_cast<uint32_t>(v * 1023.0 + 0.5) & 1023u; };
+        return q(r) | (q(g) << 10) | (q(b) << 20) | (3u << 30);
+    };
+    const uint32_t bars[4] = { pack(0.25, 0.25, 0.25), pack(0.5, 0.5, 0.5),
+                               pack(0.75, 0.75, 0.75), pack(0.5, 0.0, 0.0) };
+    const uint32_t white = pack(0.5, 0.5, 0.5), black = pack(0.0, 0.0, 0.0);
+    const UINT box = (std::max)(16u, h / 8);
+    const UINT bx = (frame * 8) % (w - box);
+    for (UINT y = 0; y < h; ++y)
+    {
+        uint32_t *row = reinterpret_cast<uint32_t *>(dst + static_cast<size_t>(y) * pitch);
+        for (UINT x = 0; x < w; ++x)
+        {
+            if (flash) { row[x] = white; continue; }
+            if (y < h / 2) { row[x] = bars[(x * 4) / w]; continue; }
+            const bool in = x >= bx && x < bx + box && y >= h * 3 / 4 - box / 2 &&
+                            y < h * 3 / 4 + box / 2;
+            row[x] = in ? white : black;
+        }
+    }
+}
+
 struct Source
 {
     ID3D12Resource *tex = nullptr;
@@ -74,7 +104,8 @@ struct Source
     UINT w = 0, h = 0;
 };
 
-bool MakeSource(ID3D12Device *dev, UINT w, UINT h, Source &s)
+bool MakeSource(ID3D12Device *dev, UINT w, UINT h, Source &s,
+                DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM)
 {
     s.w = w;
     s.h = h;
@@ -85,7 +116,7 @@ bool MakeSource(ID3D12Device *dev, UINT w, UINT h, Source &s)
     td.Height = h;
     td.DepthOrArraySize = 1;
     td.MipLevels = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;   // the worker's output format
+    td.Format = format;   // the worker's output, or its HDR composite
     td.SampleDesc.Count = 1;
     td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;   // as v.output
     if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td,
@@ -115,7 +146,7 @@ int wmain(int argc, wchar_t **argv)
     if (argc < 2)
     {
         fprintf(stderr, "usage: gpu_recorder_check <out.mp4> [seconds] [width] [height] "
-                        "[codec] [fps] [resize] [sync] [pace]\n");
+                        "[codec] [fps] [resize] [sync] [pace] [hdr]\n");
         return 2;
     }
     const wchar_t *path = argv[1];
@@ -127,6 +158,9 @@ int wmain(int argc, wchar_t **argv)
     const bool resize = argc > 7 && _wtoi(argv[7]) != 0;
     const bool sync = argc > 8 && _wtoi(argv[8]) != 0;
     const double pace = argc > 9 ? _wtof(argv[9]) : 0.0;
+    const bool hdr = argc > 10 && _wtoi(argv[10]) != 0;
+    const DXGI_FORMAT format = hdr ? DXGI_FORMAT_R10G10B10A2_UNORM
+                                   : DXGI_FORMAT_R8G8B8A8_UNORM;
     // Uneven, like a real pipeline: the intervals cycle around 1/pace.
     const double jitter[5] = { 0.90, 1.08, 1.00, 1.20, 0.82 };
     double next_frame = 0.0;
@@ -179,8 +213,8 @@ int wmain(int argc, wchar_t **argv)
     UINT64 fv = 0;
 
     Source big, other;
-    if (!MakeSource(dev, width, height, big)) { fprintf(stderr, "no source\n"); return 3; }
-    if (resize && !MakeSource(dev, (height * 2 / 3) * 4 / 3, height * 2 / 3, other))
+    if (!MakeSource(dev, width, height, big, format)) { fprintf(stderr, "no source\n"); return 3; }
+    if (resize && !MakeSource(dev, (height * 2 / 3) * 4 / 3, height * 2 / 3, other, format))
     { fprintf(stderr, "no second source\n"); return 3; }
 
     // The audio ring, as the client makes it: 2 s of 48 kHz stereo.
@@ -210,14 +244,16 @@ int wmain(int argc, wchar_t **argv)
     p.codec = codec;
     p.start_qpc = t0.QuadPart;
     p.audio_name = ring_name;
+    p.hdr = hdr;
+    p.hdr_max_nits = 1000;
     GpuRecStarted started = {};
     if (!GpuRecStart(dev, p, &started))
     {
         fprintf(stderr, "start failed: 0x%08X\n", static_cast<unsigned>(started.hr));
         return 4;
     }
-    fprintf(stderr, "recording: codec %u, audio %d, setup %.0f ms\n", started.codec,
-            started.audio ? 1 : 0,
+    fprintf(stderr, "recording: codec %u%s, audio %d, setup %.0f ms\n", started.codec,
+            started.hdr ? " HDR10" : "", started.audio ? 1 : 0,
             1000.0 * (started.origin_qpc - t0.QuadPart) / freq.QuadPart);
 
     // A 440 Hz tone, written in real time the way the client's capture does.
@@ -268,8 +304,8 @@ int wmain(int argc, wchar_t **argv)
         BYTE *mapped = nullptr;
         D3D12_RANGE none = { 0, 0 };
         src.upload->Map(0, &none, reinterpret_cast<void **>(&mapped));
-        Fill(mapped + src.fp.Offset, src.fp.Footprint.RowPitch, src.w, src.h, frames,
-             sync && marked(sample_time / 1e7));
+        (hdr ? Fill10 : Fill)(mapped + src.fp.Offset, src.fp.Footprint.RowPitch, src.w,
+                              src.h, frames, sync && marked(sample_time / 1e7));
         src.upload->Unmap(0, nullptr);
 
         const int slot = GpuRecReserve(src.tex);
@@ -316,9 +352,9 @@ int wmain(int argc, wchar_t **argv)
             frames, reserved_fail, st.written, st.dropped, st.audio_frames, st.codec,
             static_cast<unsigned>(st.hr), st.duration_ms);
     printf("{\"written\": %u, \"dropped\": %u, \"codec\": %u, \"audio_frames\": %u, "
-           "\"hr\": %u, \"had_audio\": %s, \"submitted\": %u}\n",
+           "\"hr\": %u, \"had_audio\": %s, \"submitted\": %u, \"hdr\": %s}\n",
            st.written, st.dropped, st.codec, st.audio_frames, static_cast<unsigned>(st.hr),
-           st.had_audio ? "true" : "false", frames);
+           st.had_audio ? "true" : "false", frames, started.hdr ? "true" : "false");
     if (fence->GetCompletedValue() < fv)
     {
         fence->SetEventOnCompletion(fv, ev);

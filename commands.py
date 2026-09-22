@@ -19,6 +19,7 @@ dialog's buffered frame (#89).
 from __future__ import annotations
 
 import ctypes
+import os
 import queue
 import sys
 import threading
@@ -322,9 +323,14 @@ def start_recorder(st, path: str):
     reader = getattr(st, "reader", None)
     if (bool(st.cfg.get("gpu_record", True)) and worker is not None
             and reader is not None and worker.poll() is None):
+        # With HDR on, the file is what the display shows: HDR10 (the worker
+        # takes it only where its frames really are HDR, and falls back to
+        # SDR when no 10-bit encoder opens). NS_GREC_HDR=0 keeps it SDR.
+        hdr = (bool(st.cfg.get("hdr", False))
+               and os.environ.get("NS_GREC_HDR", "1") != "0")
         try:
             return GpuRecorder(worker, reader, path, fps=GPU_RECORD_FPS,
-                               audio=st.record_audio)
+                               audio=st.record_audio, hdr=hdr)
         except Exception as exc:
             print(f"[main] GPU recording did not start ({exc}) - "
                   f"recording on the CPU instead", file=sys.stderr)

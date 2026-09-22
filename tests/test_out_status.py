@@ -9,7 +9,10 @@ a real error.
 
 Checked: the explicit SKIPPED status is visible to the caller; ngx_result=0
 alone does not pretend that work was skipped; a real failure (0xBAD00001)
-raises; a missing OK bit raises; a normal frame passes through.
+raises; a missing OK bit raises; a normal frame passes through; and the
+worker's scene score (FRAME_FLAG_WORKER_SCENE frames) reaches the caller -
+the value in the high 16 bits and the cut bit - while a reply without it
+reports none.
 """
 import os
 import queue
@@ -25,6 +28,7 @@ sys.path.insert(0, BASE)
 from main import (CREATE_ACK_FMT, CREATE_ACK_MAGIC,
                   CREATE_CATEGORY_UNSUPPORTED, OUT_FMT, OUT_MAGIC,
                   OUT_STATUS_OK, OUT_STATUS_SKIPPED, WorkerReader)  # noqa: E402
+from protocol import OUT_STATUS_SCENE, OUT_STATUS_SCENE_CUT  # noqa: E402
 
 
 class FakeWorker:
@@ -90,6 +94,25 @@ def main() -> int:
             failures.append(
                 f"zero-result with pixels: expected bytes and skipped=False, got {got!r}")
 
+        # 3b. The worker's scene score: 0.31 in the high 16 bits, and the cut
+        #     it caused. Then a plain reply, which must not keep the old score.
+        score = round(0.31 * 65535)
+        fake.send_out(30, OUT_STATUS_OK | OUT_STATUS_SCENE | OUT_STATUS_SCENE_CUT
+                      | (score << 16), 0, 1)
+        reader.recv(30, 5.0)
+        if reader.last_scene is None or abs(reader.last_scene - 0.31) > 1e-4                 or not reader.last_scene_cut:
+            failures.append(f"scene: expected 0.31 and a cut, got "
+                            f"{reader.last_scene!r} cut={reader.last_scene_cut}")
+        fake.send_out(31, OUT_STATUS_OK | OUT_STATUS_SCENE | (7 << 16), 0, 1)
+        reader.recv(31, 5.0)
+        if reader.last_scene is None or reader.last_scene > 0.001 or reader.last_scene_cut:
+            failures.append(f"scene: a small score came back as {reader.last_scene!r} "
+                            f"cut={reader.last_scene_cut}")
+        fake.send_out(32, OUT_STATUS_OK, 0, 1)
+        reader.recv(32, 5.0)
+        if reader.last_scene is not None or reader.last_scene_cut:
+            failures.append("scene: a reply without the score still reported one")
+
         # 4. ok=0 - the worker itself failed - must surface as an error.
         #    (The reader thread dies on the first error, so each error
         #    case gets its own reader.)
@@ -115,7 +138,8 @@ def main() -> int:
     if failures:
         print(f"FAIL: {len(failures)} - {failures}")
         return 1
-    print("OK: OUT1 distinguishes OK, SKIPPED and NGX failure")
+    print("OK: OUT1 distinguishes OK, SKIPPED and NGX failure, and carries the "
+          "worker's scene score")
     return 0
 
 

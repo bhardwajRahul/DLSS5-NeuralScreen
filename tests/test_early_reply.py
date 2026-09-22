@@ -23,105 +23,23 @@ Run:  runtime\\python.exe tests\\test_early_reply.py
 import ctypes
 import os
 import sys
-import threading
 import time
-from ctypes import wintypes
 from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np  # noqa: E402
 
+from offscreen_target import Target  # noqa: E402
 from paths import WORKER_EXE  # noqa: E402
 
 W, H = 1280, 720
 
 user32 = ctypes.windll.user32
-gdi32 = ctypes.windll.gdi32
-kernel32 = ctypes.windll.kernel32
-WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
-                             wintypes.WPARAM, wintypes.LPARAM)
-user32.DefWindowProcW.restype = ctypes.c_ssize_t
-user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
-                                  wintypes.LPARAM]
-user32.CreateWindowExW.restype = wintypes.HWND
-user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
-                                   wintypes.DWORD, ctypes.c_int, ctypes.c_int,
-                                   ctypes.c_int, ctypes.c_int, wintypes.HWND,
-                                   wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
-user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-user32.DestroyWindow.argtypes = [wintypes.HWND]
-user32.GetDC.restype = wintypes.HDC
-user32.GetDC.argtypes = [wintypes.HWND]
-user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
-user32.FillRect.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.HBRUSH]
-user32.PeekMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND,
-                                wintypes.UINT, wintypes.UINT, wintypes.UINT]
-user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
-user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
-gdi32.CreateSolidBrush.restype = wintypes.HBRUSH
-gdi32.CreateSolidBrush.argtypes = [wintypes.COLORREF]
-gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
-kernel32.GetModuleHandleW.restype = wintypes.HMODULE
-kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
-
-
-class WNDCLASSEXW(ctypes.Structure):
-    _fields_ = [("cbSize", wintypes.UINT), ("style", wintypes.UINT),
-                ("lpfnWndProc", WNDPROC), ("cbClsExtra", ctypes.c_int),
-                ("cbWndExtra", ctypes.c_int), ("hInstance", wintypes.HINSTANCE),
-                ("hIcon", wintypes.HICON), ("hCursor", wintypes.HANDLE),
-                ("hbrBackground", wintypes.HBRUSH), ("lpszMenuName", wintypes.LPCWSTR),
-                ("lpszClassName", wintypes.LPCWSTR), ("hIconSm", wintypes.HICON)]
-
-
-_PROC = WNDPROC(lambda h, m, w, l: user32.DefWindowProcW(h, m, w, l))
-
-
-class Target:
-    """The capture source: off-screen, never activated, no taskbar button."""
-
-    def __init__(self):
-        self.hwnd = None
-        self._ready = threading.Event()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        self._ready.wait(5)
-
-    def _run(self):
-        wc = WNDCLASSEXW()
-        wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
-        wc.lpfnWndProc = _PROC
-        wc.hInstance = kernel32.GetModuleHandleW(None)
-        wc.lpszClassName = "NsEarlyReplyTest"
-        user32.RegisterClassExW(ctypes.byref(wc))
-        self.hwnd = user32.CreateWindowExW(
-            0x80 | 0x08000000, wc.lpszClassName, "ns-early-reply",  # TOOLWINDOW|NOACTIVATE
-            0x80000000, -20000, -20000, W, H, None, None, wc.hInstance, None)
-        user32.ShowWindow(self.hwnd, 4)  # SW_SHOWNOACTIVATE
-        dc = user32.GetDC(self.hwnd)
-        for k, colour in enumerate((0x2020D0, 0x20B020, 0xD02020, 0x808080)):
-            brush = gdi32.CreateSolidBrush(colour)
-            r = wintypes.RECT(k * W // 4, 0, (k + 1) * W // 4, H)
-            user32.FillRect(dc, ctypes.byref(r), brush)
-            gdi32.DeleteObject(brush)
-        user32.ReleaseDC(self.hwnd, dc)
-        self._ready.set()
-        msg = wintypes.MSG()
-        while not self._stop.is_set():
-            while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
-                user32.TranslateMessage(ctypes.byref(msg))
-                user32.DispatchMessageW(ctypes.byref(msg))
-            time.sleep(0.01)
-        user32.DestroyWindow(self.hwnd)
-
-    def close(self):
-        self._stop.set()
-        self._thread.join(2)
 
 
 def main() -> int:
@@ -139,7 +57,7 @@ def main() -> int:
     from settings_io import PROFILES
 
     failures: list = []
-    target = Target()
+    target = Target(W, H, name="NsEarlyReplyTest")
     params = dict(PROFILES["Natural"])
     params["style"] = 1
     shm = SharedFrameBuffer(W, H)

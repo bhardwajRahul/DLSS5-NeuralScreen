@@ -22,13 +22,19 @@ static ComPtr<ID3D11Device> dev;
 static ComPtr<ID3D11DeviceContext> ctx;
 static void check(bool ok, const char *what) { if (!ok) throw std::runtime_error(what); }
 static void hr(HRESULT v) { check(SUCCEEDED(v), "Direct3D call failed"); }
-static ComPtr<ID3D11Texture2D> texture(DXGI_FORMAT fmt, const void *data, UINT bpp, bool output=false)
+static ComPtr<ID3D11Texture2D> texture(DXGI_FORMAT fmt, const void *data, UINT bpp, bool output=false,
+                                       UINT w=W, UINT h=H)
 {
     D3D11_TEXTURE2D_DESC d = {};
-    d.Width=W; d.Height=H; d.MipLevels=1; d.ArraySize=1; d.Format=fmt; d.SampleDesc.Count=1;
+    d.Width=w; d.Height=h; d.MipLevels=1; d.ArraySize=1; d.Format=fmt; d.SampleDesc.Count=1;
     d.BindFlags=D3D11_BIND_SHADER_RESOURCE | (output ? D3D11_BIND_UNORDERED_ACCESS : 0);
-    D3D11_SUBRESOURCE_DATA init={data,W*bpp,0};
+    D3D11_SUBRESOURCE_DATA init={data,w*bpp,0};
     ComPtr<ID3D11Texture2D> t; hr(dev->CreateTexture2D(&d,data ? &init : nullptr,&t)); return t;
+}
+static float srgb_to_linear(unsigned char v)
+{
+    const float x=v/255.0f;
+    return x<=.04045f ? x/12.92f : std::pow((x+.055f)/1.055f,2.4f);
 }
 static std::vector<unsigned char> read(ID3D11Texture2D *t, UINT bpp)
 {
@@ -86,6 +92,39 @@ int main()
         dispatch(kHdrCompositeHlsl,{native.Get(),proxy.Get(),proxy.Get()},result.Get(),&comp);
         auto unchanged=read(result.Get(),8);
         check(memcmp(unchanged.data(),raw.data(),unchanged.size())==0,"zero edit must preserve original FP16 bit for bit");
+        // A window resizing under HDR: the capture changes size before the
+        // output does, and the composite runs on the mismatched pair until the
+        // client resizes (PresentHdr). Larger capture: the output is its
+        // top-left corner, bit for bit with a zero edit. Smaller capture: the
+        // rows it covers stay exact, and the rest comes from the SDR proxy
+        // lifted by white - never the black of an out-of-range read.
+        {
+            const UINT BW=W+4, BH=H+2;
+            std::vector<HALF> big(BW*BH*4, XMConvertFloatToHalf(3.0f));
+            for(UINT y=0;y<H;++y) memcpy(big.data()+y*BW*4,raw.data()+y*W*4,W*4*sizeof(HALF));
+            auto bigNative=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,big.data(),8,false,BW,BH);
+            dispatch(kHdrCompositeHlsl,{bigNative.Get(),proxy.Get(),proxy.Get()},result.Get(),&comp);
+            auto corner=read(result.Get(),8);
+            check(memcmp(corner.data(),raw.data(),corner.size())==0,
+                  "a capture larger than the output must compose its top-left corner exactly");
+            const UINT SH=H-3;
+            auto smallNative=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,raw.data(),8,false,W,SH);
+            dispatch(kHdrCompositeHlsl,{smallNative.Get(),proxy.Get(),proxy.Get()},result.Get(),&comp);
+            auto filled=read(result.Get(),8);
+            check(memcmp(filled.data(),raw.data(),W*SH*8)==0,
+                  "the rows a smaller capture covers must stay exact");
+            const HALF *px=(const HALF*)filled.data();
+            bool lit=false;
+            for(UINT y=SH;y<H;++y) for(UINT x=0;x<W;++x) for(UINT c=0;c<3;++c) {
+                const UINT i=(y*W+x)*4+c;
+                const float got=XMConvertHalfToFloat(px[i]);
+                const float want=comp.white*srgb_to_linear(proxyBytes[i]);
+                check(std::isfinite(got) && std::abs(got-want)<=.01f*want+.002f,
+                      "outside a smaller capture the SDR proxy must fill in");
+                lit=lit || got>0.1f;
+            }
+            check(lit,"the fill below a smaller capture came out black");
+        }
         auto pqResult=texture(DXGI_FORMAT_R10G10B10A2_UNORM,nullptr,4,true);
         comp.hdr=3;
         dispatch(kHdrCompositeHlsl,{native.Get(),proxy.Get(),proxy.Get()},pqResult.Get(),&comp);
@@ -216,7 +255,7 @@ int main()
         cap.hdr=0;
         auto display=QueryHdrDisplay(MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY));
         printf("Display probe: HDR=%d, SDR white=%.1f nits\n",display.enabled,display.white*80);
-        puts("PASS: HDR shader compilation, highlights, signed gamut, zero-edit identity, bypass, wipe, finite edits, SDR output, channel order, 180 rotation and SDR-FP16 white (#99) (WARP)");
+        puts("PASS: HDR shader compilation, highlights, signed gamut, zero-edit identity, capture/output size mismatch (clipped, filled), bypass, wipe, finite edits, SDR output, channel order, 180 rotation and SDR-FP16 white (#99) (WARP)");
         return 0;
     } catch(const std::exception &e) { fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
 }

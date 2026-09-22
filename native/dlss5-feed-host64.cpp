@@ -48,6 +48,7 @@
 #include <cstdlib>   // strtoull: the panel's handle out of the environment
 #include <cstring>
 #include <algorithm>
+#include <emmintrin.h>   // _mm_sad_epu8: the scene score
 #include <fcntl.h>
 #include <io.h>
 #include <string>
@@ -696,22 +697,40 @@ static uint32_t g_rec_frames = 0;      // frames handed over since RECS
 // was encoded twice (224 frames made 448 export calls in a measured run).
 static uint64_t g_frame_serial = 0;    // counts the frames RunVideo processes
 static uint64_t g_rec_frame_done = UINT64_MAX;   // the last one recorded
+// This recording is HDR10: the HDR composite feeds it, as 10-bit PQ BT.2020
+// (PresentHdr), and no other export site does.
+static bool g_rec_hdr = false;
 
-static void RecordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src)
+// Whether this frame goes into the recording: its slot has come due and no
+// other export site of the frame took it. The slot's time lands in *t.
+static bool RecordWanted(int64_t *t)
 {
-    // `src` is in COPY_SOURCE here, as it is at every export site. One copy
-    // per list, and one per frame: the sites of one frame all show the same
-    // picture. The first site whose slot is due takes it.
     if (g_rec_slot >= 0 || !GpuRecActive() || g_rec_frame_done == g_frame_serial)
-        return;
-    int64_t t = 0;
-    if (!GpuRecFrameDue(&t)) return;
+        return false;
+    return GpuRecFrameDue(t);
+}
+
+// The copy of `src` (in COPY_SOURCE) into the recorder's ring, as this frame.
+static void RecordCopyAt(ID3D12GraphicsCommandList *list, ID3D12Resource *src, int64_t t)
+{
     const int slot = GpuRecReserve(src);
     if (slot < 0) return;   // the encoder is behind: counted as dropped
     GpuRecCopy(list, slot, src);
     g_rec_slot = slot;
     g_rec_time = t;
     g_rec_frame_done = g_frame_serial;
+}
+
+static void RecordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src)
+{
+    // `src` is in COPY_SOURCE here, as it is at every export site. One copy
+    // per list, and one per frame: the sites of one frame all show the same
+    // picture. The first site whose slot is due takes it. Not for an HDR10
+    // recording: every site but the HDR composite hands over the SDR
+    // picture, which is not what that file holds.
+    if (g_rec_hdr) return;
+    int64_t t = 0;
+    if (RecordWanted(&t)) RecordCopyAt(list, src, t);
 }
 
 // The list carrying the copy was submitted (fence != 0), or never will be.
@@ -1667,6 +1686,13 @@ static constexpr uint32_t FRAME_MAGIC = 0x314D5246u; // "FRM1"
 static constexpr uint32_t OUT_MAGIC   = 0x3154554Fu; // "OUT1"
 static constexpr uint32_t OUT_STATUS_OK = 0x1u;
 static constexpr uint32_t OUT_STATUS_SKIPPED = 0x2u;
+// FRAME_FLAG_WORKER_SCENE frames: this reply carries the worker's scene
+// score in bits 16-31 (x65535), and SCENE_CUT says the frame was reset on it.
+static constexpr uint32_t OUT_STATUS_SCENE = 0x4u;
+static constexpr uint32_t OUT_STATUS_SCENE_CUT = 0x8u;
+// ORed into every reply the current frame gets; cleared as each frame starts,
+// so an idle or empty answer never carries an old score.
+static uint32_t g_frame_status = 0u;
 static constexpr uint32_t RESIZE_MAGIC    = 0x5A534E52u; // "RNSZ" -- reconfigure on the fly (work size + params)
 static constexpr uint32_t RESIZE_ACK_MAGIC = 0x4B434152u; // "RACK" -- worker -> client reply to RNSZ
 static constexpr uint32_t CREATE_ACK_MAGIC = 0x4B434143u; // "CACK" -- initial CreateFeature verdict
@@ -1738,6 +1764,14 @@ static constexpr uint32_t FRAME_FLAG_SKIP_STATIC = 0x40u;
 // frame, present mode, worker capture, no pixels, no wipe, no HDR, no Frame
 // Generation): everywhere else the answer still follows the present.
 static constexpr uint32_t FRAME_FLAG_EARLY_REPLY = 0x2000u;
+// The client leaves the scene cut to the worker. With NVOFA the client's only
+// use for the capture before FRM1 was mean(|gray - previous|)/255 > 0.24, and
+// fetching it cost a round trip per frame (CAP1 -> Python -> FRM1) with the
+// GPU idle in between: 2.07 ms a frame in a Boost run. The worker has the
+// same gray already, so it scores it as it captures (UpdateSceneScore) and
+// sets the reset itself - before NVOFA, the evaluate and Frame Generation
+// read it.
+static constexpr uint32_t FRAME_FLAG_WORKER_SCENE = 0x4000u;
 
 static UINT SplitXFromFlags(uint32_t reserved, UINT width)
 {
@@ -3000,7 +3034,8 @@ static void SendEarlyReply()
     g_early_reply.sent = true;
     // The NGX result is known: the evaluate call returned before the present
     // list was recorded. Only the GPU's execution of it is still running.
-    const VideoResultHeader out = { OUT_MAGIC, g_early_reply.index, OUT_STATUS_OK,
+    const VideoResultHeader out = { OUT_MAGIC, g_early_reply.index,
+                                    OUT_STATUS_OK | g_frame_status,
                                     0u, g_last_eval_result, g_early_reply.pts };
     if (!WriteExact(g_wire, &out, sizeof(out))) g_early_reply.failed = true;
 }
@@ -3903,7 +3938,11 @@ static bool EnsureDdaSwizzle()
     code->Release();
     D3D12_DESCRIPTOR_HEAP_DESC hd = {};
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    hd.NumDescriptors = 2; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    // Two pairs: the swizzle's SRV/UAV in 0-1, the gray's in 2-3. They are
+    // recorded into one command list (SwizzleCaptureIntoColor), and a list
+    // reads its descriptors when it runs, not when it is recorded - sharing
+    // one pair, the swizzle would run with the gray's.
+    hd.NumDescriptors = 4; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(h.dev->CreateDescriptorHeap(&hd, __uuidof(ID3D12DescriptorHeap),
                                            reinterpret_cast<void **>(&g_dda_heap))))
     { Log("[dda] heap create failed"); return false; }
@@ -4065,11 +4104,11 @@ static bool DeliverPixels(const std::vector<BYTE> &output, uint32_t index,
         memcpy(g_out_map + 8, output.data(), output.size());
         ++seq;                              // even: done
         memcpy(g_out_map, &seq, sizeof(seq));
-        VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK, OUT_BYTES_IN_SHM,
-                                  g_last_eval_result, pts };
+        VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK | g_frame_status,
+                                  OUT_BYTES_IN_SHM, g_last_eval_result, pts };
         return WriteExact(g_wire, &out, sizeof(out));
     }
-    VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK,
+    VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK | g_frame_status,
                               static_cast<uint32_t>(output.size()),
                               g_last_eval_result, pts };
     return WriteExact(g_wire, &out, sizeof(out))
@@ -4134,19 +4173,22 @@ static bool OpenGray(const VideoGrayCmd &gc)
 // Called from DdaGrab after the swizzle (it cannot be in the same Begin/End
 // block - a separate fence is needed), hence its own Begin/End here.
 static bool g_capture_gray_ok = true;
-static bool AreaToGray()
+// Records the gray into the command list the capture has open: it used to
+// be a submission of its own, with its own wait, right after the capture's -
+// ~0.3 ms a frame of submit, wait and idle GPU between the two (NS_PHASE).
+// CopyGrayOut hands it to the client once the capture's fence is done.
+static bool RecordGray()
 {
     if (!g_gray_mapped || !g_dda_dst) return false;
-    if (!BeginCommands()) return false;
-    ProfileGpuBegin(PS_GRAY);
     // Is g_dda_dst in COPY_SOURCE after the copy into v.color? No - after the
     // swizzle it goes back to UNORDERED_ACCESS (see DdaGrab). We read it as an SRV.
     D3D12_RESOURCE_BARRIER to_srv = Transition(g_dda_dst, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     h.list->ResourceBarrier(1, &to_srv);
-    // descriptors: 0 = SRV g_dda_dst, 1 = UAV g_gray_uav
+    // descriptors: 2 = SRV g_dda_dst, 3 = UAV g_gray_uav (0-1 are the swizzle's)
     const UINT stride = h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_dda_heap->GetCPUDescriptorHandleForHeapStart();
+    cpu.ptr += 2 * static_cast<SIZE_T>(stride);
     D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
     sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -4163,6 +4205,7 @@ static bool AreaToGray()
     const UINT sizes[4] = { g_dda_w, g_dda_h, g_gray_w, g_gray_h };
     h.list->SetComputeRoot32BitConstants(0, 4, sizes, 0);
     D3D12_GPU_DESCRIPTOR_HANDLE g0 = g_dda_heap->GetGPUDescriptorHandleForHeapStart();
+    g0.ptr += 2 * static_cast<UINT64>(stride);
     D3D12_GPU_DESCRIPTOR_HANDLE g1 = g0; g1.ptr += stride;
     h.list->SetComputeRootDescriptorTable(1, g0);
     h.list->SetComputeRootDescriptorTable(2, g1);
@@ -4190,9 +4233,12 @@ static bool AreaToGray()
                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     D3D12_RESOURCE_BARRIER backs[2] = { back_uav, back_uav2 };
     h.list->ResourceBarrier(2, backs);
-    ProfileGpuEnd(PS_GRAY);
-    const UINT64 fence = EndCommands();
-    if (!ProfileWait(PS_GRAY, fence, 10000)) { Log("[gray] fence timeout"); return false; }
+    return true;
+}
+
+// After the fence of the list RecordGray went into.
+static bool CopyGrayOut()
+{
     // map the readback -> memcpy into the client mapping. The readback
     // rows are pitch-aligned; the client mapping is packed w*h, so the
     // copy is row by row (code review finding).
@@ -4204,6 +4250,46 @@ static bool AreaToGray()
                mapped + static_cast<size_t>(y) * g_gray_pitch, g_gray_w);
     g_gray_readback->Unmap(0, nullptr);
     return true;
+}
+
+// The scene score of the last capture: mean(|gray - previous gray|) / 255, the
+// same number guides.py computes on the client from the same buffer, so the
+// cut lands on the same frames whichever side decides it. The previous gray
+// is the worker's own copy - g_gray_map is the client's to read.
+static std::vector<uint8_t> g_scene_prev;
+static float g_scene_score = 0.0f;
+static bool g_scene_fresh = false;      // a capture scored since a frame took it
+static constexpr float kSceneCutScore = 0.24f;   // guides.py: reset = score > 0.24
+
+static void UpdateSceneScore()
+{
+    const size_t n = static_cast<size_t>(g_gray_w) * g_gray_h;
+    if (g_gray_map == nullptr || n == 0) return;
+    g_scene_fresh = true;
+    if (g_scene_prev.size() != n)
+    {
+        // Nothing to compare with - a first frame, or a new gray size. The
+        // client counted that as a cut too (previous_gray None -> reset).
+        g_scene_prev.assign(g_gray_map, g_gray_map + n);
+        g_scene_score = 1.0f;
+        return;
+    }
+    // Sums of absolute differences, 16 pixels an instruction: ~58k pixels
+    // come to a few microseconds.
+    uint64_t sum = 0;
+    size_t i = 0;
+    for (; i + 16 <= n; i += 16)
+    {
+        const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i *>(g_gray_map + i));
+        const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i *>(g_scene_prev.data() + i));
+        const __m128i d = _mm_sad_epu8(a, b);
+        sum += static_cast<uint64_t>(_mm_cvtsi128_si64(d)) +
+               static_cast<uint64_t>(_mm_cvtsi128_si64(_mm_srli_si128(d, 8)));
+    }
+    for (; i < n; ++i)
+        sum += static_cast<uint64_t>(abs(int(g_gray_map[i]) - int(g_scene_prev[i])));
+    g_scene_score = static_cast<float>(static_cast<double>(sum) / (static_cast<double>(n) * 255.0));
+    memcpy(g_scene_prev.data(), g_gray_map, n);
 }
 
 // ---------------------------------------------------------------------------
@@ -4244,7 +4330,7 @@ static float g_pw_exposure = 1.0f;   // current smoothed value
 static double g_pw_last = 0.0;       // last update time (GetTickCount64 ms)
 static bool   g_pw_logged = false;
 
-// Called once per captured frame, after AreaToGray filled g_gray_map.
+// Called once per captured frame, after CopyGrayOut filled g_gray_map.
 static void UpdateAdaptiveExposure()
 {
     if (!PwEnabled() || !g_gray_mapped || g_gray_w == 0 || g_gray_h == 0)
@@ -4858,10 +4944,15 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
         const D3D12_RESOURCE_DESC dd = v.color.tex->GetDesc();
         const UINT cw = (UINT)((sd.Width < dd.Width) ? sd.Width : dd.Width);
         const UINT ch = (UINT)((sd.Height < dd.Height) ? sd.Height : dd.Height);
-        if (cw != sd.Width || ch != sd.Height)
+        // Said once per mismatch, not per frame: it lasts until the client's
+        // resize, half a second or more of frames.
+        static bool clip_said = false;
+        const bool clipping = cw != sd.Width || ch != sd.Height;
+        if (clipping && !clip_said)
             Log("[cap] size mismatch %llux%llu vs %llux%llu - clipped",
                 (unsigned long long)sd.Width, (unsigned long long)sd.Height,
                 (unsigned long long)dd.Width, (unsigned long long)dd.Height);
+        clip_said = clipping;
         if (cw == 0 || ch == 0)
         { Log("[cap] zero copy size - skip"); return false; }
         D3D12_BOX box = { 0, 0, 0, cw, ch, 1 };
@@ -4875,11 +4966,14 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
                                                   D3D12_RESOURCE_STATE_COMMON);
     D3D12_RESOURCE_BARRIER post_c[3] = { to_uav, to_nps, to_common };
     h.list->ResourceBarrier(3, post_c);
+    // The luminance frame (320x180) for the optical flow and the scene score,
+    // in the same list.
+    const bool gray = RecordGray();
     ProfileGpuEnd(PS_SWIZZLE);
     const UINT64 fence = EndCommands();
     if (!ProfileWait(PS_SWIZZLE, fence, 10000)) { Log("[cap] swizzle fence timeout"); return false; }
-    // Hand the client the luminance frame (320x180) for the optical flow
-    if (!AreaToGray()) { /* best effort: guides go without a fresh frame */ }
+    if (gray && CopyGrayOut()) UpdateSceneScore();
+    // else best effort: guides go without a fresh frame
     g_capture_gray_ok = g_gray_mapped;
     if (g_submission_failed) return false;
     UpdateAdaptiveExposure();
@@ -5964,8 +6058,9 @@ static bool FinishRecording(VideoState &v, int64_t pts, bool closing_frame)
     const VideoRecDone done = {
         REC_DONE_MAGIC, ok ? 1u : 0u, st.written, st.dropped, pts,
         static_cast<uint32_t>(was ? st.hr : S_FALSE), st.duration_ms,
-        st.audio_frames, st.codec
+        st.audio_frames, st.codec | (g_rec_hdr ? GPUREC_CODEC_HDR10 : 0u)
     };
+    g_rec_hdr = false;
     return WriteExact(g_wire, &done, sizeof(done));
 }
 
@@ -6856,13 +6951,20 @@ static int RunVideo()
                 p.bitrate = g_rec_cmd.bitrate;
                 p.start_qpc = g_rec_cmd.start_qpc;
                 p.audio_name = g_rec_cmd.audio[0] != '\0' ? g_rec_cmd.audio : nullptr;
+                // HDR10 when the client allows it and the frames are HDR: the
+                // composite then feeds the file (PresentHdr). The mastering
+                // peak stays the nominal 1000 nits - the display query does
+                // not read the panel's own.
+                p.hdr = (g_rec_cmd.reserved0 & GPUREC_FLAG_HDR) != 0 && g_hdr_capture;
+                p.hdr_max_nits = 0;
                 GpuRecStarted started = {};
                 g_rec_slot = -1;
                 g_rec_frames = 0;
                 g_rec_frame_done = UINT64_MAX;
                 const bool ok = GpuRecStart(h.dev, p, &started);
+                g_rec_hdr = ok && started.hdr;
                 ack.ok = ok ? 1u : 0u;
-                ack.codec = started.codec;
+                ack.codec = started.codec | (g_rec_hdr ? GPUREC_CODEC_HDR10 : 0u);
                 ack.hresult = static_cast<uint32_t>(started.hr);
                 ack.origin_qpc = started.origin_qpc;
                 ack.width = started.width;
@@ -6895,6 +6997,7 @@ static int RunVideo()
             if (!FinishRecording(v, 0, false)) return 10;
         }
         ++g_frame_serial;
+        g_frame_status = 0u;
         ConfigureFgFrame(fh.reserved);
         const double t_frame = PhaseNow();
         const bool phase_on = PhaseEnabled();
@@ -6980,6 +7083,18 @@ static int RunVideo()
                 }
             }
             source_fresh = got && g_capture_visual_changed;
+            // The scene cut, when the client leaves it here. Only a frame that
+            // really captured something has a score; a skipped or idle frame
+            // leaves the reply without one.
+            if ((fh.reserved & FRAME_FLAG_WORKER_SCENE) != 0 && got && g_scene_fresh)
+            {
+                const bool cut = g_scene_score > kSceneCutScore;
+                if (cut) fh.reset = 1;
+                const float clamped = (std::min)(1.0f, (std::max)(0.0f, g_scene_score));
+                g_frame_status = OUT_STATUS_SCENE | (cut ? OUT_STATUS_SCENE_CUT : 0u) |
+                    (static_cast<uint32_t>(clamped * 65535.0f + 0.5f) << 16);
+            }
+            g_scene_fresh = false;
             if (phase_on && source_fresh) ++g_ph_fresh_sources;            PhaseAdd(PH_DDA, t_dda);
             // R12: the pause detector. Fresh source = the clock restarts; a
             // silence longer than a second marks the reset for the next
@@ -7222,7 +7337,8 @@ static int RunVideo()
             }
             else if (!replied)
             {
-                VideoResultHeader out = { OUT_MAGIC, fh.index, OUT_STATUS_OK, 0u, g_last_eval_result, fh.pts };
+                VideoResultHeader out = { OUT_MAGIC, fh.index, OUT_STATUS_OK | g_frame_status,
+                                          0u, g_last_eval_result, fh.pts };
                 if (!WriteExact(g_wire, &out, sizeof(out))) return 10;
             }
         }

@@ -313,6 +313,10 @@ FRAME_MAGIC = 0x314D5246  # 'FMR1'
 OUT_MAGIC = 0x3154554F    # 'OUT1'
 OUT_STATUS_OK = 0x1
 OUT_STATUS_SKIPPED = 0x2
+# A FRAME_FLAG_WORKER_SCENE frame's reply: the worker's scene score rides in
+# bits 16-31 (x65535), and SCENE_CUT says the frame was reset on it.
+OUT_STATUS_SCENE = 0x4
+OUT_STATUS_SCENE_CUT = 0x8
 
 # CACK: the worker's explicit verdict for the CreateFeature performed from
 # the initial VIDEO header.  A full RGBA frame is not enough evidence: on an
@@ -338,6 +342,10 @@ class FrameReply:
     pixels: np.ndarray | None
     skipped: bool
     ngx_result: int
+    # The worker's scene score for a FRAME_FLAG_WORKER_SCENE frame that
+    # captured something; None otherwise. scene_cut: it reset on it.
+    scene: float | None = None
+    scene_cut: bool = False
 
 # SHMI: the frame travels through shared memory and only the FRM1 header with
 # the FRAME_FLAG_SHM flag goes down the pipe. The worker loads the pixels into
@@ -357,6 +365,13 @@ FRAME_FLAG_SKIP_STATIC = 0x40  # no new frame - let the worker idle instead of r
 # while the GPU finishes the frame. The worker honours it only where it is
 # safe - a processed frame presented by the worker with no pixels coming back.
 FRAME_FLAG_EARLY_REPLY = 0x2000
+
+# Leave the scene cut to the worker. With NVOFA the only use the loop had for
+# the capture before sending a frame was the scene score - mean(|gray -
+# previous|)/255 > 0.24 - and fetching it (CAP1 -> Python -> FRM1) left the
+# GPU idle ~2 ms a frame. The worker scores the same gray as it captures and
+# sets the reset itself; the reply brings the score back for the status line.
+FRAME_FLAG_WORKER_SCENE = 0x4000
 
 # MOTS: the motion field arrives at the optical-flow resolution (~320x180) and
 # the worker upscales it to the work resolution on the GPU. The CPU is spared
@@ -469,7 +484,8 @@ REC_START_MAGIC = 0x53434552      # 'RECS'
 REC_START_ACK_MAGIC = 0x4B415352  # 'RSAK'
 REC_STOP_MAGIC = 0x45434552       # 'RECE'
 REC_DONE_MAGIC = 0x4B414552       # 'REAK' - also sent unasked when the encoder fails
-# magic, fps, codec, bitrate, pts, start_qpc, reserved x2, ring name, UTF-8 path (1128)
+# magic, fps, codec, bitrate, pts, start_qpc, flags, reserved, ring name,
+# UTF-8 path (1128)
 REC_START_FMT = "<4Iqq2I64s1024s"
 # magic, ok, codec, hresult, pts, origin_qpc, width, height, fps, audio (48)
 REC_START_ACK_FMT = "<4Iqq4I"
@@ -477,6 +493,11 @@ REC_STOP_FMT = "<4Iq"             # magic, reserved x3, pts (24)
 # magic, ok, written, dropped, pts, hresult, duration_ms, audio_frames, codec (40)
 REC_DONE_FMT = "<4Iq4I"
 REC_CODEC_AUTO, REC_CODEC_H264, REC_CODEC_HEVC, REC_CODEC_AV1 = 0, 1, 2, 3
+# RECS flags: record HDR10 where the worker's frames are HDR.
+REC_FLAG_HDR = 0x1
+# Or-ed into RSAK's and REAK's codec when the file is HDR10 (10-bit, BT.2020,
+# PQ): the name is REC_CODEC_NAMES[codec & 0xFF].
+REC_CODEC_HDR10 = 0x100
 REC_CODEC_NAMES = {REC_CODEC_H264: "H.264", REC_CODEC_HEVC: "HEVC",
                    REC_CODEC_AV1: "AV1"}
 # The PCM ring's header (GpuRecAudioRing): magic, rate, channels, capacity,
@@ -511,7 +532,8 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
                no_color: bool = False, bypass: bool = False,
                split: float = 0.0, skip_static: bool = False,
                frame_generation: bool | None = None, frame_multiplier: int = 2,
-               prepared: bool = False, early_reply: bool = False) -> None:
+               prepared: bool = False, early_reply: bool = False,
+               worker_scene: bool = False) -> None:
     """Send a frame to the worker.
 
     With shared memory agreed, only the 24-byte header with the
@@ -539,6 +561,8 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
         flags |= FRAME_FLAG_PREPARED
     if early_reply:
         flags |= FRAME_FLAG_EARLY_REPLY
+    if worker_scene:
+        flags |= FRAME_FLAG_WORKER_SCENE
     if frame_generation is not None:
         # Bits 8-11: enabled, multiplier minus two, explicit UI override.
         flags |= 0x800 | (0x100 if frame_generation else 0)
@@ -695,12 +719,14 @@ def send_gray(worker: subprocess.Popen, width: int, height: int,
 def send_rec_start(worker: subprocess.Popen, path: str, *, fps: int,
                    codec: int = REC_CODEC_AUTO, bitrate: int = 0,
                    start_qpc: int = 0, audio_ring: str = "",
-                   pts: int = 0) -> None:
+                   pts: int = 0, hdr: bool = False) -> None:
     """RECS: record the frame the viewer sees into `path`, on the GPU.
 
     The worker answers with RSAK (WorkerReader.rec_started). `audio_ring` is
     the name of an AudioRing section, "" for a silent file; `start_qpc` is
     the QueryPerformanceCounter reading that the ring's frame 0 belongs to.
+    `hdr` allows HDR10: the worker records it when its frames are HDR, and
+    says so in RSAK (REC_CODEC_HDR10).
     """
     raw_path = str(path).encode("utf-8")
     if len(raw_path) >= 1024:
@@ -709,7 +735,8 @@ def send_rec_start(worker: subprocess.Popen, path: str, *, fps: int,
         raise ValueError("the audio ring name is longer than 63 characters")
     worker.stdin.write(struct.pack(
         REC_START_FMT, REC_START_MAGIC, int(fps), int(codec), int(bitrate),
-        int(pts), int(start_qpc), 0, 0, audio_ring.encode("ascii"), raw_path))
+        int(pts), int(start_qpc), REC_FLAG_HDR if hdr else 0, 0,
+        audio_ring.encode("ascii"), raw_path))
     worker.stdin.flush()
 
 
@@ -783,6 +810,8 @@ class WorkerReader:
         self._height = height
         self.last_skipped = False
         self.last_ngx_result = 0
+        self.last_scene: float | None = None
+        self.last_scene_cut = False
         # The pixels arrive through it once the OUTS channel is agreed.
         self._shm = shm
         self._queue: queue.Queue = queue.Queue()
@@ -885,6 +914,9 @@ class WorkerReader:
                         raise RuntimeError(
                             f"worker answered with an error for frame {out_index}: status={status}")
                     skipped = bool(status & OUT_STATUS_SKIPPED)
+                    scene = ((status >> 16) / 65535.0
+                             if status & OUT_STATUS_SCENE else None)
+                    scene_cut = bool(status & OUT_STATUS_SCENE_CUT)
                     # The NGX result travels with every frame; the loop reads it
                     # to tell "the pass ran" from "the pass did not run". It is
                     # NOT an error channel on its own: 0 means "no evaluation
@@ -905,7 +937,7 @@ class WorkerReader:
                         # frame (0x00000000). Either way there is nothing
                         # to show - the pipeline waits for the next one.
                         self._queue.put((out_index, FrameReply(
-                            None, skipped, ngx_result)))
+                            None, skipped, ngx_result, scene, scene_cut)))
                         continue
                     if byte_count == OUT_BYTES_IN_SHM:
                         # The pixels are in the OUTS section. The copy is made
@@ -922,10 +954,10 @@ class WorkerReader:
                             # it, but keep the protocol paired - main treats
                             # None as "frame not ready" and moves on.
                             self._queue.put((out_index, FrameReply(
-                                None, skipped, ngx_result)))
+                                None, skipped, ngx_result, scene, scene_cut)))
                             continue
                         self._queue.put((out_index, FrameReply(
-                            frame, skipped, ngx_result)))
+                            frame, skipped, ngx_result, scene, scene_cut)))
                         continue
                     if byte_count != self._width * self._height * 4:
                         raise RuntimeError(
@@ -933,7 +965,7 @@ class WorkerReader:
                     data = _read_exact(self._worker.stdout, byte_count)
                     frame = np.frombuffer(data, dtype=np.uint8).reshape(self._height, self._width, 4)
                     self._queue.put((out_index, FrameReply(
-                        frame, skipped, ngx_result)))
+                        frame, skipped, ngx_result, scene, scene_cut)))
                 else:
                     raise RuntimeError(f"invalid magic in the worker reply: 0x{magic:08X}")
         except Exception as exc:
@@ -1179,9 +1211,13 @@ class WorkerReader:
                 if isinstance(payload, FrameReply):
                     self.last_skipped = payload.skipped
                     self.last_ngx_result = payload.ngx_result
+                    self.last_scene = payload.scene
+                    self.last_scene_cut = payload.scene_cut
                     return payload.pixels
                 # Compatibility for tests and third-party callers that place
                 # legacy payloads into the private queue.
                 self.last_skipped = False
                 self.last_ngx_result = 0
+                self.last_scene = None
+                self.last_scene_cut = False
                 return payload

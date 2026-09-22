@@ -4,9 +4,13 @@ static ID3D12RootSignature *g_hdr_rs = nullptr;
 static ID3D12PipelineState *g_hdr_pso = nullptr;
 static ID3D12DescriptorHeap *g_hdr_heap = nullptr;
 static ID3D12Resource *g_hdr_output = nullptr;
+// An HDR10 recording's frame when Frame Generation is off: g_hdr_output is
+// FP16 scRGB then, and the recorder takes 10-bit PQ BT.2020.
+static ID3D12Resource *g_rec_pq = nullptr;
 
 static void CloseHdrResources()
 {
+    if (g_rec_pq) { g_rec_pq->Release(); g_rec_pq = nullptr; }
     if (g_hdr_output) { g_hdr_output->Release(); g_hdr_output = nullptr; }
     if (g_hdr_heap) { g_hdr_heap->Release(); g_hdr_heap = nullptr; }
     if (g_hdr_pso) { g_hdr_pso->Release(); g_hdr_pso = nullptr; }
@@ -91,7 +95,9 @@ static bool EnsureHdrPipeline(UINT w, UINT height, bool pq)
     if (FAILED(h.dev->CreateComputePipelineState(&ps, IID_PPV_ARGS(&g_hdr_pso)))) return false;
     D3D12_DESCRIPTOR_HEAP_DESC heap = {};
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heap.NumDescriptors = 4;
+    // Two tables of four: the composite into g_hdr_output, and the same
+    // composite PQ-encoded into g_rec_pq for an HDR10 recording.
+    heap.NumDescriptors = 8;
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(h.dev->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&g_hdr_heap)))) return false;
     g_hdr_output = MakeTex(w, height, format, true);
@@ -109,10 +115,43 @@ static bool PresentHdr(VideoState &v, bool bypass)
     const UINT w = v.upscale ? v.full_w : v.w;
     const UINT height = v.upscale ? v.full_h : v.hgt;
     if (!g_dda_d12 || !g_dda_ready) return false;
+    // The capture changes size before the output does. A window going
+    // fullscreen hands WGC its new size at once, while the client resizes
+    // only once the new size has held for half a second (follow_window),
+    // with a live RNSZ. The SDR path clips for that half second (the
+    // swizzle copy); this one used to refuse the frame, and a refused frame
+    // ends the worker (exit 9): a restart at the old size and another for
+    // the new one, ~4 s, on EVERY fullscreen toggle with HDR on - four in
+    // one user's evening. The composite reads all three inputs by
+    // coordinate and copies nothing between them, so it clips the same
+    // way: the capture's top-left corner at the output size, and where the
+    // capture is the smaller one, the SDR proxy fills in (the shader).
     const auto native_desc = g_dda_d12->GetDesc();
-    if (native_desc.Width != w || native_desc.Height != height)
-    { Log("[hdr] capture/output size mismatch; refusing stale HDR frame"); return false; }
+    const bool clipped = native_desc.Width != w || native_desc.Height != height;
+    static bool clip_said = false;
+    if (clipped && !clip_said)
+        Log("[hdr] capture %llux%u vs output %ux%u - composed clipped until the "
+            "client resizes", (unsigned long long)native_desc.Width,
+            native_desc.Height, w, height);
+    clip_said = clipped;
     if (!EnsurePresentFormat(true, framegen) || !EnsureHdrPipeline(w, height, framegen)) return false;
+    // An HDR10 recording takes this frame as the display gets it - 10-bit PQ
+    // BT.2020 - when its slot is due: with Frame Generation that is the
+    // composite itself; without it, the same composite dispatched a second
+    // time with the PQ encode on, into g_rec_pq.
+    int64_t rec_t = 0;
+    const bool rec = g_rec_hdr && RecordWanted(&rec_t);
+    bool rec_pq = rec && !framegen;
+    if (rec_pq)
+    {
+        const auto d = g_rec_pq != nullptr ? g_rec_pq->GetDesc() : D3D12_RESOURCE_DESC{};
+        if (g_rec_pq == nullptr || d.Width != w || d.Height != height)
+        {
+            if (g_rec_pq) { g_rec_pq->Release(); g_rec_pq = nullptr; }
+            g_rec_pq = MakeTex(w, height, DXGI_FORMAT_R10G10B10A2_UNORM, true);
+        }
+        rec_pq = g_rec_pq != nullptr;   // without it the slot goes by: the last frame holds
+    }
 
     const UINT stride = h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto cpu = g_hdr_heap->GetCPUDescriptorHandleForHeapStart();
@@ -132,6 +171,23 @@ static bool PresentHdr(VideoState &v, bool bypass)
     uav.Format = g_hdr_output->GetDesc().Format;
     uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     h.dev->CreateUnorderedAccessView(g_hdr_output, nullptr, &uav, cpu);
+    if (rec_pq)
+    {
+        // The second table: the same three inputs, the recording's target.
+        for (auto *input : inputs)
+        {
+            cpu.ptr += stride;
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+            srv.Format = input->GetDesc().Format;
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            h.dev->CreateShaderResourceView(input, &srv, cpu);
+        }
+        cpu.ptr += stride;
+        uav.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+        h.dev->CreateUnorderedAccessView(g_rec_pq, nullptr, &uav, cpu);
+    }
     winrt::com_ptr<ID3D12Resource> bb;
     if (!framegen && FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
                                          __uuidof(ID3D12Resource), bb.put_void()))) return false;
@@ -150,11 +206,36 @@ static bool PresentHdr(VideoState &v, bool bypass)
         (g_capture_display.enabled ? 1u : 0u) | (framegen ? 2u : 0u)};
     h.list->SetComputeRoot32BitConstants(1, 4, &constants, 0);
     h.list->Dispatch((w+7)/8, (height+7)/8, 1);
+    if (rec_pq)
+    {
+        auto to_uav = Transition(g_rec_pq, D3D12_RESOURCE_STATE_COMMON,
+                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        h.list->ResourceBarrier(1, &to_uav);
+        auto table = g_hdr_heap->GetGPUDescriptorHandleForHeapStart();
+        table.ptr += 4 * static_cast<UINT64>(stride);
+        h.list->SetComputeRootDescriptorTable(0, table);
+        auto pq = constants;
+        pq.hdr |= 2u;   // the shader's PQ encode, as for DLSS-G
+        h.list->SetComputeRoot32BitConstants(1, 4, &pq, 0);
+        h.list->Dispatch((w+7)/8, (height+7)/8, 1);
+        auto to_copy = Transition(g_rec_pq, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
+        h.list->ResourceBarrier(1, &to_copy);
+    }
     D3D12_RESOURCE_BARRIER copy[] = {
         Transition(g_hdr_output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
         Transition(bb.get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST)};
     h.list->ResourceBarrier(framegen ? 1 : 2, copy);
     if (!framegen) h.list->CopyResource(bb.get(), g_hdr_output);
+    // Both candidates are in COPY_SOURCE here.
+    if (rec_pq) RecordCopyAt(h.list, g_rec_pq, rec_t);
+    else if (rec && framegen) RecordCopyAt(h.list, g_hdr_output, rec_t);
+    if (rec_pq)
+    {
+        auto back = Transition(g_rec_pq, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                               D3D12_RESOURCE_STATE_COMMON);
+        h.list->ResourceBarrier(1, &back);
+    }
     D3D12_RESOURCE_BARRIER post[] = {
         Transition(g_hdr_output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
         Transition(bb.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
@@ -163,7 +244,8 @@ static bool PresentHdr(VideoState &v, bool bypass)
     h.list->ResourceBarrier(1, post);
     if (!framegen) h.list->ResourceBarrier(1, post + 1);
     h.list->ResourceBarrier(bypass ? 1 : 2, post + 2);
-    // Existing Spout consumers and the Python recording protocol are SDR.
+    // Spout consumers are SDR, and so is every recording but an HDR10 one
+    // (taken above; RecordCopy stands down for it).
     ID3D12Resource *export_src = bypass ? v.color.tex : v.output;
     auto rest = bypass ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     auto export_pre = Transition(export_src, rest, D3D12_RESOURCE_STATE_COPY_SOURCE);
