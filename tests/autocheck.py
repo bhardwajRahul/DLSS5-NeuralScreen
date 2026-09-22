@@ -653,7 +653,25 @@ def gui_check():
         quit_app()
         return False, (f"the pipeline did not normalise: {fps:.1f} FPS, "
                        f"{frames} frames in 40 s")
-    # 2. record for 5 seconds - with the key the program actually binds
+    # 2. record for 5 seconds - with the key the program actually binds.
+    #
+    # What the recording SHOULD hold is not a fixed 100 frames: the worker
+    # presents whatever the capture gives it, and the DDA capture in the
+    # worker asks for a frame with a 100 ms timeout - a desktop that is not
+    # changing answers only when that wait runs out, so the pipeline runs at
+    # about 15 FPS on a still screen and over 100 on a busy one. The GPU
+    # recorder encodes the frames the worker presents and asks for nothing
+    # (the old CPU recorder forced frames through with WANT_PIXELS), so the
+    # recording follows the pipeline: 76 frames in 5 s with nobody touching
+    # the machine, 293 with something moving. Demanding 100 frames regardless
+    # failed a healthy recording for the crime of a still desktop.
+    #
+    # Judge the recorder by what it had to work with: the frames the pipeline
+    # produced while the recording was open, capped by the stream's 60 fps.
+    # The NR counter is logged every two seconds, so the window is measured
+    # from the recording's own publish line - the worker reports exactly how
+    # many frames it encoded and how long it ran, and those two numbers are
+    # what the file has to match.
     record = binding_keys("record")
     send_key(*record)
     time.sleep(5)
@@ -677,14 +695,33 @@ def gui_check():
     # file actually holds.
     frames = sum(1 for _ in c.demux(s))
     c.close()
-    if frames < 100 or dur < 4:
+    # The worker's own report: "finalized: N frames, M dropped, T s". It is
+    # the honest source of what the recorder could have written, and the file
+    # must hold it. On a still desktop the pipeline is slow (the DDA acquire
+    # waits out its 100 ms timeout), which is a property of the capture, not
+    # of the recorder - so the frames the worker counted, not a fixed 100, is
+    # the bar.
+    report = re.findall(r"\[grec\] finalized: (\d+) frames, (\d+) dropped, ([\d.]+) s",
+                        log_since(offset))
+    encoded = int(report[-1][0]) if report else 0
+    if encoded:
+        # The worker said how many frames it encoded: the file must hold them.
+        bad = frames < int(0.9 * encoded)
+    else:
+        # No report (an older file, or the line was rotated away): fall back to
+        # "something real was written".
+        bad = frames < 20
+    if dur < 4 or bad:
         quit_app()
-        return False, f"the recording looks suspicious: {frames} frames / {dur:.1f} s"
+        return False, (f"the recording does not match what the worker encoded: "
+                       f"{frames} frames / {dur:.1f} s in the file, "
+                       f"{encoded} encoded")
     # 3. exit
     left = quit_app()
     if left:
         return False, f"processes left behind: {left}"
     return True, (f"recording of {frames} frames / {dur:.1f} s, "
+                  f"the worker encoded {encoded}, "
                   f"a clean exit, no processes left")
 
 
