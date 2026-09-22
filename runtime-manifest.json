@@ -1,5 +1,5 @@
 {
-  "expected_tag": "v2.1.1",
+  "expected_tag": "v2.1.2",
   "package": {
     "file_count": 1362,
     "files": [
@@ -18,11 +18,11 @@
         "size": 1917
       },
       {
-        "git_blob": "6c73a1ec14e5eef2e4bfe4a70da714301e7a77c4",
+        "git_blob": "41cbdf21563ad1db81c8aae6ab179169c258a9d3",
         "origin": "git",
         "path": "CHANGELOG.md",
-        "sha256": "9562c71e912905acd3cb5a5ec243ba54b55dbcb70733e2dcb7180014d4e3f519",
-        "size": 48591
+        "sha256": "571ad3cdaed3a81ce79cc03583a422064f6ee72e0c1b232355befe7f47500fd2",
+        "size": 51004
       },
       {
         "git_blob": "17c7b971a45ca3eaa419765eba76d7d9f287b83c",
@@ -48,7 +48,7 @@
       {
         "origin": "generated",
         "path": "NeuralScreen.exe",
-        "sha256": "6824b9455204a3c4e4fdbae638d62b00a0a2c008d7d81c902a7b370fe1199a92",
+        "sha256": "15fd5605501817abb90c03626a94b3fb330e38d036eab4bd323682a7185a9806",
         "size": 167424
       },
       {
@@ -73,67 +73,235 @@
         "size": 18783
       },
       {
-        "git_blob": "52b336d30a702504327173aacfe39956aae0cb0b",
+        "git_blob": "084270956ff728b015dd70d4f21126358cb30b2c",
         "origin": "git",
         "path": "RELEASING.md",
-        "sha256": "27521c7c921d452a2c3cb1ba6804109545a5ba48eb4efe720f20f120735e17a9",
-        "size": 25323
+        "sha256": "78631839e018aad6d26e61cf2c085528107179b73fc89eaf239f752f0986141e",
+        "size": 25331
       },
       {
-        "git_blob": "feccade6bb39de7ad1a090dedeb44314ab697065",
+        "git_blob": "ff42ce6c4b4a9bbcf1e5032e7b5a29aedec51adc",
         "origin": "git",
         "path": "TECHNICAL.md",
-        "sha256": "7699d3b5e38a8a2d82b92c5e4385e4b41e8f6bd1bdc0f3d27a83cfb7862549be",
-        "size": 46685
+        "sha256": "587fecc41f921475811dc4eebeac86b87617e4d93aea809d41293e841756a8ba",
+        "size": 46832
       },
       {
-        "git_blob": "2d44e186d64ae4f2ebdbad7e1cd98822e9f90090",
+        "git_blob": "033f16d9c6754600fb941ba3e8bb9ec67eb6afde",
         "origin": "git",
         "path": "TECHNICAL.ru.md",
-        "sha256": "5555213a31f5fc0b8f15bdcaf4eac0272cae2e91aaad9dab49b90e66b9f05c67",
-        "size": 66256
+        "sha256": "9ca29413b2b03f95e2ada690f51a33498ff7d67bcff2347b6e6b68b41c76edff",
+        "size": 66592
       },
       {
-        "git_blob": "0dd00daeadf8a31dfbeecec24976115b91b7d4c7",
+        "git_blob": "6a455efcf5408b4723ed7f38d25688120ee746b4",
         "origin": "git",
-        "path": "audio.py",
-        "sha256": "da965f0c679303c8919829f33d2dae815c4e1a9a720071a7d76fa01d94ca87b4",
-        "size": 17006
+        "path": "app/audio.py",
+        "sha256": "851aa995c6e1ab551c137cac28ba4afd16216cc772d198dbd7124ccc1085e30f",
+        "size": 19843
       },
       {
         "git_blob": "16fd338c48e70547c3fd94d9926942943716d756",
         "origin": "git",
-        "path": "capture.py",
+        "path": "app/capture.py",
         "sha256": "a403ee8a860e6ac5f722b875608536bddfb5b0ab79d94866d7169625fe11326b",
         "size": 22659
       },
       {
         "git_blob": "4499fe3d21b7fcaa1a725586dc314b66d9e8e60e",
         "origin": "git",
-        "path": "channels.py",
+        "path": "app/channels.py",
         "sha256": "175526af66e9ba898158fcde8f2659af9082ab162f61f40d9304a4cf47bfc9a3",
         "size": 11912
       },
       {
-        "git_blob": "864608b437f3c0f76411339b95a2a210683586d1",
+        "git_blob": "0d1f34f0f7c5040ba5b7ad0812cc09cf694086ee",
         "origin": "git",
-        "path": "commands.py",
-        "sha256": "3d2707d092ac8432b5d09d5fdff289b3e2a9a35e3a22e701f4bf0a6e55b27aa7",
-        "size": 75217
+        "path": "app/commands.py",
+        "sha256": "cc217059b8ae2d498ca0389cb6534c54b2ee271d25c993a9245eff0d8e211829",
+        "size": 79225
       },
       {
         "git_blob": "eca1a784b1c4fc5477cfec1f5c36ee2c37abcf37",
         "origin": "git",
-        "path": "compatibility.py",
+        "path": "app/compatibility.py",
         "sha256": "4c12a9fc0906cabb5af4ba80ac75f0f9bfb670684be244d6feb2a80804571073",
         "size": 23307
       },
       {
-        "git_blob": "674fd81e48cb90f55ef77379fe482ea72801dacd",
+        "git_blob": "ffa0c93f23667c1a4b0984578e714a1c0f243a0c",
         "origin": "git",
-        "path": "compatibility_runtime.py",
-        "sha256": "aad5c7dc96127228315016196b5d6ddffb694d5884896aed86b22249f05c08b6",
-        "size": 17333
+        "path": "app/compatibility_runtime.py",
+        "sha256": "b6679a79ea87d9d1033653c1e1127d183d4ba251c41ed6fb19ace1c4d7c18e46",
+        "size": 17192
+      },
+      {
+        "git_blob": "87f20dd6b085284536173b3dabb847ec669be915",
+        "origin": "git",
+        "path": "app/convert_jobs.py",
+        "sha256": "c109c015b4cdf90cb41e8315e7b2e5e413b88613c5c3800286bbf889b5b018e3",
+        "size": 22460
+      },
+      {
+        "git_blob": "63997e45b828d7c51472ac84e8a14c161fa14bf0",
+        "origin": "git",
+        "path": "app/diagnostics.py",
+        "sha256": "31ff224c26d125494815bab0afa020e5f8a30cee80260ceafdd83859a023e57f",
+        "size": 31509
+      },
+      {
+        "git_blob": "747f9f662b9c9d45c2ae290b2152a9a7cfa01391",
+        "origin": "git",
+        "path": "app/dialogs.py",
+        "sha256": "da6a8b6ceab698e3014124571fad39dcb4fc36e9567cd2b12df5b423341ff2d8",
+        "size": 14913
+      },
+      {
+        "git_blob": "33ebaea3315320f70379cf164d93285cc986ef96",
+        "origin": "git",
+        "path": "app/display.py",
+        "sha256": "07e3e79a07411467268eb368cccac8568d6fbf658d0a62008d8d5a87e8f14531",
+        "size": 125806
+      },
+      {
+        "git_blob": "03d9fc8ac61954450fe0c627bd6fc4c7172aa36b",
+        "origin": "git",
+        "path": "app/fonts.py",
+        "sha256": "eede4716405080a16b57ff785c7265036777aa9c26ddc561f490c503b4a26881",
+        "size": 3718
+      },
+      {
+        "git_blob": "c5315b7d59dc3a7afd8e6513b227236d4956471c",
+        "origin": "git",
+        "path": "app/gpuinfo.py",
+        "sha256": "f5b527f9a8bdedec324b1e3ab7c10b19dfd7794690ad82b94243013592b64a7b",
+        "size": 6149
+      },
+      {
+        "git_blob": "187753f9c32e7124c1ec09c162c53ed4aa568491",
+        "origin": "git",
+        "path": "app/guides.py",
+        "sha256": "dc516360f5c85b387602ac184799a8630746f8cf3e797290ce341321e0d9a8bd",
+        "size": 21096
+      },
+      {
+        "git_blob": "c31d2ae916045a478e6bc05f71516bf02907a246",
+        "origin": "git",
+        "path": "app/hotkeys.py",
+        "sha256": "afd833116a6b01140290c5b47eded07b5491e99d88f5fc76e9ed768dcd8e72fc",
+        "size": 19548
+      },
+      {
+        "git_blob": "9eb1ce98d730a16f398ec0d8ec3f28f17c7b6bd6",
+        "origin": "git",
+        "path": "app/i18n.py",
+        "sha256": "d83a0315e66e4843f3ec91411a9bff465775088aedb9a40dc893f447aa3260a4",
+        "size": 176866
+      },
+      {
+        "git_blob": "6481f19f25f5d1ad9e1fce3b669c6f575f668225",
+        "origin": "git",
+        "path": "app/media_convert.py",
+        "sha256": "18b09fd11b28027cb6732fb05f14c7fefd488681a8282f60ffbd74d1b548eab0",
+        "size": 40791
+      },
+      {
+        "git_blob": "32adc3fe144bd5330296963c866065b103744a86",
+        "origin": "git",
+        "path": "app/motion_backend.py",
+        "sha256": "601fc244ff662a694227f8796abafb4c6042eacf3337fc546b217d428eb2b45a",
+        "size": 1273
+      },
+      {
+        "git_blob": "7a1967d663dd997a7e86092d5a1161e9262ae92f",
+        "origin": "git",
+        "path": "app/overlay_ui.py",
+        "sha256": "afd60cc9b051af0dedc1ac1b94d1164d9edb5bf5ab208d728bb6db41193f4964",
+        "size": 241459
+      },
+      {
+        "git_blob": "7015856944cf8771544bb2605ac33d16f8f5e74d",
+        "origin": "git",
+        "path": "app/pacing.py",
+        "sha256": "efe627861de96265897f168261d461441d27f8810e099108215f3010886b1fc9",
+        "size": 3199
+      },
+      {
+        "git_blob": "0383e7f1a1a29bcde776fee4a016af5a506b68a2",
+        "origin": "git",
+        "path": "app/paths.py",
+        "sha256": "20eee8e408f94a9a7f5d3193ca045e261549497d02b823a3a240b3a83fb5b566",
+        "size": 784
+      },
+      {
+        "git_blob": "f873ea1ae03fc5858a4c3cf526fe50ce66598e4b",
+        "origin": "git",
+        "path": "app/pipeline.py",
+        "sha256": "2055a73584c2dc38ec6ee255bffb196b1ed390ea4803b82a17b0eb418c5e1fa8",
+        "size": 74090
+      },
+      {
+        "git_blob": "6a0a6bf5b25cbc2f18e50eab875e24939d650fa5",
+        "origin": "git",
+        "path": "app/protocol.py",
+        "sha256": "1b1e567cac182ff005e94429fa048dfbd1abdd20fc7020f5d14aabcdb4a3b650",
+        "size": 57933
+      },
+      {
+        "git_blob": "b7fc521e54c28c333da947e0e4969501d021f49f",
+        "origin": "git",
+        "path": "app/recorder.py",
+        "sha256": "7cc392edd9211354e8d02178285e47064a1421bf06b90335e1532251a4937a77",
+        "size": 59311
+      },
+      {
+        "git_blob": "0905d002b077bdc2a0db93866e5a0381fab343d4",
+        "origin": "git",
+        "path": "app/resolution_limits.py",
+        "sha256": "f19b705c3f509708ce58ca40ac4080ed30ced976ae3b31234dead8d7009007a3",
+        "size": 654
+      },
+      {
+        "git_blob": "f09e5ab454b6fa5e87826cf31cf8f6de269592bc",
+        "origin": "git",
+        "path": "app/settings_io.py",
+        "sha256": "a18f918157bd0ea8de469eefcde38895eb0a9cb236e7fd5e4c74f60135bd4b34",
+        "size": 77787
+      },
+      {
+        "git_blob": "ccc8ed14e402bc8c28ef8d5fed6f93e52d0c3eb7",
+        "origin": "git",
+        "path": "app/startup.py",
+        "sha256": "a4ecad59f0fa58541c5e1313ba863962a76851aebb6245663d527fe3e58270e1",
+        "size": 40365
+      },
+      {
+        "git_blob": "9dcde775c68bc17a80a6ab2c3449afcd5440da1f",
+        "origin": "git",
+        "path": "app/taskbar.py",
+        "sha256": "699de52e4f46db269b4067fc96835254a081fb970476b502b5f66dcf974c3dbf",
+        "size": 23085
+      },
+      {
+        "git_blob": "0c1df75155eddaf0d36572dd8ad94840a298301e",
+        "origin": "git",
+        "path": "app/tray.py",
+        "sha256": "7ca27fd3f7338afd39fd49f72e721dc4574f47aae2b88964319163483839ded8",
+        "size": 6139
+      },
+      {
+        "git_blob": "0263f9a6640b89357871fa1157929d52ff83345d",
+        "origin": "git",
+        "path": "app/vdesk.py",
+        "sha256": "01257066aa674b4419b4d44ee509544c1503c35831d2c6d19c1e2cbff9b7253f",
+        "size": 5814
+      },
+      {
+        "git_blob": "36406b04c64989b5992cdae56befa5f7dfc73d91",
+        "origin": "git",
+        "path": "app/winapi.py",
+        "sha256": "0fc01a46c389bdad1ea9a720d3308595862def4e419a251a40f404f02306ed92",
+        "size": 8877
       },
       {
         "git_blob": "ecd68befdaa5ff4f5dc6ebbe57b8710ba96322cd",
@@ -141,41 +309,6 @@
         "path": "config.default.json",
         "sha256": "db1f7e09e0104e9142fa8194def2a18c13974ea64044a8a219f7e0a3ffdfba71",
         "size": 1392
-      },
-      {
-        "git_blob": "b5fd7c41d4fa08ad3377cbf92ff95ecc78d871dd",
-        "origin": "git",
-        "path": "convert_jobs.py",
-        "sha256": "ae8aaf96e58674226c83cdecc75bf4fcc28a7e8203e5283b04311007cc50402d",
-        "size": 22416
-      },
-      {
-        "git_blob": "c3d14db5c52e7428916974ec4024902f71284a10",
-        "origin": "git",
-        "path": "diagnostics.py",
-        "sha256": "3edbd03f390c03971935ffe16d5020538350a87e9e93e0f8f30b9417c29dbfd9",
-        "size": 28933
-      },
-      {
-        "git_blob": "747f9f662b9c9d45c2ae290b2152a9a7cfa01391",
-        "origin": "git",
-        "path": "dialogs.py",
-        "sha256": "da6a8b6ceab698e3014124571fad39dcb4fc36e9567cd2b12df5b423341ff2d8",
-        "size": 14913
-      },
-      {
-        "git_blob": "045e971168deff7c634ce8d3c0bf99d128d2b15b",
-        "origin": "git",
-        "path": "display.py",
-        "sha256": "f31e22fb97ea6e497ee8b1c7e5a83a52334ba485ed263724faa1fd26872125ed",
-        "size": 121118
-      },
-      {
-        "git_blob": "03d9fc8ac61954450fe0c627bd6fc4c7172aa36b",
-        "origin": "git",
-        "path": "fonts.py",
-        "sha256": "eede4716405080a16b57ff785c7265036777aa9c26ddc561f490c503b4a26881",
-        "size": 3718
       },
       {
         "git_blob": "7d991ea74c3cf8097c4a5313989c9f0cd11c3b0a",
@@ -213,53 +346,11 @@
         "size": 4363
       },
       {
-        "git_blob": "c5315b7d59dc3a7afd8e6513b227236d4956471c",
-        "origin": "git",
-        "path": "gpuinfo.py",
-        "sha256": "f5b527f9a8bdedec324b1e3ab7c10b19dfd7794690ad82b94243013592b64a7b",
-        "size": 6149
-      },
-      {
-        "git_blob": "187753f9c32e7124c1ec09c162c53ed4aa568491",
-        "origin": "git",
-        "path": "guides.py",
-        "sha256": "dc516360f5c85b387602ac184799a8630746f8cf3e797290ce341321e0d9a8bd",
-        "size": 21096
-      },
-      {
-        "git_blob": "ee432d9f5cfa1d2208824bbbd11e82dc422a61e3",
-        "origin": "git",
-        "path": "hotkeys.py",
-        "sha256": "e20150ce66186609ecd3cce2e023bc5ee471f08242c5a2f64e75722522d22313",
-        "size": 18845
-      },
-      {
-        "git_blob": "f3b727351d11de5072ba0a1b1aad6cc02f9a9b42",
-        "origin": "git",
-        "path": "i18n.py",
-        "sha256": "a712be46bdbbf5efd2cdcb0fa14831dfb4ba825b9e62f4cd5fa19b6c2ba63351",
-        "size": 162974
-      },
-      {
-        "git_blob": "e89a96710cf3cd153b9e040fea6877573787f2a8",
+        "git_blob": "beba42c6e8ed24473ae29f4e62612a34995e8e6d",
         "origin": "git",
         "path": "main.py",
-        "sha256": "727c3599545246e92a515f07de24916e4ea61823c24a7326a92c57f78dd0d878",
-        "size": 72125
-      },
-      {
-        "git_blob": "e2cf18b9308a3bc368e51c0674d86885d9e8122a",
-        "origin": "git",
-        "path": "media_convert.py",
-        "sha256": "b0eac392927f0f5c2559e04ec8c23fe395f84aa5b05e717ba72090dcf0abf9ce",
-        "size": 37370
-      },
-      {
-        "git_blob": "32adc3fe144bd5330296963c866065b103744a86",
-        "origin": "git",
-        "path": "motion_backend.py",
-        "sha256": "601fc244ff662a694227f8796abafb4c6042eacf3337fc546b217d428eb2b45a",
-        "size": 1273
+        "sha256": "48ac69584d158917892f8f94c3c0a32b512dd8d959c18990c04bec8187d0ad92",
+        "size": 77610
       },
       {
         "git_blob": "addaf3b821618fb70ce37010e694e1cca588b89e",
@@ -292,13 +383,13 @@
       {
         "origin": "generated",
         "path": "native/nvngx.dll",
-        "sha256": "38895a2ffdccd89b9ede606ba8486a0ba6b4f0c40ea270d093629dfbb75da091",
-        "size": 276992
+        "sha256": "cebd4327cb52492172c34edaaebe428b77b7425fbd8eae53eeba5a292d128928",
+        "size": 281600
       },
       {
         "origin": "generated",
         "path": "native/nvngx.dll_ns-forwarder.dll",
-        "sha256": "b02a22b53bd41e1df036cfa1825b820d3b169bddeac94429efa96a835c2f81bf",
+        "sha256": "e3b75d4db208206877c49fe96a0beb0fdad6bec63c3df4110768d585424ed297",
         "size": 10240
       },
       {
@@ -312,55 +403,6 @@
         "path": "native/nvngx_dlssnr.dll",
         "sha256": "dcc0dc2414aedec4a8e084647070383be068554042587180c20c784d4772d36f",
         "size": 165840496
-      },
-      {
-        "git_blob": "7a1967d663dd997a7e86092d5a1161e9262ae92f",
-        "origin": "git",
-        "path": "overlay_ui.py",
-        "sha256": "afd60cc9b051af0dedc1ac1b94d1164d9edb5bf5ab208d728bb6db41193f4964",
-        "size": 241459
-      },
-      {
-        "git_blob": "7015856944cf8771544bb2605ac33d16f8f5e74d",
-        "origin": "git",
-        "path": "pacing.py",
-        "sha256": "efe627861de96265897f168261d461441d27f8810e099108215f3010886b1fc9",
-        "size": 3199
-      },
-      {
-        "git_blob": "c498de41173363c3ee6736b72edde8ceb1fad0e8",
-        "origin": "git",
-        "path": "paths.py",
-        "sha256": "4e52c4a564248d061d6def8feeebdf130dd7b318c46a5b9e5811f38b5d174d9f",
-        "size": 628
-      },
-      {
-        "git_blob": "6a259242b05a6725871c90946ceecccb9612ddce",
-        "origin": "git",
-        "path": "pipeline.py",
-        "sha256": "71a5ff6759076cd560f11a6d49605366fbcff6f583d5437b66b16c18a77b292e",
-        "size": 69378
-      },
-      {
-        "git_blob": "0fffc3c1c5522adf7283fdd444c9a00f835f3b7c",
-        "origin": "git",
-        "path": "protocol.py",
-        "sha256": "18bda1e33544d312c55082c8b7d2d98b80132a0278c52b13235e174e1dc55456",
-        "size": 59750
-      },
-      {
-        "git_blob": "4ad8a72292323259ddc2183cbfd05b9d5fbc01ed",
-        "origin": "git",
-        "path": "recorder.py",
-        "sha256": "3f2898b3d5c7a5deab8c8acbe615000d1e99cc9db5f9153852577d6d1e1ca322",
-        "size": 58995
-      },
-      {
-        "git_blob": "0905d002b077bdc2a0db93866e5a0381fab343d4",
-        "origin": "git",
-        "path": "resolution_limits.py",
-        "sha256": "f19b705c3f509708ce58ca40ac4080ed30ced976ae3b31234dead8d7009007a3",
-        "size": 654
       },
       {
         "origin": "generated",
@@ -8185,68 +8227,26 @@
         "path": "runtime/winsound.pyd",
         "sha256": "b078b7f5c53efd3c4201b63fa34a17c6747142e37298293f52c3a9ad643e69e2",
         "size": 31968
-      },
-      {
-        "git_blob": "d0b7a87b9e77b50df3d640f8029bfdb18b70367a",
-        "origin": "git",
-        "path": "settings_io.py",
-        "sha256": "1fbba360af1f1411699f6737846e3a2edafb2cd09a88264773b81837b3f726d9",
-        "size": 73605
-      },
-      {
-        "git_blob": "9b0f9c8b28f6e72de0210d23bd6dcc272ca94f70",
-        "origin": "git",
-        "path": "startup.py",
-        "sha256": "de7c1c5a16c62c967a9d216adfc202ee9ccd1098acd56deaf41da62c74c82a3c",
-        "size": 40141
-      },
-      {
-        "git_blob": "2626e91f29a48e37cd231eb33f6f8bf9e60430e3",
-        "origin": "git",
-        "path": "taskbar.py",
-        "sha256": "b274461c1df43accabae119c6027af1fd6a96ba1164ece35cbccc2d571a86a7b",
-        "size": 19439
-      },
-      {
-        "git_blob": "3a7e3d38b38b6e719ddec210c9c96aa4cf7a6b14",
-        "origin": "git",
-        "path": "tray.py",
-        "sha256": "6359b25da08187d3a1be32dea015dd9a195d512d950103f995f6017141dc806b",
-        "size": 5918
-      },
-      {
-        "git_blob": "0263f9a6640b89357871fa1157929d52ff83345d",
-        "origin": "git",
-        "path": "vdesk.py",
-        "sha256": "01257066aa674b4419b4d44ee509544c1503c35831d2c6d19c1e2cbff9b7253f",
-        "size": 5814
-      },
-      {
-        "git_blob": "0e4cf3c1cb9f4a4ad13bf7c33183f9ddb890ba85",
-        "origin": "git",
-        "path": "winapi.py",
-        "sha256": "25486ccf39e07f3d0e989a255ff6667b06b67fc9a4bc7e08738faf6ea5fa0419",
-        "size": 7258
       }
     ],
-    "tree_sha256": "d32dbefceb5a2ff4b47a557ad4540e4ca057db80531132311a9e91a6feb9d4ea"
+    "tree_sha256": "bc3b4d005a20df352bcf93432244766a71efa80f4dcd3263148e76bdc8ebfb80"
   },
   "product": "NeuralScreen",
   "runtime": {
     "artifacts": [
       {
         "path": "NeuralScreen.exe",
-        "sha256": "6824b9455204a3c4e4fdbae638d62b00a0a2c008d7d81c902a7b370fe1199a92",
+        "sha256": "15fd5605501817abb90c03626a94b3fb330e38d036eab4bd323682a7185a9806",
         "size": 167424
       },
       {
         "path": "native/nvngx.dll",
-        "sha256": "38895a2ffdccd89b9ede606ba8486a0ba6b4f0c40ea270d093629dfbb75da091",
-        "size": 276992
+        "sha256": "cebd4327cb52492172c34edaaebe428b77b7425fbd8eae53eeba5a292d128928",
+        "size": 281600
       },
       {
         "path": "native/nvngx.dll_ns-forwarder.dll",
-        "sha256": "b02a22b53bd41e1df036cfa1825b820d3b169bddeac94429efa96a835c2f81bf",
+        "sha256": "e3b75d4db208206877c49fe96a0beb0fdad6bec63c3df4110768d585424ed297",
         "size": 10240
       },
       {
@@ -14824,11 +14824,11 @@
       "size": 1917
     },
     {
-      "git_blob": "6c73a1ec14e5eef2e4bfe4a70da714301e7a77c4",
+      "git_blob": "41cbdf21563ad1db81c8aae6ab179169c258a9d3",
       "path": "CHANGELOG.md",
       "role": "shipped-resource",
-      "sha256": "9562c71e912905acd3cb5a5ec243ba54b55dbcb70733e2dcb7180014d4e3f519",
-      "size": 48591
+      "sha256": "571ad3cdaed3a81ce79cc03583a422064f6ee72e0c1b232355befe7f47500fd2",
+      "size": 51004
     },
     {
       "git_blob": "17c7b971a45ca3eaa419765eba76d7d9f287b83c",
@@ -14873,25 +14873,25 @@
       "size": 18783
     },
     {
-      "git_blob": "52b336d30a702504327173aacfe39956aae0cb0b",
+      "git_blob": "084270956ff728b015dd70d4f21126358cb30b2c",
       "path": "RELEASING.md",
       "role": "shipped-resource",
-      "sha256": "27521c7c921d452a2c3cb1ba6804109545a5ba48eb4efe720f20f120735e17a9",
-      "size": 25323
+      "sha256": "78631839e018aad6d26e61cf2c085528107179b73fc89eaf239f752f0986141e",
+      "size": 25331
     },
     {
-      "git_blob": "feccade6bb39de7ad1a090dedeb44314ab697065",
+      "git_blob": "ff42ce6c4b4a9bbcf1e5032e7b5a29aedec51adc",
       "path": "TECHNICAL.md",
       "role": "shipped-resource",
-      "sha256": "7699d3b5e38a8a2d82b92c5e4385e4b41e8f6bd1bdc0f3d27a83cfb7862549be",
-      "size": 46685
+      "sha256": "587fecc41f921475811dc4eebeac86b87617e4d93aea809d41293e841756a8ba",
+      "size": 46832
     },
     {
-      "git_blob": "2d44e186d64ae4f2ebdbad7e1cd98822e9f90090",
+      "git_blob": "033f16d9c6754600fb941ba3e8bb9ec67eb6afde",
       "path": "TECHNICAL.ru.md",
       "role": "shipped-resource",
-      "sha256": "5555213a31f5fc0b8f15bdcaf4eac0272cae2e91aaad9dab49b90e66b9f05c67",
-      "size": 66256
+      "sha256": "9ca29413b2b03f95e2ada690f51a33498ff7d67bcff2347b6e6b68b41c76edff",
+      "size": 66592
     },
     {
       "git_blob": "196eed4de6f303dbbab8be29c32954682f5473f6",
@@ -14901,53 +14901,221 @@
       "size": 3227
     },
     {
-      "git_blob": "0dd00daeadf8a31dfbeecec24976115b91b7d4c7",
-      "path": "audio.py",
+      "git_blob": "6a455efcf5408b4723ed7f38d25688120ee746b4",
+      "path": "app/audio.py",
       "role": "shipped-resource",
-      "sha256": "da965f0c679303c8919829f33d2dae815c4e1a9a720071a7d76fa01d94ca87b4",
-      "size": 17006
-    },
-    {
-      "git_blob": "3e8a38ca6f5d5a8975d6d659576cc324f1c13785",
-      "path": "build_release_zip.py",
-      "role": "version-source",
-      "sha256": "b396de9e7ba74df3532ee7f66d6c23b65dc8931fc4fcb78e7734e2668885a6c8",
-      "size": 35803
+      "sha256": "851aa995c6e1ab551c137cac28ba4afd16216cc772d198dbd7124ccc1085e30f",
+      "size": 19843
     },
     {
       "git_blob": "16fd338c48e70547c3fd94d9926942943716d756",
-      "path": "capture.py",
+      "path": "app/capture.py",
       "role": "shipped-resource",
       "sha256": "a403ee8a860e6ac5f722b875608536bddfb5b0ab79d94866d7169625fe11326b",
       "size": 22659
     },
     {
       "git_blob": "4499fe3d21b7fcaa1a725586dc314b66d9e8e60e",
-      "path": "channels.py",
+      "path": "app/channels.py",
       "role": "shipped-resource",
       "sha256": "175526af66e9ba898158fcde8f2659af9082ab162f61f40d9304a4cf47bfc9a3",
       "size": 11912
     },
     {
-      "git_blob": "864608b437f3c0f76411339b95a2a210683586d1",
-      "path": "commands.py",
+      "git_blob": "0d1f34f0f7c5040ba5b7ad0812cc09cf694086ee",
+      "path": "app/commands.py",
       "role": "shipped-resource",
-      "sha256": "3d2707d092ac8432b5d09d5fdff289b3e2a9a35e3a22e701f4bf0a6e55b27aa7",
-      "size": 75217
+      "sha256": "cc217059b8ae2d498ca0389cb6534c54b2ee271d25c993a9245eff0d8e211829",
+      "size": 79225
     },
     {
       "git_blob": "eca1a784b1c4fc5477cfec1f5c36ee2c37abcf37",
-      "path": "compatibility.py",
+      "path": "app/compatibility.py",
       "role": "shipped-resource",
       "sha256": "4c12a9fc0906cabb5af4ba80ac75f0f9bfb670684be244d6feb2a80804571073",
       "size": 23307
     },
     {
-      "git_blob": "674fd81e48cb90f55ef77379fe482ea72801dacd",
-      "path": "compatibility_runtime.py",
+      "git_blob": "ffa0c93f23667c1a4b0984578e714a1c0f243a0c",
+      "path": "app/compatibility_runtime.py",
       "role": "shipped-resource",
-      "sha256": "aad5c7dc96127228315016196b5d6ddffb694d5884896aed86b22249f05c08b6",
-      "size": 17333
+      "sha256": "b6679a79ea87d9d1033653c1e1127d183d4ba251c41ed6fb19ace1c4d7c18e46",
+      "size": 17192
+    },
+    {
+      "git_blob": "87f20dd6b085284536173b3dabb847ec669be915",
+      "path": "app/convert_jobs.py",
+      "role": "shipped-resource",
+      "sha256": "c109c015b4cdf90cb41e8315e7b2e5e413b88613c5c3800286bbf889b5b018e3",
+      "size": 22460
+    },
+    {
+      "git_blob": "63997e45b828d7c51472ac84e8a14c161fa14bf0",
+      "path": "app/diagnostics.py",
+      "role": "shipped-resource",
+      "sha256": "31ff224c26d125494815bab0afa020e5f8a30cee80260ceafdd83859a023e57f",
+      "size": 31509
+    },
+    {
+      "git_blob": "747f9f662b9c9d45c2ae290b2152a9a7cfa01391",
+      "path": "app/dialogs.py",
+      "role": "shipped-resource",
+      "sha256": "da6a8b6ceab698e3014124571fad39dcb4fc36e9567cd2b12df5b423341ff2d8",
+      "size": 14913
+    },
+    {
+      "git_blob": "33ebaea3315320f70379cf164d93285cc986ef96",
+      "path": "app/display.py",
+      "role": "shipped-resource",
+      "sha256": "07e3e79a07411467268eb368cccac8568d6fbf658d0a62008d8d5a87e8f14531",
+      "size": 125806
+    },
+    {
+      "git_blob": "03d9fc8ac61954450fe0c627bd6fc4c7172aa36b",
+      "path": "app/fonts.py",
+      "role": "shipped-resource",
+      "sha256": "eede4716405080a16b57ff785c7265036777aa9c26ddc561f490c503b4a26881",
+      "size": 3718
+    },
+    {
+      "git_blob": "c5315b7d59dc3a7afd8e6513b227236d4956471c",
+      "path": "app/gpuinfo.py",
+      "role": "shipped-resource",
+      "sha256": "f5b527f9a8bdedec324b1e3ab7c10b19dfd7794690ad82b94243013592b64a7b",
+      "size": 6149
+    },
+    {
+      "git_blob": "187753f9c32e7124c1ec09c162c53ed4aa568491",
+      "path": "app/guides.py",
+      "role": "shipped-resource",
+      "sha256": "dc516360f5c85b387602ac184799a8630746f8cf3e797290ce341321e0d9a8bd",
+      "size": 21096
+    },
+    {
+      "git_blob": "c31d2ae916045a478e6bc05f71516bf02907a246",
+      "path": "app/hotkeys.py",
+      "role": "shipped-resource",
+      "sha256": "afd833116a6b01140290c5b47eded07b5491e99d88f5fc76e9ed768dcd8e72fc",
+      "size": 19548
+    },
+    {
+      "git_blob": "9eb1ce98d730a16f398ec0d8ec3f28f17c7b6bd6",
+      "path": "app/i18n.py",
+      "role": "shipped-resource",
+      "sha256": "d83a0315e66e4843f3ec91411a9bff465775088aedb9a40dc893f447aa3260a4",
+      "size": 176866
+    },
+    {
+      "git_blob": "6481f19f25f5d1ad9e1fce3b669c6f575f668225",
+      "path": "app/media_convert.py",
+      "role": "shipped-resource",
+      "sha256": "18b09fd11b28027cb6732fb05f14c7fefd488681a8282f60ffbd74d1b548eab0",
+      "size": 40791
+    },
+    {
+      "git_blob": "32adc3fe144bd5330296963c866065b103744a86",
+      "path": "app/motion_backend.py",
+      "role": "shipped-resource",
+      "sha256": "601fc244ff662a694227f8796abafb4c6042eacf3337fc546b217d428eb2b45a",
+      "size": 1273
+    },
+    {
+      "git_blob": "7a1967d663dd997a7e86092d5a1161e9262ae92f",
+      "path": "app/overlay_ui.py",
+      "role": "shipped-resource",
+      "sha256": "afd60cc9b051af0dedc1ac1b94d1164d9edb5bf5ab208d728bb6db41193f4964",
+      "size": 241459
+    },
+    {
+      "git_blob": "7015856944cf8771544bb2605ac33d16f8f5e74d",
+      "path": "app/pacing.py",
+      "role": "shipped-resource",
+      "sha256": "efe627861de96265897f168261d461441d27f8810e099108215f3010886b1fc9",
+      "size": 3199
+    },
+    {
+      "git_blob": "0383e7f1a1a29bcde776fee4a016af5a506b68a2",
+      "path": "app/paths.py",
+      "role": "shipped-resource",
+      "sha256": "20eee8e408f94a9a7f5d3193ca045e261549497d02b823a3a240b3a83fb5b566",
+      "size": 784
+    },
+    {
+      "git_blob": "f873ea1ae03fc5858a4c3cf526fe50ce66598e4b",
+      "path": "app/pipeline.py",
+      "role": "shipped-resource",
+      "sha256": "2055a73584c2dc38ec6ee255bffb196b1ed390ea4803b82a17b0eb418c5e1fa8",
+      "size": 74090
+    },
+    {
+      "git_blob": "6a0a6bf5b25cbc2f18e50eab875e24939d650fa5",
+      "path": "app/protocol.py",
+      "role": "shipped-resource",
+      "sha256": "1b1e567cac182ff005e94429fa048dfbd1abdd20fc7020f5d14aabcdb4a3b650",
+      "size": 57933
+    },
+    {
+      "git_blob": "b7fc521e54c28c333da947e0e4969501d021f49f",
+      "path": "app/recorder.py",
+      "role": "shipped-resource",
+      "sha256": "7cc392edd9211354e8d02178285e47064a1421bf06b90335e1532251a4937a77",
+      "size": 59311
+    },
+    {
+      "git_blob": "0905d002b077bdc2a0db93866e5a0381fab343d4",
+      "path": "app/resolution_limits.py",
+      "role": "shipped-resource",
+      "sha256": "f19b705c3f509708ce58ca40ac4080ed30ced976ae3b31234dead8d7009007a3",
+      "size": 654
+    },
+    {
+      "git_blob": "f09e5ab454b6fa5e87826cf31cf8f6de269592bc",
+      "path": "app/settings_io.py",
+      "role": "version-source",
+      "sha256": "a18f918157bd0ea8de469eefcde38895eb0a9cb236e7fd5e4c74f60135bd4b34",
+      "size": 77787
+    },
+    {
+      "git_blob": "ccc8ed14e402bc8c28ef8d5fed6f93e52d0c3eb7",
+      "path": "app/startup.py",
+      "role": "shipped-resource",
+      "sha256": "a4ecad59f0fa58541c5e1313ba863962a76851aebb6245663d527fe3e58270e1",
+      "size": 40365
+    },
+    {
+      "git_blob": "9dcde775c68bc17a80a6ab2c3449afcd5440da1f",
+      "path": "app/taskbar.py",
+      "role": "shipped-resource",
+      "sha256": "699de52e4f46db269b4067fc96835254a081fb970476b502b5f66dcf974c3dbf",
+      "size": 23085
+    },
+    {
+      "git_blob": "0c1df75155eddaf0d36572dd8ad94840a298301e",
+      "path": "app/tray.py",
+      "role": "shipped-resource",
+      "sha256": "7ca27fd3f7338afd39fd49f72e721dc4574f47aae2b88964319163483839ded8",
+      "size": 6139
+    },
+    {
+      "git_blob": "0263f9a6640b89357871fa1157929d52ff83345d",
+      "path": "app/vdesk.py",
+      "role": "shipped-resource",
+      "sha256": "01257066aa674b4419b4d44ee509544c1503c35831d2c6d19c1e2cbff9b7253f",
+      "size": 5814
+    },
+    {
+      "git_blob": "36406b04c64989b5992cdae56befa5f7dfc73d91",
+      "path": "app/winapi.py",
+      "role": "shipped-resource",
+      "sha256": "0fc01a46c389bdad1ea9a720d3308595862def4e419a251a40f404f02306ed92",
+      "size": 8877
+    },
+    {
+      "git_blob": "0bda888a3e26659da47973f1b63124bfea1316da",
+      "path": "build_release_zip.py",
+      "role": "version-source",
+      "sha256": "2a13921a55f953b557ba2ac460c97758e9206be291d756f690fbda053f553951",
+      "size": 35819
     },
     {
       "git_blob": "ecd68befdaa5ff4f5dc6ebbe57b8710ba96322cd",
@@ -14955,41 +15123,6 @@
       "role": "shipped-resource",
       "sha256": "db1f7e09e0104e9142fa8194def2a18c13974ea64044a8a219f7e0a3ffdfba71",
       "size": 1392
-    },
-    {
-      "git_blob": "b5fd7c41d4fa08ad3377cbf92ff95ecc78d871dd",
-      "path": "convert_jobs.py",
-      "role": "shipped-resource",
-      "sha256": "ae8aaf96e58674226c83cdecc75bf4fcc28a7e8203e5283b04311007cc50402d",
-      "size": 22416
-    },
-    {
-      "git_blob": "c3d14db5c52e7428916974ec4024902f71284a10",
-      "path": "diagnostics.py",
-      "role": "shipped-resource",
-      "sha256": "3edbd03f390c03971935ffe16d5020538350a87e9e93e0f8f30b9417c29dbfd9",
-      "size": 28933
-    },
-    {
-      "git_blob": "747f9f662b9c9d45c2ae290b2152a9a7cfa01391",
-      "path": "dialogs.py",
-      "role": "shipped-resource",
-      "sha256": "da6a8b6ceab698e3014124571fad39dcb4fc36e9567cd2b12df5b423341ff2d8",
-      "size": 14913
-    },
-    {
-      "git_blob": "045e971168deff7c634ce8d3c0bf99d128d2b15b",
-      "path": "display.py",
-      "role": "shipped-resource",
-      "sha256": "f31e22fb97ea6e497ee8b1c7e5a83a52334ba485ed263724faa1fd26872125ed",
-      "size": 121118
-    },
-    {
-      "git_blob": "03d9fc8ac61954450fe0c627bd6fc4c7172aa36b",
-      "path": "fonts.py",
-      "role": "shipped-resource",
-      "sha256": "eede4716405080a16b57ff785c7265036777aa9c26ddc561f490c503b4a26881",
-      "size": 3718
     },
     {
       "git_blob": "7d991ea74c3cf8097c4a5313989c9f0cd11c3b0a",
@@ -15027,53 +15160,11 @@
       "size": 4363
     },
     {
-      "git_blob": "c5315b7d59dc3a7afd8e6513b227236d4956471c",
-      "path": "gpuinfo.py",
-      "role": "shipped-resource",
-      "sha256": "f5b527f9a8bdedec324b1e3ab7c10b19dfd7794690ad82b94243013592b64a7b",
-      "size": 6149
-    },
-    {
-      "git_blob": "187753f9c32e7124c1ec09c162c53ed4aa568491",
-      "path": "guides.py",
-      "role": "shipped-resource",
-      "sha256": "dc516360f5c85b387602ac184799a8630746f8cf3e797290ce341321e0d9a8bd",
-      "size": 21096
-    },
-    {
-      "git_blob": "ee432d9f5cfa1d2208824bbbd11e82dc422a61e3",
-      "path": "hotkeys.py",
-      "role": "shipped-resource",
-      "sha256": "e20150ce66186609ecd3cce2e023bc5ee471f08242c5a2f64e75722522d22313",
-      "size": 18845
-    },
-    {
-      "git_blob": "f3b727351d11de5072ba0a1b1aad6cc02f9a9b42",
-      "path": "i18n.py",
-      "role": "shipped-resource",
-      "sha256": "a712be46bdbbf5efd2cdcb0fa14831dfb4ba825b9e62f4cd5fa19b6c2ba63351",
-      "size": 162974
-    },
-    {
-      "git_blob": "e89a96710cf3cd153b9e040fea6877573787f2a8",
+      "git_blob": "beba42c6e8ed24473ae29f4e62612a34995e8e6d",
       "path": "main.py",
       "role": "shipped-resource",
-      "sha256": "727c3599545246e92a515f07de24916e4ea61823c24a7326a92c57f78dd0d878",
-      "size": 72125
-    },
-    {
-      "git_blob": "e2cf18b9308a3bc368e51c0674d86885d9e8122a",
-      "path": "media_convert.py",
-      "role": "shipped-resource",
-      "sha256": "b0eac392927f0f5c2559e04ec8c23fe395f84aa5b05e717ba72090dcf0abf9ce",
-      "size": 37370
-    },
-    {
-      "git_blob": "32adc3fe144bd5330296963c866065b103744a86",
-      "path": "motion_backend.py",
-      "role": "shipped-resource",
-      "sha256": "601fc244ff662a694227f8796abafb4c6042eacf3337fc546b217d428eb2b45a",
-      "size": 1273
+      "sha256": "48ac69584d158917892f8f94c3c0a32b512dd8d959c18990c04bec8187d0ad92",
+      "size": 77610
     },
     {
       "git_blob": "addaf3b821618fb70ce37010e694e1cca588b89e",
@@ -15090,32 +15181,32 @@
       "size": 215552
     },
     {
-      "git_blob": "b46565fa02a71ccce992db6c77f053dee32549b7",
+      "git_blob": "4d2d2ff5ff7d5466e4bf6a28f7df87d67629cc79",
       "path": "native/dll_trust.h",
       "role": "native-source",
-      "sha256": "5ac61bf4790859b2e3c139ddfc262609aec22fc84c7d65797155045bea8d6735",
-      "size": 10424
+      "sha256": "a6488ef386cdeb0a7db78a0bc8852c7e824d34c8cf2fcbf74f44c0d38788e18c",
+      "size": 11124
     },
     {
-      "git_blob": "d7d700ecad689d411fc4ea0335b4b0f1a72d77c6",
+      "git_blob": "5d9977ff0e6702623db378ea0520a0df1b42e561",
       "path": "native/dlss5-feed-host64.cpp",
       "role": "native-source",
-      "sha256": "04bc0cb330c28d8549be2f0e441480e99cf9ae9beca2b56cc257c79c0ec1bfbd",
-      "size": 379850
+      "sha256": "6513827e618d05328a06763cc6853d0790ebd01cf1ebbfc15c6c226d0f5aecec",
+      "size": 395616
     },
     {
-      "git_blob": "2eef6e2d76a0dfcee00aa1eb3a8084b6cde45ba8",
+      "git_blob": "45b198747851aba0fecd09207d87cd5969e18887",
       "path": "native/frame_generation.inl",
       "role": "native-source",
-      "sha256": "ee0b6a7f1918675297da283493cee34ea0a83c6b0d0a5ba07bde975828ea07fc",
-      "size": 34814
+      "sha256": "32847db54a6b0b03736779b698c9c511545a908d6805aad95111745b8c7bb0db",
+      "size": 36058
     },
     {
-      "git_blob": "fd9071449567cdcf59c306933767a0f4356a2312",
+      "git_blob": "f89e016ad1eba7b02ac4e29d7e4645280847a5a2",
       "path": "native/gpu_recorder.cpp",
       "role": "native-source",
-      "sha256": "f47f4e83745e708b166e60400d50f4b8ca79847b1ff2e4e0ca24b5766de34254",
-      "size": 56960
+      "sha256": "611b874b271c94262b1bf9af3a9e590752b94bf01d7d404c53243037692c4952",
+      "size": 59625
     },
     {
       "git_blob": "ceb978c3bbc1f00188d684932b941d0c47bf9314",
@@ -15139,11 +15230,11 @@
       "size": 2942
     },
     {
-      "git_blob": "8911c5eddfbe0a8a02568f9260d2023985c7c13f",
+      "git_blob": "df55540663e28cce51ff9a2bedc51b0d94b10f6d",
       "path": "native/hdr_present.inl",
       "role": "native-source",
-      "sha256": "c7b3b82fed22322961dd73bbf2b083e3a7f2caf05f8dba4823d7b02171607a6f",
-      "size": 14791
+      "sha256": "5bd40ac3ef5feca4cc6c809a8772817d3eccf167755c4063292d76a951d2543d",
+      "size": 15405
     },
     {
       "git_blob": "e8d518bc21a84572e6ca7f6ab518ed615cd97255",
@@ -15377,10 +15468,10 @@
       "size": 5312
     },
     {
-      "git_blob": "05fa9661b8d485523922e107ac0e998a97daed35",
+      "git_blob": "79f60aaa6e6ea9028bbf604b4ed54377692a8233",
       "path": "native/launcher.rc",
       "role": "native-source",
-      "sha256": "f7872d3c817fd57f67ae77a146ce5f27d948cdd9b8c1e77c0cd1df6589dc1bdd",
+      "sha256": "772822bb79e2bb853253f679db154ab6776f1c501492e6c09d7e2531dc59e480",
       "size": 874
     },
     {
@@ -15475,76 +15566,6 @@
       "size": 2333
     },
     {
-      "git_blob": "7a1967d663dd997a7e86092d5a1161e9262ae92f",
-      "path": "overlay_ui.py",
-      "role": "shipped-resource",
-      "sha256": "afd60cc9b051af0dedc1ac1b94d1164d9edb5bf5ab208d728bb6db41193f4964",
-      "size": 241459
-    },
-    {
-      "git_blob": "7015856944cf8771544bb2605ac33d16f8f5e74d",
-      "path": "pacing.py",
-      "role": "shipped-resource",
-      "sha256": "efe627861de96265897f168261d461441d27f8810e099108215f3010886b1fc9",
-      "size": 3199
-    },
-    {
-      "git_blob": "c498de41173363c3ee6736b72edde8ceb1fad0e8",
-      "path": "paths.py",
-      "role": "shipped-resource",
-      "sha256": "4e52c4a564248d061d6def8feeebdf130dd7b318c46a5b9e5811f38b5d174d9f",
-      "size": 628
-    },
-    {
-      "git_blob": "6a259242b05a6725871c90946ceecccb9612ddce",
-      "path": "pipeline.py",
-      "role": "shipped-resource",
-      "sha256": "71a5ff6759076cd560f11a6d49605366fbcff6f583d5437b66b16c18a77b292e",
-      "size": 69378
-    },
-    {
-      "git_blob": "0fffc3c1c5522adf7283fdd444c9a00f835f3b7c",
-      "path": "protocol.py",
-      "role": "shipped-resource",
-      "sha256": "18bda1e33544d312c55082c8b7d2d98b80132a0278c52b13235e174e1dc55456",
-      "size": 59750
-    },
-    {
-      "git_blob": "4ad8a72292323259ddc2183cbfd05b9d5fbc01ed",
-      "path": "recorder.py",
-      "role": "shipped-resource",
-      "sha256": "3f2898b3d5c7a5deab8c8acbe615000d1e99cc9db5f9153852577d6d1e1ca322",
-      "size": 58995
-    },
-    {
-      "git_blob": "0905d002b077bdc2a0db93866e5a0381fab343d4",
-      "path": "resolution_limits.py",
-      "role": "shipped-resource",
-      "sha256": "f19b705c3f509708ce58ca40ac4080ed30ced976ae3b31234dead8d7009007a3",
-      "size": 654
-    },
-    {
-      "git_blob": "d0b7a87b9e77b50df3d640f8029bfdb18b70367a",
-      "path": "settings_io.py",
-      "role": "version-source",
-      "sha256": "1fbba360af1f1411699f6737846e3a2edafb2cd09a88264773b81837b3f726d9",
-      "size": 73605
-    },
-    {
-      "git_blob": "9b0f9c8b28f6e72de0210d23bd6dcc272ca94f70",
-      "path": "startup.py",
-      "role": "shipped-resource",
-      "sha256": "de7c1c5a16c62c967a9d216adfc202ee9ccd1098acd56deaf41da62c74c82a3c",
-      "size": 40141
-    },
-    {
-      "git_blob": "2626e91f29a48e37cd231eb33f6f8bf9e60430e3",
-      "path": "taskbar.py",
-      "role": "shipped-resource",
-      "sha256": "b274461c1df43accabae119c6027af1fd6a96ba1164ece35cbccc2d571a86a7b",
-      "size": 19439
-    },
-    {
       "git_blob": "ed2bf6e6757dbbf59b2f34249692d1e672d8f185",
       "path": "tests/hdr_gpu.cpp",
       "role": "native-source",
@@ -15557,62 +15578,41 @@
       "role": "native-source",
       "sha256": "ea9b92cc8b0cda0b7e65f5bf6a94efb0bd8266ea6cfd136e367e5eac3e94f2de",
       "size": 3087
-    },
-    {
-      "git_blob": "3a7e3d38b38b6e719ddec210c9c96aa4cf7a6b14",
-      "path": "tray.py",
-      "role": "shipped-resource",
-      "sha256": "6359b25da08187d3a1be32dea015dd9a195d512d950103f995f6017141dc806b",
-      "size": 5918
-    },
-    {
-      "git_blob": "0263f9a6640b89357871fa1157929d52ff83345d",
-      "path": "vdesk.py",
-      "role": "shipped-resource",
-      "sha256": "01257066aa674b4419b4d44ee509544c1503c35831d2c6d19c1e2cbff9b7253f",
-      "size": 5814
-    },
-    {
-      "git_blob": "0e4cf3c1cb9f4a4ad13bf7c33183f9ddb890ba85",
-      "path": "winapi.py",
-      "role": "shipped-resource",
-      "sha256": "25486ccf39e07f3d0e989a255ff6667b06b67fc9a4bc7e08738faf6ea5fa0419",
-      "size": 7258
     }
   ],
-  "version": "2.1.1",
+  "version": "2.1.2",
   "version_sources": [
     {
-      "git_blob": "3e8a38ca6f5d5a8975d6d659576cc324f1c13785",
+      "git_blob": "0bda888a3e26659da47973f1b63124bfea1316da",
       "path": "build_release_zip.py",
       "role": "version-source",
-      "sha256": "b396de9e7ba74df3532ee7f66d6c23b65dc8931fc4fcb78e7734e2668885a6c8",
-      "size": 35803,
+      "sha256": "2a13921a55f953b557ba2ac460c97758e9206be291d756f690fbda053f553951",
+      "size": 35819,
       "values": {
-        "VERSION": "2.1.1"
+        "VERSION": "2.1.2"
       }
     },
     {
-      "git_blob": "d0b7a87b9e77b50df3d640f8029bfdb18b70367a",
-      "path": "settings_io.py",
+      "git_blob": "f09e5ab454b6fa5e87826cf31cf8f6de269592bc",
+      "path": "app/settings_io.py",
       "role": "version-source",
-      "sha256": "1fbba360af1f1411699f6737846e3a2edafb2cd09a88264773b81837b3f726d9",
-      "size": 73605,
+      "sha256": "a18f918157bd0ea8de469eefcde38895eb0a9cb236e7fd5e4c74f60135bd4b34",
+      "size": 77787,
       "values": {
-        "APP_VERSION": "2.1.1"
+        "APP_VERSION": "2.1.2"
       }
     },
     {
-      "git_blob": "05fa9661b8d485523922e107ac0e998a97daed35",
+      "git_blob": "79f60aaa6e6ea9028bbf604b4ed54377692a8233",
       "path": "native/launcher.rc",
       "role": "version-source",
-      "sha256": "f7872d3c817fd57f67ae77a146ce5f27d948cdd9b8c1e77c0cd1df6589dc1bdd",
+      "sha256": "772822bb79e2bb853253f679db154ab6776f1c501492e6c09d7e2531dc59e480",
       "size": 874,
       "values": {
-        "FILEVERSION": "2.1.1.0",
-        "FileVersion": "2.1.1.0",
-        "PRODUCTVERSION": "2.1.1.0",
-        "ProductVersion": "2.1.1"
+        "FILEVERSION": "2.1.2.0",
+        "FileVersion": "2.1.2.0",
+        "PRODUCTVERSION": "2.1.2.0",
+        "ProductVersion": "2.1.2"
       }
     }
   ]
