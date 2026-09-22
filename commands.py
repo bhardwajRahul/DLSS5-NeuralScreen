@@ -516,6 +516,82 @@ def apply_menu_action(st, action: tuple) -> None:
         # HDR compatibility: NS_HDR is read once per worker process too,
         # and it decides the capture format, so this is a restart as well.
         pipeline.apply_hdr(st, not bool(st.cfg.get("hdr", False)))
+    elif kind == "toggle" and action[1] == "pass_params":
+        # The second parameter set for passes 2..N. Off clears the key
+        # entirely, which is not the same as setting it to the main values:
+        # "no set" survives a profile change (every pass follows the profile),
+        # while a stored copy of the current numbers would freeze pass 2 at
+        # whatever the sliders happened to be when the switch was flipped.
+        #
+        # On seeds the set FROM the main parameters, so flipping the switch
+        # changes nothing on screen by itself - the picture only moves once a
+        # control in the set is actually moved.
+        if st.nr_pass_params:
+            st.nr_pass_params = None
+            st.cfg.pop("nr_pass_params", None)
+            print("[main] per-pass parameters off - every pass uses the main set")
+        else:
+            if int(getattr(st, "nr_passes", 1)) < 2:
+                print("[main] per-pass parameters need at least two passes",
+                      file=sys.stderr)
+                return
+            seeded = dict(st.params)
+            st.nr_pass_params = {
+                "style": int(seeded.get("style", 1)),
+                **{k: float(seeded.get(k, 0.0)) for k in
+                   settings_io.PER_PASS_KEYS},
+            }
+            st.cfg["nr_pass_params"] = dict(st.nr_pass_params)
+            print(f"[main] per-pass parameters on, seeded from the main set: "
+                  f"{st.nr_pass_params}")
+        st.display.menu.set_state(
+            {"nr_pass_params": dict(st.nr_pass_params or {})})
+        settings_io.save_menu_layout(st)
+        # No resize needed: the command carries the set on its own and the next
+        # frame is evaluated with it. request_apply would rebuild the cascade
+        # for nothing - and the cascade is not what changed.
+        if st.nr_pass_params:
+            pipeline.send_per_pass(st.worker, st.nr_pass_params, enabled=True)
+            try:
+                st.reader.wait_per_pass(timeout=pipeline.RACK_TIMEOUT)
+            except Exception as exc:
+                print(f"[main] the per-pass parameters did not go through "
+                      f"({exc})", file=sys.stderr)
+        else:
+            # An explicit clear, not silence: the worker is running a set right
+            # now and has to be told to drop it. A fresh worker would not need
+            # this, but this one is mid-flight.
+            pipeline.send_per_pass(st.worker, None, enabled=False)
+    elif kind == "pass_param":
+        # One control inside the second set. Held on st and written through on
+        # the menu's close, like the main sliders - only the wire is immediate.
+        name = str(action[1])
+        value = action[2]
+        if name == "style":
+            try:
+                picked = int(value)
+            except (TypeError, ValueError):
+                return
+            if picked not in (0, 1, 2):
+                return
+            value = picked
+        elif name not in settings_io.PER_PASS_KEYS:
+            print(f"[main] unknown per-pass parameter {name!r}", file=sys.stderr)
+            return
+        if not st.nr_pass_params:
+            # A control of the set arriving with the set off: the menu only
+            # draws these while it is on, so this is a stale click or a bug.
+            # Refusing is better than resurrecting a set nobody asked for.
+            return
+        st.nr_pass_params[name] = value
+        st.cfg["nr_pass_params"] = dict(st.nr_pass_params)
+        print(f"[main] pass 2+ {name} -> {value}")
+        pipeline.send_per_pass(st.worker, st.nr_pass_params, enabled=True)
+        try:
+            st.reader.wait_per_pass(timeout=pipeline.RACK_TIMEOUT)
+        except Exception as exc:
+            print(f"[main] the per-pass parameters did not go through ({exc})",
+                  file=sys.stderr)
     elif kind == "style":
         # Style travels with the parameters, so it applies the same way they
         # do since C1: a resize command with unchanged sizes, no feature

@@ -330,6 +330,17 @@ class OverlayMenu:
             "param_ranges": {},
             # The NR cascade: how many passes run over one frame (experiment).
             "nr_passes": 1,
+            # What passes 2..N use when they have their own set. `{}` means
+            # "the main set for every pass" - the same thing a missing config
+            # key means, and the same thing the panel should show.
+            "nr_pass_params": {},
+            # The numbers `nr_pass_params` was seeded from: what the main
+            # sliders were at the moment the second set was switched on. Drawn
+            # as the tick under the second set's sliders, so "how far have I
+            # moved pass 2 from the main set" is visible instead of remembered
+            # - the same job param_defaults does one section above.
+            "pass_param_defaults": {},
+            "pass_param_ranges": {},
             # version / windows / driver / gpu, from the log header.
             "about": {},
             "compatibility_status": "not_run",
@@ -1759,6 +1770,54 @@ class OverlayMenu:
                           str(max(1, min(4, passes_now))),
                           ["1", "2", "3", "4"], labels=["1", "2", "3", "4"])
                 items[-1].extra["state_default"] = "1"
+                # What passes 2..N do. Only shown from two passes: with one
+                # pass there is nothing for a second set to apply to, and the
+                # row would be a control that cannot do anything - the same
+                # reason the resolution slider is hidden without Boost.
+                #
+                # This is the point of the whole cascade. Every pass used to
+                # read the same numbers, so pass 2 repeated pass 1 exactly: the
+                # frame cost a third of the frame rate more and looked the
+                # same. Measured 22.09: pass 2 on Faithful against a Strong
+                # main set moves 100% of pixels (mean 9.4 codes, max 20) while
+                # sending the same numbers through the same command moves
+                # none - so the difference is the numbers, not the command.
+                per_pass = self.state.get("nr_pass_params") or {}
+                if passes_now >= 2:
+                    # The switch first, then what it governs: with the set off
+                    # there is nothing under it, and a row of sliders that
+                    # silently do nothing is the worst of the three states.
+                    #
+                    # The hint goes through the toggle's own argument rather
+                    # than into extra afterwards: the row's height is worked
+                    # out from the hint when the item is built, so a hint set
+                    # later is drawn inside a rect that was measured without
+                    # it - the text is then clipped by the next row.
+                    toggle("pass_params", s.get("pass_params", "Own set"),
+                           bool(per_pass), s.get("pass_params_hint", ""))
+                    if per_pass:
+                        # Style picks which network runs, so it is the first
+                        # control of the set - the same order the main section
+                        # uses, one section up.
+                        segmented("pass_style", s["style"],
+                                  str(int(per_pass.get("style", 1))),
+                                  ["0", "1", "2"],
+                                  labels=[s["style_0"], s["style_1"],
+                                          s["style_2"]])
+                        defaults = self.state.get("pass_param_defaults") or {}
+                        ranges = self.state.get("pass_param_ranges") or {}
+                        for key in PARAM_KEYS:
+                            lo, hi = ranges.get(key) or PARAM_FALLBACK
+                            val = float(per_pass.get(key, 0.0))
+                            # The same four names as the main sliders, on
+                            # purpose: they are the same four parameters, and
+                            # translating a second copy of each into twelve
+                            # languages would be twelve copies of the same
+                            # word. The switch above them is what says whose
+                            # set this is.
+                            slider(f"pass_{key}", float(lo), float(hi), val,
+                                   s[key], value_text=f"{val:.2f}",
+                                   mark=defaults.get(key))
 
             # What is being processed - the first question anyone has, and
             # until now the only one answered on another page. The segment
@@ -2545,6 +2604,22 @@ class OverlayMenu:
                 return []
             self.state["nr_passes"] = step
             return [("nr_passes", step)]
+        if key == "pass_style":
+            # The second set's model. Held in the same dict as its four
+            # numbers, and sent as part of that set rather than as the main
+            # style - the whole point is that the two can differ.
+            try:
+                picked = int(value)
+            except (TypeError, ValueError):
+                return []
+            if picked not in (0, 1, 2):
+                return []
+            per_pass = dict(self.state.get("nr_pass_params") or {})
+            if not per_pass:
+                return []
+            per_pass["style"] = picked
+            self.state["nr_pass_params"] = per_pass
+            return [("pass_param", "style", picked)]
         if key == "fps_overlay":
             if value in ("off", "tl", "tr", "bl", "br"):
                 self.state["fps_overlay"] = value
@@ -2646,6 +2721,15 @@ class OverlayMenu:
             except Exception:
                 pass
             return [("nr_res", value)]
+        if item.key.startswith("pass_"):
+            # The second set's own slider. Held per key, and `pass_style` is a
+            # segment rather than a slider so it never reaches here - the two
+            # namespaces only collide on the "pass_" prefix, which is why the
+            # prefix is enough to tell them apart.
+            per_pass = dict(self.state.get("nr_pass_params") or {})
+            per_pass[item.key[len("pass_"):]] = value
+            self.state["nr_pass_params"] = per_pass
+            return [("pass_param", item.key[len("pass_"):], value)]
         params = dict(self.state.get("params") or {})
         params[item.key] = value
         self.state["params"] = params
