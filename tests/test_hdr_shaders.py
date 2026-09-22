@@ -46,7 +46,14 @@ def main() -> int:
     for line in (r.stdout or "").splitlines():
         if line.strip() and not line.startswith("hdr_gpu.cpp"):
             print(f"    {line.strip()}")
-    if "is not recognized" in out or "vcvars64" in out and r.returncode != 0:
+    # Only what vcvars.bat says when there really is no compiler. A bare "is
+    # not recognized" is in stderr on EVERY run - vswhere.bat tries
+    # vswhere.exe on PATH before looking elsewhere - and stderr is read only
+    # when the run failed, so a shader that failed its checks was reported
+    # as missing build tools, and the check that failed never showed.
+    no_tools = ("vswhere not found" in out or "build tools not found" in out
+                or "'cl' is not recognized" in out)
+    if no_tools and r.returncode != 0:
         print("FAIL: no Visual Studio build tools - the same ones the worker "
               "is built with (native\\build-host.bat)")
         return 1
