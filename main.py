@@ -314,6 +314,9 @@ class _Pipeline:
         # Which worker has been told the pass count: the cascade has to be
         # re-sent to every new one (see the main loop).
         "nr_passes_pid",
+        #: What passes 2..N use, when the user gave them their own set. None
+        #: by default, which means "the main set for every pass".
+        "nr_pass_params",
         "nr_small",
         # The "NR ON but nothing is being processed" verdict: a streak of frames
         # the worker answered without evaluating, and the flag the HUD reads.

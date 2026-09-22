@@ -46,8 +46,8 @@ from paths import BASE_DIR
 from pipeline import require_compatibility, start_worker
 from protocol import SharedFrameBuffer, WorkerReader
 from recorder import VideoRecorder
-from settings_io import (APP_VERSION, _work_size, hotkey_labels, load_config,
-                         load_presets, resolve_params)
+from settings_io import (APP_VERSION, _work_size, clean_per_pass, hotkey_labels,
+                         load_config, load_presets, resolve_params)
 from taskbar import TaskbarWindow
 from tray import TrayController
 
@@ -392,6 +392,15 @@ def configure(st) -> None:
     #: How many NR passes run over one frame (the cascade). Travels with every
     #: RNSZ, so changing it costs no rebuild once the features exist.
     st.nr_passes = int(st.cfg.get("nr_passes", 1))
+    #: What passes 2..N should use, if the user set anything different from the
+    #: main set. None means "every pass uses the main set" - the behaviour of
+    #: every build before this one, so a config that never touched it is
+    #: untouched. The rules live in settings_io.clean_per_pass, which the
+    #: config validator uses as well: two copies would drift apart, and the
+    #: one that drifted would be the one deciding what reaches the wire.
+    st.nr_pass_params = None
+    if int(st.nr_passes) >= 2:
+        st.nr_pass_params = clean_per_pass(st.cfg.get("nr_pass_params"))
     #: Frames in a row the worker answered without an NGX evaluation.
     st.nr_idle_streak = 0
     #: The verdict the interface reads: NR is on, but nothing is processed.

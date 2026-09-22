@@ -560,6 +560,11 @@ _SETTINGS_KEYS = (
     # answer "how was the program configured" and had quietly stopped
     # answering it for anything new (found in a reporter's package, #96).
     "nr_direct", "nr_passes", "fps_overlay",
+    # What passes 2..N use, when they have their own set. Without it a report
+    # from a two-pass session cannot say whether the cascade was running one
+    # set or two - and that is exactly the difference between "the second pass
+    # repeats the first" and "the second pass is doing something".
+    "nr_pass_params",
     "tray_on_minimise", "tray_on_close",
     "menu_scale", "menu_scale_auto",
     # The four switches that decide WHICH pipeline ran. Without them a report

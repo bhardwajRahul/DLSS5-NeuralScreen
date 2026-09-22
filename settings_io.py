@@ -226,6 +226,47 @@ def clamp_param(key: str, value: float) -> float:
     return min(max(float(value), lo), hi)
 
 
+# The keys a per-pass set carries. `style` is a whole-number 0/1/2 that picks
+# WHICH network runs (see overlay_ui), the rest are the same four strengths the
+# main sliders carry - so the two sets are written and read the same way.
+PER_PASS_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
+
+
+def clean_per_pass(value) -> dict | None:
+    """A per-pass parameter set, or None when there is not a usable one.
+
+    None is the meaningful default and the common case: it means "passes 2..N
+    use the main set", which is exactly what a worker does when nobody tells it
+    anything. So a config that never had this key is not migrated, not
+    defaulted, and not rewritten - it stays a config that says nothing, and the
+    program behaves as it always did.
+
+    Anything half-written is dropped whole rather than repaired: a set built
+    from one usable number and three defaults would silently change the picture
+    in a way nobody asked for, and the failure is invisible in the UI.
+
+    Module level, not nested in validate_config like _fallback: startup reads
+    the same key and would otherwise need a second copy of these rules.
+    """
+    if not isinstance(value, dict):
+        return None
+    try:
+        style = int(value.get("style", 1))
+    except (TypeError, ValueError):
+        return None
+    if style < 0 or style > 2:
+        return None
+    out = {"style": style}
+    for key in PER_PASS_KEYS:
+        if key not in value:
+            return None
+        try:
+            out[key] = clamp_param(key, value[key])
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
 # The four sliders a user preset stores. The same keys as PROFILES carries,
 # minus the NGX plumbing (profile/preset/style/auto_mask/ui_correction stay
 # tied to the built-in profile the preset was saved from).
@@ -604,6 +645,20 @@ def _validate_config(cfg: dict) -> dict:
         _fallback("nr_passes", cfg.get("nr_passes"), 1, "is not 1-4")
         passes = 1
     cfg["nr_passes"] = passes
+    # What passes 2..N should use, if the user gave them their own set. A
+    # missing key means "the main set for every pass", which is what every
+    # build before this one did - so an untouched config is untouched.
+    # Validated here as well as read at startup: a hand-edited config with a
+    # string where a float belongs would otherwise reach the wire, where a
+    # malformed struct is a desync, not a wrong value.
+    if cfg.get("nr_pass_params") is not None:
+        clean = clean_per_pass(cfg["nr_pass_params"])
+        if clean is None:
+            _fallback("nr_pass_params", cfg["nr_pass_params"], None,
+                      "is not a usable parameter set")
+            cfg.pop("nr_pass_params", None)
+        else:
+            cfg["nr_pass_params"] = clean
     # #93: what the taskbar's minimise and close buttons mean. Booleans, and
     # False unless the config really says otherwise - a program that vanishes
     # into the tray because a string was truthy would look like a crash.
@@ -788,6 +843,12 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
         "fps_overlay": str(cfg.get("fps_overlay", "off")),
         "nr_passes": int(cfg.get("nr_passes", 1)),
+        # What passes 2..N use, only when the user actually set it. Absent from
+        # the file means "every pass uses the main set" - writing a default set
+        # here would turn "I never touched this" into a set that pins the
+        # second pass to whatever the sliders happened to be at that moment.
+        **({"nr_pass_params": clean} if (
+            clean := clean_per_pass(cfg.get("nr_pass_params"))) else {}),
         "tray_on_minimise": bool(cfg.get("tray_on_minimise", False)),
         "tray_on_close": bool(cfg.get("tray_on_close", False)),
         "recording_dir": cfg.get("recording_dir") or "",
@@ -1224,6 +1285,15 @@ def menu_payload(st) -> dict:
         # Which of the three looks is live - its own control since the
         # measurement showed it is the strongest lever we have.
         "style": int(st.params.get("style", 1)),
+        # The second set for passes 2..N: `{}` when there is none, which is
+        # what the menu draws as "off". Its ticks are the main sliders' live
+        # values, so the set reads as "this far from the main set" rather than
+        # against a profile the user may have since changed.
+        "nr_pass_params": dict(getattr(st, "nr_pass_params", None) or {}),
+        "pass_param_defaults": {
+            k: float(st.params.get(k, 0.0)) for k in
+            ("intensity", "local_tone", "local_structure", "skin_structure")},
+        "pass_param_ranges": {k: list(v) for k, v in PARAM_RANGE.items()},
         "param_defaults": {
             k: float(v) for k, v in
             (PROFILES.get(st.cfg["profile"])
