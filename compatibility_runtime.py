@@ -28,7 +28,6 @@ from compatibility import (
     StageOutcome,
     StageStatus,
     SyntheticFrame,
-    sha256_file,
 )
 from diagnostics import DiagnosticBundleRequest, create_diagnostic_bundle
 from gpuinfo import probe as gpu_probe

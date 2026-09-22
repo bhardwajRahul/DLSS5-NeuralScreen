@@ -27,6 +27,9 @@ sys.path.insert(0, str(BASE))
 import main as ns_main  # noqa: E402
 
 CPP = BASE / "native" / "dlss5-feed-host64.cpp"
+#: The GPU recorder's audio ring is part of the wire too: the client lays out
+#: the section, the worker reads it (GpuRecAudioRing, AUDIO_RING_FMT).
+HEADERS = (BASE / "native" / "gpu_recorder.h",)
 ASSERT = re.compile(
     r'static_assert\(sizeof\((\w+)\)\s*==\s*(\d+),\s*"[^"]*!=\s*(\w+)"\)')
 
@@ -36,6 +39,9 @@ def main() -> int:
         print(f"SKIP: no {CPP}")
         return 0
     text = CPP.read_text(encoding="utf-8-sig")
+    for header in HEADERS:
+        if header.is_file():
+            text += "\n" + header.read_text(encoding="utf-8-sig")
     pairs = ASSERT.findall(text)
     if not pairs:
         print("FAIL: the worker carries no protocol static_asserts - the two "

@@ -1,18 +1,24 @@
-﻿// dlss5-feed-host64 - the 64-bit half of DLSS5-Feeder for 32-bit games.
+﻿// nvngx.dll - NeuralScreen's worker: the process that runs NVIDIA's neural
+// pass (DLSS NR, feature 18) and everything that has to live next to it.
 //
-// A 32-bit game cannot load NGX or the DLSS 5 add-on (both x64-only). This little
-// process can: it puts ReShade x64 (dxgi.dll) and renodx-dlss5.addon64 next to
-// itself, opens a hidden 1x1 window with a minimal D3D12 swapchain -- so from the
-// DLSS 5 add-on's point of view it IS a D3D12 game -- and runs the NGX DLAA
-// evaluate on frames the game delivers through cross-process shared textures
-// (created game-side on D3D11; see the phase-0 spike) and shared fences.
+// The client (main.py) starts it with --live and talks to it over stdin and
+// stdout in a binary protocol - the *_MAGIC constants below, with every struct
+// pinned against its Python format by tests/test_protocol_sizes.py. The worker
+// captures the desktop or one window (Desktop Duplication, Windows.Graphics.
+// Capture), runs the network, presents the result in its own overlay window,
+// and on request generates frames (DLSS-G), estimates motion (NVOFA),
+// publishes over Spout2 and records on the GPU (gpu_recorder.cpp). It carries
+// the name nvngx.dll because the NR runtime serves only callers whose module
+// path does.
 //
-//   dlss5-feed-host64.exe --test   stand-alone: synthetic pattern, no game needed
-//                                  (phase-1 proof: "feature 18 created" in ReShade.log)
-//   dlss5-feed-host64.exe <pid>    serve the game with that PID over the pipe
+//   nvngx.dll --live   the client's worker; the only mode the app starts
+//   nvngx.dll --video  the same protocol with a bounded frame count
+//   nvngx.dll --test   self-test: synthetic frames, no client
+//   nvngx.dll <pid>    the original DLSS5-Feeder mode: serve a 32-bit game's
+//                      frames over the feed pipe (src/feed_ipc.h)
 //
-// Logs to dlss5-feed-host.log next to the exe; the DLSS 5 add-on's own state
-// appears in the host's ReShade.log.
+// In the protocol modes the log goes to stderr, where the client files it into
+// NeuralScreen.log; otherwise to dlss5-feed-host.log next to the binary.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -35,6 +41,7 @@
 #include <dxgi1_6.h>   // IDXGIOutput6: the captured display's colour space (HDR)
 #include <d3dcompiler.h>
 #include "spout_bridge.h"
+#include "gpu_recorder.h"
 #include <cstdio>
 #include <cstdarg>
 #include <cstdint>
@@ -64,65 +71,9 @@
 // ---------------------------------------------------------------------------
 
 static char g_log_path[MAX_PATH];
-static bool g_show_window = false;   // visible host window = the user's door to the DLSS 5 panel
-static bool g_renodx_lazy = false;   // DLSS 5 add-on is v45+ (per-present rescan, lazy adoption)
 static bool g_video_mode = false;    // stdin/stdout are a binary frame protocol in this mode
 
 static void Log(const char *fmt, ...);
-
-// Detect the DLSS 5 add-on generation next to this exe: v45+ ('EnableHooks' marker in
-// the binary) rescans every present and adopts missed features lazily, so the warm-up
-// re-create is unnecessary -- and its EnableHooks key should be '2' (NGX-only) for this
-// feeder, written into OUR ReShade.ini before ReShade loads and the add-on reads it.
-static void DetectRenodxAddon()
-{
-    char dir[MAX_PATH], path[MAX_PATH], ini[MAX_PATH];
-    GetModuleFileNameA(nullptr, dir, MAX_PATH);
-    if (char *s = strrchr(dir, '\\')) *(s + 1) = '\0';
-    sprintf_s(path, "%srenodx-dlss5.addon64", dir);
-    sprintf_s(ini, "%sReShade.ini", dir);
-
-    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (f == INVALID_HANDLE_VALUE) { Log("[host] renodx-dlss5.addon64 not found next to the host"); return; }
-    const DWORD size = GetFileSize(f, nullptr);
-    DWORD got = 0;
-    char *buf = (size > 0 && size < 8u * 1024 * 1024) ? static_cast<char *>(malloc(size)) : nullptr;
-    if (buf != nullptr && ReadFile(f, buf, size, &got, nullptr) && got == size)
-        for (DWORD i = 0; i + 11 < size; ++i)
-            if (memcmp(buf + i, "EnableHooks", 11) == 0) { g_renodx_lazy = true; break; }
-    free(buf);
-    CloseHandle(f);
-
-    char ver[48] = "?";
-    DWORD dummy = 0;
-    const DWORD vsize = GetFileVersionInfoSizeA(path, &dummy);
-    if (vsize > 0)
-    {
-        void *vdata = malloc(vsize);
-        VS_FIXEDFILEINFO *ffi = nullptr;
-        UINT flen = 0;
-        if (vdata != nullptr && GetFileVersionInfoA(path, 0, vsize, vdata) &&
-            VerQueryValueA(vdata, "\\", reinterpret_cast<void **>(&ffi), &flen) && ffi != nullptr)
-            sprintf_s(ver, "%u.%u.%u.%u", HIWORD(ffi->dwFileVersionMS), LOWORD(ffi->dwFileVersionMS),
-                      HIWORD(ffi->dwFileVersionLS), LOWORD(ffi->dwFileVersionLS));
-        free(vdata);
-    }
-    Log("[host] DLSS 5 add-on: v%s -- %s engine", ver,
-        g_renodx_lazy ? "v45+ (lazy adoption; warm-up skipped)" : "classic (warm-up stays on)");
-
-    if (g_renodx_lazy)
-    {
-        char v[16] = {};
-        GetPrivateProfileStringA("RenoDX.DLSS5", "EnableHooks", "", v, sizeof(v), ini);
-        if (v[0] == '\0')
-        {
-            WritePrivateProfileStringA("RenoDX.DLSS5", "EnableHooks", "2", ini);
-            Log("[host] EnableHooks was unset; wrote EnableHooks=2 into the host's ReShade.ini");
-        }
-        else
-            Log("[host] EnableHooks=%s (user-set; leaving it alone)", v);
-    }
-}
 
 static void Log(const char *fmt, ...)
 {
@@ -186,10 +137,8 @@ static const char *NgxResultName(NVSDK_NGX_Result r)
 struct Host
 {
     HWND                       hwnd;
-    IDXGISwapChain1           *swap;
     ID3D12Device              *dev;
     ID3D12CommandQueue        *queue;      // NGX work
-    ID3D12CommandQueue        *pump_queue; // owns the dummy swapchain
     ID3D12GraphicsCommandList *list;
     static const int           kFrames = 3;
     ID3D12CommandAllocator    *alloc[kFrames];
@@ -731,6 +680,62 @@ static void ProfileGpuEnd(ProfileStage stage, unsigned query_count = 2);
 static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms,
                         const char *where = nullptr);
 
+// ---------------------------------------------------------------------------
+// GPU recording (RECS/RECE, gpu_recorder.cpp). The recorder rides the export
+// copies: wherever the frame the viewer sees is copied for Spout, it is copied
+// for the recorder too, in the same command list - a recorded frame costs one
+// CopyResource and no submission of its own. EndCommands hands the list's
+// fence to the encoder thread, which waits for it before reading the copy.
+// ---------------------------------------------------------------------------
+static int      g_rec_slot = -1;       // a copy recorded into the open list
+static int64_t  g_rec_time = 0;        // its timestamp in the file
+static uint32_t g_rec_frames = 0;      // frames handed over since RECS
+// One recorded copy per worker frame. With HDR and Frame Generation both on,
+// a frame passes two export sites - the HDR compose, then the FG evaluate - and
+// the second, 10-20 ms later, often fell into the next slot: the same picture
+// was encoded twice (224 frames made 448 export calls in a measured run).
+static uint64_t g_frame_serial = 0;    // counts the frames RunVideo processes
+static uint64_t g_rec_frame_done = UINT64_MAX;   // the last one recorded
+
+static void RecordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src)
+{
+    // `src` is in COPY_SOURCE here, as it is at every export site. One copy
+    // per list, and one per frame: the sites of one frame all show the same
+    // picture. The first site whose slot is due takes it.
+    if (g_rec_slot >= 0 || !GpuRecActive() || g_rec_frame_done == g_frame_serial)
+        return;
+    int64_t t = 0;
+    if (!GpuRecFrameDue(&t)) return;
+    const int slot = GpuRecReserve(src);
+    if (slot < 0) return;   // the encoder is behind: counted as dropped
+    GpuRecCopy(list, slot, src);
+    g_rec_slot = slot;
+    g_rec_time = t;
+    g_rec_frame_done = g_frame_serial;
+}
+
+// The list carrying the copy was submitted (fence != 0), or never will be.
+static void RecordSubmitted(UINT64 fence)
+{
+    if (g_rec_slot < 0) return;
+    if (fence != 0)
+    {
+        GpuRecSubmit(g_rec_slot, h.fence, fence, g_rec_time);
+        ++g_rec_frames;
+    }
+    else
+        GpuRecCancel(g_rec_slot);
+    g_rec_slot = -1;
+}
+
+// Spout and the recorder take the same frame, so every export site calls this.
+static void ExportCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *src,
+                       UINT width, UINT height)
+{
+    SpoutBridgeCopy(list, src, width, height);
+    RecordCopy(list, src);
+}
+
 static bool BeginCommands()
 {
     if (g_submission_failed || h.list == nullptr) return false;
@@ -811,6 +816,7 @@ static UINT64 EndCommands()
     if (FAILED(closed))
     {
         Log("[host] command list Close failed 0x%08X; nothing submitted", closed);
+        RecordSubmitted(0);
         g_ps_active = PS_NONE;
         FailGpuWork("command-close", "submission-error", closed);
         AbortCommands();
@@ -827,11 +833,13 @@ static UINT64 EndCommands()
     if (FAILED(sig))
     {
         Log("[host] queue Signal failed 0x%08X", sig);
+        RecordSubmitted(0);
         g_ps_active = PS_NONE;
         FailGpuWork("queue-signal", "submission-error", sig);
         return 0;
     }
     h.alloc_fence[h.frame_slot] = v;
+    RecordSubmitted(v);
     if (g_ps_active != PS_NONE && g_ps_slot_stage[h.frame_slot] != PS_NONE)
         g_ps_slot_fence[h.frame_slot] = v;
     h.frame_slot = (h.frame_slot + 1) % Host::kFrames;
@@ -928,6 +936,7 @@ static void CloseListGuarded()
 
 static void AbortCommands()   // never execute a list NGX crashed in
 {
+    RecordSubmitted(0);   // a recorder copy in the discarded list never runs
     if (h.list == nullptr) return;
     UINT64 retire = 0;
     for (int i = 0; i < Host::kFrames; ++i)
@@ -982,213 +991,16 @@ static void SafeReleaseFeature(NVSDK_NGX_Handle *f)
     __except (EXCEPTION_EXECUTE_HANDLER) { Log("[host] ReleaseFeature raised 0x%08X (ignored)", GetExceptionCode()); }
 }
 
-// ---------------------------------------------------------------------------
-// The disguise: hidden window + minimal D3D12 swapchain so ReShade x64 loads
-// and the DLSS 5 add-on arms itself, exactly as in a real D3D12 game.
-// ---------------------------------------------------------------------------
-
-static LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
-{
-    if (m == WM_CLOSE) { ShowWindow(w, SW_HIDE); return 0; }   // closing only hides; the feed lives on
-    return DefWindowProcW(w, m, wp, lp);
-}
-
-// --- banner: "32-bit DLSS 5 Feeder" rendered once with GDI, copied into every frame ---
-
-static ID3D12Resource             *g_banner;
-static IDXGISwapChain3            *g_swap3;
-static ID3D12CommandAllocator     *g_pump_alloc;
-static ID3D12GraphicsCommandList  *g_pump_list;
-static ID3D12Fence                *g_pump_fence;
-static UINT64                      g_pump_val;
-static HANDLE                      g_pump_ev;
-
-static bool BeginCommands();
-static UINT64 EndCommands();
-static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms,
-                           const char *where, bool fatal);
-
-static void InitBanner()
-{
-    const int W = 960, H = 540;
-
-    // 1. Render the text with GDI into a 32-bit DIB.
-    BITMAPINFO bi = {};
-    bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
-    bi.bmiHeader.biWidth       = W;
-    bi.bmiHeader.biHeight      = -H;   // top-down
-    bi.bmiHeader.biPlanes      = 1;
-    bi.bmiHeader.biBitCount    = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    void *bits = nullptr;
-    HDC dc = CreateCompatibleDC(nullptr);
-    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (dc == nullptr || bmp == nullptr || bits == nullptr) return;
-    HGDIOBJ old_bmp = SelectObject(dc, bmp);
-
-    RECT full = { 0, 0, W, H };
-    HBRUSH bg = CreateSolidBrush(RGB(18, 18, 22));
-    FillRect(dc, &full, bg);
-    DeleteObject(bg);
-    SetBkMode(dc, TRANSPARENT);
-
-    HFONT fnt_big   = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    HFONT fnt_small = CreateFontW(26, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    HGDIOBJ old_font = SelectObject(dc, fnt_big);
-    SetTextColor(dc, RGB(118, 185, 0));
-    RECT r1 = { 0, 150, W, 240 };
-    DrawTextW(dc, L"32-bit DLSS 5 Feeder", -1, &r1, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-    SelectObject(dc, fnt_small);
-    SetTextColor(dc, RGB(200, 200, 205));
-    RECT r2 = { 0, 260, W, 300 };
-    DrawTextW(dc, L"DLSS 5 neural rendering runs here for your 32-bit game.", -1, &r2,
-              DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-    RECT r3 = { 0, 305, W, 345 };
-    DrawTextW(dc, L"Press  Home  in this window to tune it  \x2022  closing only hides the window", -1, &r3,
-              DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-    SelectObject(dc, old_font);
-    DeleteObject(fnt_big);
-    DeleteObject(fnt_small);
-    GdiFlush();
-
-    // 2. Upload it (BGRA -> RGBA) and keep it as a copy source.
-    D3D12_HEAP_PROPERTIES up = {};
-    up.Type = D3D12_HEAP_TYPE_UPLOAD;
-    const UINT pitch = (W * 4 + 255) & ~255u;
-    D3D12_RESOURCE_DESC bd = {};
-    bd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bd.Width            = static_cast<UINT64>(pitch) * H;
-    bd.Height           = 1;
-    bd.DepthOrArraySize = 1;
-    bd.MipLevels        = 1;
-    bd.SampleDesc.Count = 1;
-    bd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    ID3D12Resource *staging = nullptr;
-    D3D12_HEAP_PROPERTIES def = {};
-    def.Type = D3D12_HEAP_TYPE_DEFAULT;
-    D3D12_RESOURCE_DESC td = {};
-    td.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    td.Width            = W;
-    td.Height           = H;
-    td.DepthOrArraySize = 1;
-    td.MipLevels        = 1;
-    td.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    if (FAILED(h.dev->CreateCommittedResource(&up, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                              nullptr, __uuidof(ID3D12Resource), reinterpret_cast<void **>(&staging))) ||
-        FAILED(h.dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST,
-                                              nullptr, __uuidof(ID3D12Resource), reinterpret_cast<void **>(&g_banner))))
-    { SelectObject(dc, old_bmp); DeleteObject(bmp); DeleteDC(dc); return; }
-
-    BYTE *dst = nullptr;
-    staging->Map(0, nullptr, reinterpret_cast<void **>(&dst));
-    const BYTE *srcp = static_cast<const BYTE *>(bits);
-    for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x)
-        {
-            const BYTE *p = srcp + (static_cast<size_t>(y) * W + x) * 4;   // GDI: BGRA
-            BYTE *q = dst + static_cast<size_t>(y) * pitch + static_cast<size_t>(x) * 4;
-            q[0] = p[2]; q[1] = p[1]; q[2] = p[0]; q[3] = 0xFF;
-        }
-    staging->Unmap(0, nullptr);
-    SelectObject(dc, old_bmp);
-    DeleteObject(bmp);
-    DeleteDC(dc);
-
-    if (BeginCommands())
-    {
-        D3D12_TEXTURE_COPY_LOCATION src = {}, dcl = {};
-        src.pResource = staging;
-        src.Type      = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        src.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
-        src.PlacedFootprint.Footprint.Width    = W;
-        src.PlacedFootprint.Footprint.Height   = H;
-        src.PlacedFootprint.Footprint.Depth    = 1;
-        src.PlacedFootprint.Footprint.RowPitch = pitch;
-        dcl.pResource = g_banner;
-        dcl.Type      = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        h.list->CopyTextureRegion(&dcl, 0, 0, 0, &src, nullptr);
-        D3D12_RESOURCE_BARRIER b = {};
-        b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource   = g_banner;
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        b.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        h.list->ResourceBarrier(1, &b);
-        const UINT64 v = EndCommands();
-        // The upload buffer goes back either way: the early return added here
-        // to stop using a banner the GPU never finished copying would
-        // otherwise walk out holding it.
-        if (!WaitFenceValue(h.fence, v, 2000, "banner-upload"))
-        {
-            if (!g_submission_failed) staging->Release();
-            return;
-        }
-    }
-    staging->Release();
-
-    // 3. A tiny allocator/list/fence pair on the pump queue for the per-frame copy.
-    h.dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator),
-                                  reinterpret_cast<void **>(&g_pump_alloc));
-    if (g_pump_alloc != nullptr)
-        h.dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_pump_alloc, nullptr,
-                                 __uuidof(ID3D12GraphicsCommandList), reinterpret_cast<void **>(&g_pump_list));
-    if (g_pump_list != nullptr) g_pump_list->Close();
-    h.dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void **>(&g_pump_fence));
-    g_pump_ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    h.swap->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&g_swap3));
-    Log("[host] banner ready");
-}
-
 typedef HRESULT (WINAPI *PFN_D3D12CreateDevice_)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
 typedef HRESULT (WINAPI *PFN_CreateDXGIFactory1_)(REFIID, void **);
 
-static void PumpPresent()
+// --test and the feed mode have no window of their own any more, but this
+// thread still owns a message queue (COM and the driver can post to it), so it
+// is drained between frames.
+static void PumpMessages()
 {
     MSG msg;
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
-    if (h.swap == nullptr) return;
-
-    // Paint the banner into the backbuffer (ReShade's overlay composites on top at Present).
-    // h.pump_queue is not created in this build (a dead path from InitBanner)
-    // - the check is mandatory, otherwise a latent NULL crash.
-    if (g_banner != nullptr && g_pump_list != nullptr && g_swap3 != nullptr
-        && h.pump_queue != nullptr)
-    {
-        ID3D12Resource *bb = nullptr;
-        if (SUCCEEDED(g_swap3->GetBuffer(g_swap3->GetCurrentBackBufferIndex(), __uuidof(ID3D12Resource),
-                                         reinterpret_cast<void **>(&bb))) && bb != nullptr)
-        {
-            if (SUCCEEDED(g_pump_alloc->Reset()) && SUCCEEDED(g_pump_list->Reset(g_pump_alloc, nullptr)))
-            {
-                D3D12_RESOURCE_BARRIER b = {};
-                b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                b.Transition.pResource   = bb;
-                b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-                b.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
-                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                g_pump_list->ResourceBarrier(1, &b);
-                g_pump_list->CopyResource(bb, g_banner);
-                b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-                b.Transition.StateAfter  = D3D12_RESOURCE_STATE_PRESENT;
-                g_pump_list->ResourceBarrier(1, &b);
-                g_pump_list->Close();
-                ID3D12CommandList *lists[] = { g_pump_list };
-                h.pump_queue->ExecuteCommandLists(1, lists);
-                h.pump_queue->Signal(g_pump_fence, ++g_pump_val);
-                if (g_pump_fence->GetCompletedValue() < g_pump_val && g_pump_ev != nullptr)
-                {
-                    g_pump_fence->SetEventOnCompletion(g_pump_val, g_pump_ev);
-                    WaitForSingleObject(g_pump_ev, 100);
-                }
-            }
-            bb->Release();
-        }
-    }
-    h.swap->Present(0, 0);
 }
 
 // NS_GPU: which DXGI adapter the worker runs on, by the index EnumAdapters1
@@ -1701,6 +1513,28 @@ static void ReleasePassFeatures()
     }
 }
 
+// Why a cascade runs fewer passes than were asked for, for the build line.
+// The passes ping-pong between two work-resolution buffers, and those exist
+// only in the small-network mode: Boost on, and a work size below the frame.
+// Boost comes first - with it off the panel hides both the pass count and the
+// resolution slider, so "lower the processing resolution" pointed at a
+// control that is not on screen.
+static const char *CascadeShortfall(bool boost, bool upscale, bool nr_small,
+                                    unsigned asked, unsigned effective)
+{
+    if (effective >= asked) return "";
+    if (!boost)
+        return " - Boost is off: the network runs on the whole frame, with no "
+               "work-resolution buffers to cascade through; turn Boost on to "
+               "engage it";
+    if (!upscale)
+        return " - the network runs at 1:1, which has no work-resolution "
+               "scratch to cascade through; lower the processing resolution "
+               "to engage it";
+    return nr_small ? " - the second work buffer was not created"
+                    : " - the work-resolution buffers could not be created";
+}
+
 // Reconcile executable passes, preserving the history of those still used.
 // A create refusal shortens the cascade; a failed retirement returns zero.
 static unsigned EnsurePassFeatures(UINT w, UINT h_, int flags, UINT full_w,
@@ -1792,8 +1626,10 @@ static int RunTest()
     ID3D12Resource *mv     = MakeTex(W, H, DXGI_FORMAT_R16G16_FLOAT, false);
     if (!color || !output || !depth || !mv) { Log("[host] test texture creation failed"); return 1; }
 
-    // Give the DLSS 5 add-on its hook-arming time, with the swapchain pumping.
-    for (int i = 0; i < 120; ++i) { PumpPresent(); Sleep(8); }
+    // A second of message pumping before the first create: the DLSS 5 add-on of
+    // the feeder this began as needed it to arm its hooks. Nothing arms hooks
+    // now; the self-test keeps its timing.
+    for (int i = 0; i < 120; ++i) { PumpMessages(); Sleep(8); }
 
     int flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure |
                 NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
@@ -1803,7 +1639,7 @@ static int RunTest()
     int good = 0;
     for (int i = 0; i < 300; ++i)
     {
-        PumpPresent();
+        PumpMessages();
         if (Evaluate(color, output, depth, mv, W, H, i == 0 ? 1 : 0, 1.0f, 1.0f)) ++good;
         else break;
         if (i == 180)   // the warm-up re-create, same medicine as in-game
@@ -1816,7 +1652,6 @@ static int RunTest()
         }
     }
     Log("[host] --test finished: %d/300 evaluates succeeded", good);
-    Log("[host] check the host's ReShade.log for 'feature 18 created' / 'evaluation succeeded'");
     return good >= 250 ? 0 : 1;
 }
 
@@ -1858,6 +1693,13 @@ static constexpr uint32_t OUTS_MAGIC       = 0x5354554Fu; // "OUTS" -- client ->
 static constexpr uint32_t OUTS_ACK_MAGIC   = 0x324B414Fu; // "OAK2" -- worker -> client reply to OUTS
 // VideoResultHeader.bytes: the pixels are in the OUTS section, not in the pipe.
 static constexpr uint32_t OUT_BYTES_IN_SHM = 0xFFFFFFFFu;
+// RECS/RECE: record what the viewer sees, on the GPU (gpu_recorder.h). The
+// frames never leave the card; the client supplies only the sound, through a
+// PCM ring it names in RECS. REAK also comes unasked when the encoder fails.
+static constexpr uint32_t REC_START_MAGIC     = 0x53434552u; // "RECS" -- client -> worker: record into this file
+static constexpr uint32_t REC_START_ACK_MAGIC = 0x4B415352u; // "RSAK" -- worker -> client: recording (or why not)
+static constexpr uint32_t REC_STOP_MAGIC      = 0x45434552u; // "RECE" -- client -> worker: stop and finalize
+static constexpr uint32_t REC_DONE_MAGIC      = 0x4B414552u; // "REAK" -- worker -> client: the file is closed
 // WNDO flags
 static constexpr uint32_t WINDOW_FLAG_CAPTURABLE = 0x1u; // debug: do NOT hide the window from screen capture
 static constexpr uint32_t WINDOW_FLAG_DISABLE    = 0x2u; // tear the window down, go back to sending pixels
@@ -1888,6 +1730,14 @@ static constexpr uint32_t FRAME_FLAG_SPLIT = 0x20u;
 // texture. An empty OUT1 is the "nothing changed" answer; WANT_PIXELS wins
 // over this bit (a screenshot or a recording wants the picture either way).
 static constexpr uint32_t FRAME_FLAG_SKIP_STATIC = 0x40u;
+// bit 13: answer as soon as the frame is on the GPU queue, not once it has
+// been presented. The client's own per-frame work - the HUD, the commands, the
+// next capture request - then runs while the GPU finishes this frame instead
+// of after it, and the frame rate stops paying for Python's share of the loop.
+// Honoured only where the tail of the frame is deferred already (a processed
+// frame, present mode, worker capture, no pixels, no wipe, no HDR, no Frame
+// Generation): everywhere else the answer still follows the present.
+static constexpr uint32_t FRAME_FLAG_EARLY_REPLY = 0x2000u;
 
 static UINT SplitXFromFlags(uint32_t reserved, UINT width)
 {
@@ -2087,6 +1937,33 @@ struct VideoGrayAck
     uint32_t magic, ok, reserved0, reserved1;
     int64_t pts;
 };
+struct VideoRecCmd
+{
+    uint32_t magic, fps, codec, bitrate;   // codec GPUREC_CODEC_*; bitrate 0 = auto
+    int64_t pts;
+    int64_t start_qpc;                     // when the audio ring's frame 0 was
+    uint32_t reserved0, reserved1;
+    char audio[64];                        // the PCM ring's mapping; "" = no sound
+    char path[1024];                       // UTF-8: the file to write
+};
+struct VideoRecAck
+{
+    uint32_t magic, ok, codec, hresult;
+    int64_t pts;
+    int64_t origin_qpc;                    // the file's time 0
+    uint32_t width, height, fps, audio;    // as recorded
+};
+struct VideoRecStop
+{
+    uint32_t magic, reserved0, reserved1, reserved2;
+    int64_t pts;
+};
+struct VideoRecDone
+{
+    uint32_t magic, ok, written, dropped;
+    int64_t pts;
+    uint32_t hresult, duration_ms, audio_frames, codec;
+};
 #pragma pack(pop)
 
 // The wire protocol, pinned. Every size below is what main.py's struct format
@@ -2114,6 +1991,13 @@ static_assert(sizeof(VideoGrayCmd) == 88, "VideoGrayCmd != GRAY_FMT");
 static_assert(sizeof(VideoGrayAck) == 24, "VideoGrayAck != GRAY_ACK_FMT");
 static_assert(sizeof(VideoOutCmd) == 88, "VideoOutCmd != OUTS_FMT");
 static_assert(sizeof(VideoOutAck) == 24, "VideoOutAck != OUTS_ACK_FMT");
+static_assert(sizeof(VideoRecCmd) == 1128, "VideoRecCmd != REC_START_FMT");
+static_assert(sizeof(VideoRecAck) == 48, "VideoRecAck != REC_START_ACK_FMT");
+static_assert(sizeof(VideoRecStop) == 24, "VideoRecStop != REC_STOP_FMT");
+static_assert(sizeof(VideoRecDone) == 40, "VideoRecDone != REC_DONE_FMT");
+// RECS lands here rather than in another out-parameter of ReadVideoMessage,
+// like WGCW's command: the path alone is a kilobyte.
+static VideoRecCmd g_rec_cmd = {};
 // The offset of pts is what a mis-packed struct gets wrong first: the four
 // leading uint32s are followed by an 8-byte field that natural alignment
 // would push to 24.
@@ -2156,6 +2040,7 @@ struct VideoState
     // the present, the wipe, the recording, the bypass - keeps seeing full-res
     // textures and needs no changes at all.
     bool nr_small = false;
+    bool nr_small_asked = false;        // Boost, as asked; nr_small is what ran
     UINT nr_w = 0, nr_h = 0;
     ID3D12Resource *nr_in = nullptr;    // NON_PIXEL_SHADER_RESOURCE at rest
     ID3D12Resource *nr_out = nullptr;   // UNORDERED_ACCESS at rest
@@ -2871,6 +2756,19 @@ static bool RebuildPresentIfStale()
     return true;
 }
 
+// FRAME_FLAG_EARLY_REPLY: the OUT1 this frame owes the client, which
+// PresentFrame writes the moment the present list is on the queue. The present
+// itself (the fence wait, Present) then overlaps the client's next iteration;
+// nothing is reordered - the worker still reads the next message only after
+// this frame is on screen.
+static struct EarlyReply
+{
+    bool armed = false, sent = false, failed = false;
+    uint32_t index = 0;
+    int64_t pts = 0;
+} g_early_reply;
+static void SendEarlyReply();   // defined next to WriteExact, below
+
 static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
 {
     if (!RebuildPresentIfStale()) return false;
@@ -2915,8 +2813,8 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
         };
         h.list->ResourceBarrier(_countof(pre), pre);
         h.list->CopyResource(bb, v.output);
-        SpoutBridgeCopy(h.list, v.output, v.upscale ? v.full_w : v.w,
-                        v.upscale ? v.full_h : v.hgt);
+        ExportCopy(h.list, v.output, v.upscale ? v.full_w : v.w,
+                   v.upscale ? v.full_h : v.hgt);
         D3D12_RESOURCE_BARRIER post[] = {
             Transition(bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
             Transition(v.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
@@ -2925,6 +2823,7 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
         ProfileGpuEnd(PS_PRESENT);
         const UINT64 fv = EndCommands();
         if (submitted) *submitted = fv;
+        if (fv != 0) SendEarlyReply();
         if (ProfileWait(PS_PRESENT, fv, submitted ? 60000 : 2000))
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
@@ -2995,8 +2894,8 @@ static bool PresentBypass(VideoState &v)
         };
         h.list->ResourceBarrier(_countof(pre), pre);
         h.list->CopyResource(bb, v.color.tex);
-        SpoutBridgeCopy(h.list, v.color.tex, v.upscale ? v.full_w : v.w,
-                        v.upscale ? v.full_h : v.hgt);
+        ExportCopy(h.list, v.color.tex, v.upscale ? v.full_w : v.w,
+                   v.upscale ? v.full_h : v.hgt);
         D3D12_RESOURCE_BARRIER post[] = {
             Transition(bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
             Transition(v.color.tex, D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -3091,6 +2990,19 @@ static void OwnTheProtocolPipe()
     // through g_wire).
     HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
     if (err != nullptr) SetStdHandle(STD_OUTPUT_HANDLE, err);
+}
+
+static bool WriteExact(FILE *f, const void *p, size_t n);
+
+static void SendEarlyReply()
+{
+    if (!g_early_reply.armed || g_early_reply.sent) return;
+    g_early_reply.sent = true;
+    // The NGX result is known: the evaluate call returned before the present
+    // list was recorded. Only the GPU's execution of it is still running.
+    const VideoResultHeader out = { OUT_MAGIC, g_early_reply.index, OUT_STATUS_OK,
+                                    0u, g_last_eval_result, g_early_reply.pts };
+    if (!WriteExact(g_wire, &out, sizeof(out))) g_early_reply.failed = true;
 }
 
 static bool WriteExact(FILE *f, const void *p, size_t n)
@@ -3207,6 +3119,7 @@ static bool CreateVideoResources(VideoState &v, UINT w, UINT hgt, UINT full_w = 
     // work == full there is nothing to scale and the two extra passes would
     // be pure loss.
     const bool asked = (want_small < 0) ? NrSmallRequested() : (want_small != 0);
+    v.nr_small_asked = asked;
     v.nr_small = v.upscale && asked;
     v.nr_w = v.nr_small ? w : 0;
     v.nr_h = v.nr_small ? hgt : 0;
@@ -5635,24 +5548,6 @@ static void ApplyNrEvalParams(NVSDK_NGX_Parameter *p, ID3D12Resource *color,
     p->Set("DLSS.Exposure.Scale", g_pw_exposure);
 }
 
-// --test drives the worker with no client, so no header ever fills
-// g_video_options. The defaults a live session sends for the shipped Natural
-// profile go in instead - the read-back check above needs real values, and a
-// zeroed profile would make the synthetic run report a contract failure that
-// only exists in the self-test.
-static void SetTestVideoParams()
-{
-    g_video_options = {};
-    g_video_options.warmup = 8;
-    g_video_options.intensity = 1.00f;
-    g_video_options.local_tone = 0.50f;
-    g_video_options.local_structure = 1.00f;
-    g_video_options.skin_structure = -1.0f;
-    g_video_options.style = 1;
-    g_video_options.auto_mask = 1;
-    g_video_options.ui_correction = 0;
-}
-
 // One pass of the network, on the command list the caller has already opened.
 //
 // Lifted out of EvaluateVideo so the cascade can call it in a loop. A `for`
@@ -5999,6 +5894,9 @@ static bool DownloadVideoFrame(VideoState &v, std::vector<BYTE> &packed,
     d.pResource = v.readback; d.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     d.PlacedFootprint = v.out_fp;
     h.list->CopyTextureRegion(&d, 0, 0, 0, &s, nullptr);
+    // Without a present window this is the only copy of the frame the viewer
+    // sees; with one, the present already took this slot and it is a no-op.
+    RecordCopy(h.list, src);
     D3D12_RESOURCE_BARRIER b = Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE,
                                            src_after);
     h.list->ResourceBarrier(1, &b);
@@ -6033,21 +5931,42 @@ static bool DownloadVideoFrame(VideoState &v, std::vector<BYTE> &packed,
 
 #include "frame_generation.inl"
 
-static bool ReShadeHasFeature18()
+// The frame on screen, recorded once more when the recording stops. A still
+// screen sends no frames (skip-static), so without this the video track would
+// end at the last change while the sound runs on to the stop - the file's
+// last seconds would be sound over nothing in some players.
+static void RecordClosingFrame(VideoState &v)
 {
-    char path[MAX_PATH] = {};
-    GetModuleFileNameA(nullptr, path, MAX_PATH);
-    if (char *s = strrchr(path, '\\')) strcpy_s(s + 1, MAX_PATH - (s + 1 - path), "ReShade.log");
-    HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return false;
-    const DWORD n = GetFileSize(file, nullptr);
-    std::vector<char> data(n > 0 ? static_cast<size_t>(n) + 1 : 1, 0);
-    DWORD got = 0;
-    if (n > 0) ReadFile(file, data.data(), n, &got, nullptr);
-    CloseHandle(file);
-    return strstr(data.data(), "feature 18 created") != nullptr &&
-           strstr(data.data(), "inline feature 18 evaluation succeeded") != nullptr;
+    if (!GpuRecActive() || g_rec_frames == 0 || g_submission_failed) return;
+    ID3D12Resource *src = g_last_out_bypass ? v.color.tex : v.output;
+    if (src == nullptr) return;
+    const D3D12_RESOURCE_STATES rest = g_last_out_bypass
+        ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+        : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    if (!BeginCommands()) return;
+    D3D12_RESOURCE_BARRIER pre = Transition(src, rest, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    h.list->ResourceBarrier(1, &pre);
+    ++g_frame_serial;          // the same picture, recorded again at the stop
+    RecordCopy(h.list, src);   // nothing when the last frame is still current
+    D3D12_RESOURCE_BARRIER post = Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE, rest);
+    h.list->ResourceBarrier(1, &post);
+    EndCommands();
+}
+
+// Stop and report. `pts` is the RECE's, or 0 when the worker stops by itself.
+static bool FinishRecording(VideoState &v, int64_t pts, bool closing_frame)
+{
+    const bool was = GpuRecActive();
+    if (was && closing_frame) RecordClosingFrame(v);
+    const GpuRecStats st = GpuRecStop();
+    g_rec_frames = 0;
+    const bool ok = was && st.hr == S_OK && st.written > 0;
+    const VideoRecDone done = {
+        REC_DONE_MAGIC, ok ? 1u : 0u, st.written, st.dropped, pts,
+        static_cast<uint32_t>(was ? st.hr : S_FALSE), st.duration_ms,
+        st.audio_frames, st.codec
+    };
+    return WriteExact(g_wire, &done, sizeof(done));
 }
 
 // Reads the next 24-byte message header. Returns:
@@ -6059,6 +5978,8 @@ static bool ReShadeHasFeature18()
 //   5 = motion-size command read into mc,
 //   6 = desktop-capture command read into dc,
 //   7 = gray-downsample command read into gc (88 bytes: 24 hdr + 64 name),
+//  11 = recording start read into g_rec_cmd (1128 bytes),
+//  12 = recording stop (24 bytes, all in fh),
 //   0 = EOF/error.
 static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYTE> &color,
                             std::vector<BYTE> &mv, VideoResizeCmd &rc, VideoShmCmd &sc,
@@ -6175,6 +6096,14 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
         if (!ReadExact(stdin, p + sizeof(fh), sizeof(oc) - sizeof(fh))) return 0;
         return 8;
     }
+    if (fh.magic == REC_START_MAGIC)
+    {
+        BYTE *p = reinterpret_cast<BYTE *>(&g_rec_cmd);
+        memcpy(p, &fh, sizeof(fh));
+        if (!ReadExact(stdin, p + sizeof(fh), sizeof(g_rec_cmd) - sizeof(fh))) return 0;
+        return 11;
+    }
+    if (fh.magic == REC_STOP_MAGIC) return 12;
     if (fh.magic == RESIZE_MAGIC)
     {
         // The first 24 bytes of the 64-byte command already sit in fh; read the rest.
@@ -6508,7 +6437,7 @@ static int RunVideo()
         const BYTE *mv_ptr = nullptr;
         const int msg = ReadVideoMessage(v, fh, color, mv, rc, sc, wc, mc, dc, gc,
                                          oc, &color_ptr, &mv_ptr);
-        if (msg != 1 && msg != 10) prepared = false;
+        if (msg != 1 && msg != 10 && msg != 11 && msg != 12) prepared = false;
         if (msg == 0)
         {
             if (live)
@@ -6520,6 +6449,10 @@ static int RunVideo()
                 // NGX) are freed only when the process dies, and a quick
                 // restart of a new worker conflicts with the leftovers of the
                 // old one (exit 127 / a hang).
+                //
+                // A recording the client never stopped is closed first: the
+                // file is finished properly and nobody is left to be told.
+                if (GpuRecActive()) GpuRecStop();
                 CleanupVideoNgx();
                 CloseSharedInput();
                 ClosePresent();
@@ -6569,7 +6502,14 @@ static int RunVideo()
             // built them again: 113-148 ms of frozen picture per step, and
             // it was this release/create pair that leaked 420 MB a time
             // until 1.7.1 fixed which library does the releasing (#48).
-            const int want_small_now = (rc.flags & RESIZE_FLAG_NR_SMALL) != 0 ? 1 : 0;
+            //
+            // The small-network mode is compared as a rebuild would set it,
+            // `upscale && asked`, not as the flag: at 1:1 Boost cannot engage,
+            // so the flag never matched there and every slider step at native
+            // with Boost on rebuilt the feature - 15 such rebuilds in one
+            // user's log, 172-257 ms of frozen picture each.
+            const bool asked_small = (rc.flags & RESIZE_FLAG_NR_SMALL) != 0;
+            const int want_small_now = (asked_small && rup) ? 1 : 0;
             const bool same_size = rc.width == v.w && rc.height == v.hgt &&
                                    want_small_now == (v.nr_small ? 1 : 0) &&
                                    (rup ? (v.upscale && rc.full_w == v.full_w &&
@@ -6585,6 +6525,7 @@ static int RunVideo()
                 g_nr_direct = (rc.flags & RESIZE_FLAG_NR_DIRECT) != 0;
                 // Keep the saved count, but allocate only passes EvaluateVideo
                 // can execute. Surplus features retire instead of occupying VRAM.
+                v.nr_small_asked = asked_small;   // Boost may flip here at 1:1
                 const unsigned want = NrPassesFromFlags(rc.flags);
                 const unsigned effective = (v.nr_small && v.nr_alt != nullptr) ? want : 1u;
                 // Said on EVERY parameter apply, not only when it changes:
@@ -6601,8 +6542,10 @@ static int RunVideo()
                         (v.nr_small || !rup) ? 0 : rc.full_w,
                         (v.nr_small || !rup) ? 0 : rc.full_h, effective);
                     if (v.passes_live == 0) return 6;
-                    Log("[video] NR cascade built: asked=%u effective=%u allocated=%u",
-                        v.passes, effective, v.passes_live);
+                    Log("[video] NR cascade built: asked=%u effective=%u allocated=%u%s",
+                        v.passes, effective, v.passes_live,
+                        CascadeShortfall(v.nr_small_asked, v.upscale,
+                                         v.nr_small, v.passes, effective));
                 }
                 v.residual = v.nr_small && !g_nr_direct;
                 v.residual_strength = v.residual ? ResidualStrengthRequested() : 1.0f;
@@ -6689,8 +6632,10 @@ static int RunVideo()
                                      effective)
                 : 1u;
             if (v.passes_live == 0) return 6;
-            Log("[video] NR cascade built: asked=%u effective=%u allocated=%u",
-                v.passes, effective, h.feature ? v.passes_live : 0u);
+            Log("[video] NR cascade built: asked=%u effective=%u allocated=%u%s",
+                v.passes, effective, h.feature ? v.passes_live : 0u,
+                CascadeShortfall(v.nr_small_asked, v.upscale,
+                                 v.nr_small, v.passes, effective));
             warmup_done = (h.feature == nullptr);   // only warm a real NR feature
             VideoResizeAck ack = { RESIZE_ACK_MAGIC, 1u, static_cast<uint32_t>(rr), 0u, fh.pts };
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
@@ -6872,6 +6817,68 @@ static int RunVideo()
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
+        if (msg == 11)
+        {
+            // RECS: record what the viewer sees, on the GPU, into this file.
+            // Blocks for the encoder's setup (0.1-0.5 s): the frame rate
+            // hiccups once at the start of a recording, never during it.
+            VideoRecAck ack = { REC_START_ACK_MAGIC, 0u, 0u,
+                                static_cast<uint32_t>(E_INVALIDARG), g_rec_cmd.pts,
+                                0, 0u, 0u, 0u, 0u };
+            g_rec_cmd.path[sizeof(g_rec_cmd.path) - 1] = '\0';
+            g_rec_cmd.audio[sizeof(g_rec_cmd.audio) - 1] = '\0';
+            static wchar_t wpath[1024];
+            if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, g_rec_cmd.path, -1,
+                                    wpath, _countof(wpath)) > 0)
+            {
+                GpuRecParams p = {};
+                p.path = wpath;
+                p.width = v.upscale ? v.full_w : v.w;
+                p.height = v.upscale ? v.full_h : v.hgt;
+                p.fps = g_rec_cmd.fps;
+                p.codec = g_rec_cmd.codec;
+                p.bitrate = g_rec_cmd.bitrate;
+                p.start_qpc = g_rec_cmd.start_qpc;
+                p.audio_name = g_rec_cmd.audio[0] != '\0' ? g_rec_cmd.audio : nullptr;
+                GpuRecStarted started = {};
+                g_rec_slot = -1;
+                g_rec_frames = 0;
+                g_rec_frame_done = UINT64_MAX;
+                const bool ok = GpuRecStart(h.dev, p, &started);
+                ack.ok = ok ? 1u : 0u;
+                ack.codec = started.codec;
+                ack.hresult = static_cast<uint32_t>(started.hr);
+                ack.origin_qpc = started.origin_qpc;
+                ack.width = started.width;
+                ack.height = started.height;
+                ack.fps = started.fps;
+                ack.audio = started.audio ? 1u : 0u;
+                // The first frame goes into the file at once, even on a
+                // screen that is not changing.
+                if (ok) g_force_next_frame = true;
+            }
+            else
+                Log("[grec] RECS: the file name is not valid UTF-8");
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
+            continue;
+        }
+        if (msg == 12)
+        {
+            // RECE: stop, finalize the file, report what went into it.
+            if (!FinishRecording(v, fh.pts, true)) return 10;
+            continue;
+        }
+        // A recording whose encoder failed (a full disk, a lost encoder) is
+        // closed here and reported at once with an unasked REAK, so the
+        // client tells the user now rather than when they press stop. Here,
+        // at the top of every frame, and not after the frame: a still
+        // screen skips the rest of the loop for as long as it stays still.
+        if (GpuRecActive() && GpuRecFailed())
+        {
+            Log("[grec] the recording stopped itself after an encoder error");
+            if (!FinishRecording(v, 0, false)) return 10;
+        }
+        ++g_frame_serial;
         ConfigureFgFrame(fh.reserved);
         const double t_frame = PhaseNow();
         const bool phase_on = PhaseEnabled();
@@ -7155,8 +7162,21 @@ static int RunVideo()
             // NGX evaluate is skipped but the pipeline is alive (window, HUD).
             FollowCapturedWindow();
             ReassertPresentTopmost();
+            g_early_reply = {};
+            if (defer_tail && !bypass && (fh.reserved & FRAME_FLAG_EARLY_REPLY) != 0)
+            {
+                g_early_reply.armed = true;
+                g_early_reply.index = fh.index;
+                g_early_reply.pts = fh.pts;
+            }
             const bool pres_ok = bypass ? PresentBypass(v) : PresentFrame(v, defer_tail ? &present_done : nullptr);
+            // Whether PresentFrame answered already (FRAME_FLAG_EARLY_REPLY):
+            // Frame Generation and HDR present elsewhere and never do.
+            const bool replied = g_early_reply.sent;
+            const bool reply_failed = g_early_reply.failed;
+            g_early_reply = {};
             PhaseAdd(PH_PRESENT, t_pres);
+            if (reply_failed) return 10;
             if (!pres_ok) return 9;
             if (defer_tail)
             {
@@ -7184,7 +7204,7 @@ static int RunVideo()
                 if (!dl_ok) return 9;
                 if (!DeliverPixels(output, fh.index, fh.pts)) return 10;
             }
-            else
+            else if (!replied)
             {
                 VideoResultHeader out = { OUT_MAGIC, fh.index, OUT_STATUS_OK, 0u, g_last_eval_result, fh.pts };
                 if (!WriteExact(g_wire, &out, sizeof(out))) return 10;
@@ -7217,6 +7237,7 @@ static int RunVideo()
     }
     FlushProfileFrames();
     Log("[pure] complete: %u frames delivered, %u direct evaluations", frame, g_eval_count);
+    if (GpuRecActive()) GpuRecStop();
     CleanupVideoNgx();
     CloseOut();
     CloseSharedInput();
@@ -7319,7 +7340,7 @@ static int Serve(DWORD game_pid)
     // not race that (a 15 ms miss latched STANDBY in Blacklist), so hold it briefly.
     UINT64 hold_until = GetTickCount64() + 800;
     UINT64 evaluated  = 0;
-    bool   warm_done  = g_renodx_lazy;   // v45+ adopts missed creates on its own
+    bool   warm_done  = false;
     int    build_fails = 0;
 
     for (;;)
@@ -7329,10 +7350,10 @@ static int Serve(DWORD game_pid)
         // first and decide -- FeedFrameMsg and FeedBuild share no prefix, so the
         // client precedes every message with a 1-byte tag instead.
         //
-        // A plain blocking ReadFile here starves the message pump (and Present)
-        // whenever the game stops feeding frames -- paused, loading, a menu -- and
-        // Windows shows the host window as "Not Responding". Poll instead, so the
-        // window (and its ReShade overlay) stays alive and clickable at all times.
+        // A plain blocking ReadFile here starves the message pump whenever the
+        // game stops feeding frames -- paused, loading, a menu. Poll instead, so
+        // the thread's queue keeps draining. (It once kept a visible host window
+        // and its ReShade overlay responsive; both are gone.)
         BYTE tag = 0;
         bool tag_read = false;
         for (;;)
@@ -7340,7 +7361,7 @@ static int Serve(DWORD game_pid)
             DWORD avail = 0;
             if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &avail, nullptr)) break;   // pipe broken
             if (avail > 0) { tag_read = ReadFull(pipe, &tag, 1); break; }
-            PumpPresent();
+            PumpMessages();
             Sleep(8);
         }
         if (!tag_read) { Log("[host] pipe closed by the game"); break; }
@@ -7408,7 +7429,7 @@ static int Serve(DWORD game_pid)
             }
 
             evaluated = 0;
-            warm_done = transport_only || g_renodx_lazy;   // no warm-up without NGX / with v45+
+            warm_done = transport_only;   // no warm-up without NGX
 
             FeedBuildAck back = {};
             back.ok         = ok ? 1 : 0;
@@ -7474,7 +7495,7 @@ static int Serve(DWORD game_pid)
 
             if (fm.n <= 3 || (fm.n % 1800) == 0)
                 Log("[host] frame %llu evaluated", (unsigned long long)fm.n);
-            PumpPresent();
+            PumpMessages();
         }
         else
         {
@@ -7517,28 +7538,36 @@ int main(int argc, char **argv)
 
     Log("dlss5-feed-host64 (built %s %s)", __DATE__, __TIME__);
 
-    bool  test = false, hide = false, video = false;
+    bool  test = false, video = false;
     DWORD pid = 0;
     for (int i = 1; i < argc; ++i)
     {
         if      (strcmp(argv[i], "--test") == 0) test = true;
         else if (strcmp(argv[i], "--video") == 0) video = true;
         else if (strcmp(argv[i], "--live") == 0) { video = true; g_live_force = true; }
-        else if (strcmp(argv[i], "--hide") == 0) hide = true;
+        else if (strcmp(argv[i], "--hide") == 0) {}   // accepted: it hid a host window that is gone
         else pid = static_cast<DWORD>(strtoul(argv[i], nullptr, 10));
     }
     if (!test && !video && pid == 0)
     {
-        Log("usage: dlss5-worker --test | --video | --live | <game pid> [--hide]");
+        Log("usage: nvngx.dll --test | --video | --live | <game pid>");
         return 1;
     }
-    g_show_window = !test && !video && !hide; // video/probe hosts remain hidden
 
     if (!InitDisguise()) return 1;
     if (!InitNgx()) { Log("[host] NGX unavailable"); return 1; }
     SpoutBridgeInit(h.dev);
 
     if (test) return RunTest();
-    if (video) return RunVideo();
+    if (video)
+    {
+        const int code = RunVideo();
+        // A recording still open here means RunVideo left on an error. Close
+        // the file while the device answers; after a GPU failure the copies
+        // can never be proven complete, and the fragments already on disk
+        // (fragmented MP4) are what the recording keeps.
+        if (GpuRecActive() && !g_submission_failed) GpuRecStop();
+        return code;
+    }
     return Serve(pid);
 }

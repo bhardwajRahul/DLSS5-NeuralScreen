@@ -168,7 +168,7 @@ static bool PresentHdr(VideoState &v, bool bypass)
     auto rest = bypass ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     auto export_pre = Transition(export_src, rest, D3D12_RESOURCE_STATE_COPY_SOURCE);
     h.list->ResourceBarrier(1, &export_pre);
-    SpoutBridgeCopy(h.list, export_src, w, height);
+    ExportCopy(h.list, export_src, w, height);
     auto export_post = Transition(export_src, D3D12_RESOURCE_STATE_COPY_SOURCE, rest);
     h.list->ResourceBarrier(1, &export_post);
     const auto fence = EndCommands();

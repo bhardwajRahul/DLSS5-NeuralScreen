@@ -97,7 +97,10 @@ int main() {
         (work / "build.bat").write_text(
             f'@echo off\ncall "{ROOT / "native/vcvars.bat"}" || exit /b 1\n'
             'cl /nologo /EHsc /std:c++17 check.cpp /Fe:check.exe\n', encoding="utf-8")
-        build = subprocess.run([os.environ["COMSPEC"], "/d", "/c", "build.bat"],
+        # .\build.bat, not a bare name: with NoDefaultCurrentDirectoryInExePath
+        # set (a hardening some shells and CI images apply), cmd does not look
+        # in the current directory and answers "not recognized".
+        build = subprocess.run([os.environ["COMSPEC"], "/d", "/c", r".\build.bat"],
                                cwd=work, capture_output=True, text=True, timeout=120)
         assert build.returncode == 0, build.stdout + build.stderr
         checked = subprocess.run([str(work / "check.exe")], cwd=work,

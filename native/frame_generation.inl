@@ -622,7 +622,7 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
                                     : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     auto spout_pre = Transition(export_src, export_rest, D3D12_RESOURCE_STATE_COPY_SOURCE);
     h.list->ResourceBarrier(1, &spout_pre);
-    SpoutBridgeCopy(h.list, export_src, g_fg.w, g_fg.height);
+    ExportCopy(h.list, export_src, g_fg.w, g_fg.height);
     auto spout_post = Transition(export_src, D3D12_RESOURCE_STATE_COPY_SOURCE, export_rest);
     h.list->ResourceBarrier(1, &spout_post);
     const UINT64 fg_fence = EndCommands();

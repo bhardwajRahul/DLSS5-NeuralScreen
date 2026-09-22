@@ -22,6 +22,12 @@ not rebuild, and that the new parameters really reach the network - a
 change that arrived and did nothing would look exactly the same from
 the outside.
 
+With Boost on at 1:1 - the resolution slider at native, one pass - it
+still rebuilt, 172-257 ms a step (15 times in one user's log): the check
+compared the Boost flag with the small-network mode, and that mode cannot
+engage at 1:1, so the two never matched. The flag is compared as a
+rebuild would apply it now, and stage 4 pins it.
+
 Run:  runtime\\python.exe tests\\test_param_apply.py
 """
 import struct
@@ -41,6 +47,7 @@ from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, OUT_FMT, OUT_MAGIC, PROFILES, RACK_FMT,
                   RESIZE_ACK_MAGIC, RESIZE_FMT, RESIZE_MAGIC, VIDEO_MAGIC,
                   WORKER_EXE)
+from protocol import RESIZE_FLAG_NR_PASSES_SHIFT, RESIZE_FLAG_NR_SMALL  # noqa: E402
 from worker_reply import read_reply  # noqa: E402
 
 W, H = 1280, 720
@@ -84,10 +91,10 @@ def send_frame(worker, index: int, frame: np.ndarray, motion: np.ndarray):
                          dtype=np.uint8).reshape(H, W, 4).copy()
 
 
-def send_params(worker, params, w=W, h=H):
+def send_params(worker, params, w=W, h=H, flags=0):
     """RNSZ carrying the parameters - the same message the menu sends."""
     worker.stdin.write(struct.pack(
-        RESIZE_FMT, RESIZE_MAGIC, w, h, WARMUP, 0, 0, 0,
+        RESIZE_FMT, RESIZE_MAGIC, w, h, WARMUP, flags, 0, 0,
         int(params["style"]), int(params["auto_mask"]),
         int(params.get("ui_correction", 0)), float(params["intensity"]),
         float(params["local_tone"]), float(params["local_structure"]),
@@ -147,6 +154,18 @@ def main() -> int:
                                 f"(mean |diff| {delta:.2f}) - the change was "
                                 f"acked and dropped")
 
+            # 4. Boost on at 1:1, one pass: Boost cannot engage without a
+            #    work size below the frame, so these change nothing but the
+            #    parameters - the first one included, which switches Boost on.
+            boost = RESIZE_FLAG_NR_SMALL | (1 << RESIZE_FLAG_NR_PASSES_SHIFT)
+            for params in (faithful, extreme):
+                ok, took = send_params(proc, params, flags=boost)
+                print(f"    Boost on at 1:1, parameter change: ok={ok}, "
+                      f"{took:.0f} ms")
+                if not ok:
+                    failures.append("a parameter change with Boost on at 1:1 "
+                                    "was refused")
+
             # 3. A real resize still rebuilds - the fast path must not have
             #    swallowed the case it was carved out of.
             ok, _ = send_params(proc, extreme, w=960, h=540)
@@ -169,9 +188,10 @@ def main() -> int:
     # create that FAILED used to be announced as "feature ready" anyway.
     rebuilt = text.count("RNSZ applied at ")
     print(f"    log: {params_only} parameter-only, {rebuilt} rebuilt")
-    if params_only != 1:
-        failures.append(f"expected one parameter-only RNSZ in the log, "
-                        f"found {params_only}")
+    if params_only != 3:
+        failures.append(f"expected three parameter-only RNSZ in the log (one "
+                        f"with Boost off, two with it on at 1:1), found "
+                        f"{params_only}")
     if rebuilt != 1:
         failures.append(f"expected exactly one real rebuild (the resize), "
                         f"found {rebuilt}")

@@ -559,7 +559,7 @@ _SETTINGS_KEYS = (
     # counter was, or how big the panel had been made. The section exists to
     # answer "how was the program configured" and had quietly stopped
     # answering it for anything new (found in a reporter's package, #96).
-    "nr_direct", "nr_passes", "fps_overlay",
+    "nr_direct", "nr_passes", "residual_strength", "fps_overlay",
     # What passes 2..N use, when they have their own set. Without it a report
     # from a two-pass session cannot say whether the cascade was running one
     # set or two - and that is exactly the difference between "the second pass
@@ -574,8 +574,13 @@ _SETTINGS_KEYS = (
     # of overlay bug.
     "worker_present", "capture_in_worker", "pixels_in_shm", "motion_on_gpu",
     "fullscreen", "warmup", "split", "record_audio",
-    "rec_indicator", "open_menu_on_start",
+    "rec_indicator", "gpu_record", "open_menu_on_start",
     "screenshot_format", "screenshot_mode",
+    # The conversion page's output choices: a report about a conversion
+    # that came out silent or in the wrong codec starts here. The folder
+    # itself is a path and stays out, like the other two.
+    "convert_dest", "convert_codec", "convert_quality",
+    "convert_image_format", "convert_audio",
 )
 _MAX_SETTINGS_VALUE = 120
 

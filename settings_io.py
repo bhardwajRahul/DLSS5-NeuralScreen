@@ -31,7 +31,8 @@ from winapi import list_capturable_windows, window_frame_rect
 from resolution_limits import safe_processing_size
 
 
-def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
+def _work_size(width: int, height: int, scale: float,
+               nr_passes: int = 1) -> tuple[int, int]:
     """The NGX work resolution: scale of full, but no larger than
     WORK_MAX_W/H (NGX goes silent at 4K - the limit verified in isolation).
 
@@ -51,12 +52,63 @@ def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
     else:
         w = max(64, int(width * scale) // 2 * 2)
         h = max(64, int(height * scale) // 2 * 2)
-    w, h = safe_processing_size(int(width), int(height), min(w, int(width)), min(h, int(height)))
+    w, h = safe_processing_size(int(width), int(height),
+                                min(w, int(width)), min(h, int(height)))
     if w > WORK_MAX_W or h > WORK_MAX_H:
         k = min(WORK_MAX_W / w, WORK_MAX_H / h)
         w = max(64, int(w * k) // 2 * 2)
         h = max(64, int(h * k) // 2 * 2)
+    # The cascade needs a work size that DIFFERS from the frame. Its passes
+    # ping-pong between two work-resolution scratch buffers and land in the
+    # one the residual composite reads, and none of that exists at 1:1: the
+    # network writes the full-res output directly there, so the worker forces
+    # the count back to one (`v.nr_small = v.upscale && asked`, and then
+    # `passes = (v.nr_small && v.nr_alt) ? v.passes_live : 1`). It said
+    # nothing while it did it, so a panel showing four passes was driving one
+    # (reported in #110), and until v2.0.2 the features for the other three
+    # were built and discarded: measured 248 -> 853 MB of video memory at
+    # 960x540, ~200 MB per pass. Since v2.0.2 they are not allocated, and the
+    # worker's "NR cascade built" line says why a count falls short.
+    #
+    # So a pass count above one steps the work size down by the smallest even
+    # amount that engages the residual path. This costs nothing and gains:
+    # the composite keeps the NATIVE frame as the anchor and only adds what
+    # the network changed, where 1:1 shows the network's own output wholesale.
+    # Measured at 960x540 against the untouched source - detail as a share of
+    # the source Laplacian variance:
+    #
+    #     work      passes  cascade   detail
+    #     1:1            1   silent    0.77x
+    #     1:1            4   silent    0.77x   (byte-identical to one pass)
+    #     native-2       4      ran    0.88x
+    #     0.85           4      ran    0.91x
+    #
+    # 1:1 is the WORST of them for detail, which is the opposite of what
+    # "native" sounds like it should mean.
+    if int(nr_passes or 1) > 1 and (w, h) == (int(width), int(height)):
+        w = max(64, (int(width) - 2) // 2 * 2)
+        h = max(64, (int(height) - 2) // 2 * 2)
+        # A frame too small to step down from keeps its size (the floor in
+        # resolution_limits wins); the cascade cannot run there, and the
+        # worker's "NR cascade built" line says why.
+        w, h = safe_processing_size(int(width), int(height), w, h)
     return min(w, int(width)), min(h, int(height))
+
+
+def cascade_passes(st) -> int:
+    """The pass count to size the work by: the saved one under Boost, one
+    without it.
+
+    The cascade runs only in Boost's small-network mode, which is why the
+    panel shows the count under the Boost switch and hides it with the switch
+    off. The saved count still travels to the worker either way (it comes back
+    with Boost), but sizing by it with Boost off stepped a native work size
+    aside for passes that cannot run - and moved Boost-off users off the 1:1
+    path for nothing.
+    """
+    if not getattr(st, "nr_small", False):
+        return 1
+    return int(getattr(st, "nr_passes", 1) or 1)
 
 
 def hotkey_labels(bindings: dict) -> dict:
@@ -286,6 +338,15 @@ CONFIG_SCHEMA_VERSION = 1
 FRAME_LIMIT_MODES = ("30", "60", "custom", "unlimited")
 FRAME_LIMIT_CUSTOM_MIN = 15
 FRAME_LIMIT_CUSTOM_MAX = 240
+
+# The conversion page's output choices, as config values. The same lists as
+# media_convert's - repeated here rather than imported, because media_convert
+# imports pipeline, which imports this module (tests/test_convert_settings
+# holds the two copies together).
+CONVERT_DESTS = ("source", "folder")
+CONVERT_CODECS = ("auto", "av1", "hevc", "h264")
+CONVERT_QUALITIES = ("high", "balanced", "small")
+CONVERT_IMAGE_FORMATS = ("keep", "png", "jpg")
 
 
 def frame_limit_fps(cfg: dict) -> int:
@@ -526,7 +587,7 @@ def _validate_config(cfg: dict) -> dict:
         custom = 90
     cfg["frame_limit_custom"] = min(
         FRAME_LIMIT_CUSTOM_MAX, max(FRAME_LIMIT_CUSTOM_MIN, custom))
-    for directory_key in ("recording_dir", "screenshot_dir"):
+    for directory_key in ("recording_dir", "screenshot_dir", "convert_dir"):
         value = cfg.get(directory_key, "")
         cfg[directory_key] = value if isinstance(value, str) else ""
     screenshot_mode = str(cfg.get("screenshot_mode", "ask"))
@@ -535,6 +596,18 @@ def _validate_config(cfg: dict) -> dict:
     screenshot_format = str(cfg.get("screenshot_format", "png")).lower()
     cfg["screenshot_format"] = (screenshot_format
                                 if screenshot_format in ("png", "jpg") else "png")
+    # The conversion page. An unknown value is the first choice of its list -
+    # the same default the page shows - not an error: these are output
+    # preferences, and a hand-edited typo must not stop the program.
+    for key, allowed in (("convert_dest", CONVERT_DESTS),
+                         ("convert_codec", CONVERT_CODECS),
+                         ("convert_quality", CONVERT_QUALITIES),
+                         ("convert_image_format", CONVERT_IMAGE_FORMATS)):
+        value = str(cfg.get(key, allowed[0])).lower()
+        cfg[key] = value if value in allowed else allowed[0]
+    # On unless the config really says off: a video that comes back silent
+    # because a string was falsy would read as a broken converter.
+    cfg["convert_audio"] = cfg.get("convert_audio", True) is not False
 
     # --- Values startup reads with a bare int()/float()/attribute access ----
     # (audit H5). The rule is the one this validator already uses for a stale
@@ -841,6 +914,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "style": int(params.get("style", 1)),
         "monitor": monitor_name if monitor_name is not None else int(monitor),
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
+        "gpu_record": cfg.get("gpu_record", True) is not False,
         "fps_overlay": str(cfg.get("fps_overlay", "off")),
         "nr_passes": int(cfg.get("nr_passes", 1)),
         # What passes 2..N use, only when the user actually set it. Absent from
@@ -859,6 +933,15 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "screenshot_format": (str(cfg.get("screenshot_format", "png"))
                               if str(cfg.get("screenshot_format", "png"))
                               in ("png", "jpg") else "png"),
+        # The conversion page's output choices: a preference, like the
+        # screenshot format, and just as annoying to set again every launch.
+        "convert_dest": _choice(cfg, "convert_dest", CONVERT_DESTS),
+        "convert_dir": cfg.get("convert_dir") or "",
+        "convert_codec": _choice(cfg, "convert_codec", CONVERT_CODECS),
+        "convert_quality": _choice(cfg, "convert_quality", CONVERT_QUALITIES),
+        "convert_image_format": _choice(cfg, "convert_image_format",
+                                        CONVERT_IMAGE_FORMATS),
+        "convert_audio": cfg.get("convert_audio", True) is not False,
         # The Spout2 bridge choice must survive a restart: the worker
         # reads NS_SPOUT at startup, and main sets it from this flag.
         "spout": bool(cfg.get("spout", False)),
@@ -1196,6 +1279,36 @@ def _window_menu_state(windows: list[tuple[int, str]],
     return entries, current
 
 
+def _choice(cfg: dict, key: str, allowed: tuple) -> str:
+    """The config's value for one of the page's fixed choices, or the first."""
+    value = str(cfg.get(key, allowed[0]))
+    return value if value in allowed else allowed[0]
+
+
+def _convert_rows(st) -> list:
+    """The conversion queue's rows, ready to draw, or none without a queue.
+
+    Each row also carries its second line (`line`, `tone`) and the one
+    button it offers (`action`), worded in the panel's language here - so
+    the menu draws them without importing the queue (convert_jobs pulls in
+    the converter and the pipeline, and the menu is a leaf).
+    """
+    queue = getattr(st, "convert_queue", None)
+    if queue is None:
+        return []
+    import convert_jobs   # here, not at the top: it imports pipeline, which imports us
+    strings = UI_STRINGS.get(getattr(st, "lang", DEFAULT_LANG),
+                             UI_STRINGS[DEFAULT_LANG])
+    try:
+        rows = queue.rows()
+    except Exception:
+        return []
+    for row in rows:
+        row["line"], row["tone"] = convert_jobs.status_line(row, strings)
+        row["action"] = convert_jobs.row_action(row)
+    return rows
+
+
 def menu_payload(st) -> dict:
     """The current state for the menu - a single source of truth."""
     refresh_gpu_ok(st)
@@ -1310,8 +1423,27 @@ def menu_payload(st) -> dict:
         "rec_seconds": ((active_recorder.duration_ms / 1000.0)
                         if active_recorder else 0.0),
         "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
+        "gpu_record": st.cfg.get("gpu_record", True) is not False,
         "fps_overlay": str(st.cfg.get("fps_overlay", "off")),
         "nr_passes": int(st.cfg.get("nr_passes", 1)),
+        "convert_busy": bool(getattr(st, "convert_busy", False)),
+        "convert_status": str(getattr(st, "convert_status", "")),
+        # The queue's rows, copied under its lock - see convert_jobs.
+        "convert_jobs": _convert_rows(st),
+        # How far the running file is, for the main page's Convert cell;
+        # None while nothing converts.
+        "convert_progress": getattr(st, "convert_progress", None),
+        "convert_dest": _choice(st.cfg, "convert_dest", CONVERT_DESTS),
+        # The folder the files WILL go to: with none chosen yet (the picker
+        # was cancelled) that is the default one, and the row says so rather
+        # than standing empty while files land somewhere unnamed.
+        "convert_dir": st.cfg.get("convert_dir") or str(BASE_DIR / "converted"),
+        "convert_codec": _choice(st.cfg, "convert_codec", CONVERT_CODECS),
+        "convert_quality": _choice(st.cfg, "convert_quality",
+                                   CONVERT_QUALITIES),
+        "convert_image_format": _choice(st.cfg, "convert_image_format",
+                                        CONVERT_IMAGE_FORMATS),
+        "convert_audio": st.cfg.get("convert_audio", True) is not False,
         "tray_on_minimise": bool(st.cfg.get("tray_on_minimise", False)),
         "tray_on_close": bool(st.cfg.get("tray_on_close", False)),
         "recording_dir": st.cfg.get("recording_dir") or "",

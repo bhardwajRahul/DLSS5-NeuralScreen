@@ -213,7 +213,6 @@ from overlay_ui import (OverlayMenu, palette as ui_palette,
 from i18n import STRINGS
 
 # --- Brand palette (DLSS5-Video-Converter) -------------------------------
-BG_COLOR = (0x0D, 0x11, 0x17)      # #0D1117 dark background
 BG_ALPHA = 235                     # HUD panel translucency (nearly opaque, so text stays readable)
 SWITCH_ALPHA = 170                 # mode-switch overlay: the live desktop shows through it
 # The veil eases in and out instead of cutting to full strength: a hard

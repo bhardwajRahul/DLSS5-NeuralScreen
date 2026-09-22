@@ -26,8 +26,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import json
-import queue
+import os
 import subprocess
 import sys
 import time
@@ -65,12 +64,9 @@ import cv2
 import numpy as np
 import pygame  # HUD overlay on the recorded frame (image.frombuffer)
 
-from capture import ScreenCapture, resolve_output_idx
+from capture import ScreenCapture
 from display import Display
-from guides import TemporalGuideGenerator
 from motion_backend import MotionBackendStatus
-from hotkeys import (describe as describe_hotkeys, numlock_needed, numlock_on,
-                     parse_binding)
 from i18n import STRINGS as UI_STRINGS
 
 import channels
@@ -124,6 +120,8 @@ from protocol import (  # noqa: F401
     GRAY_ACK_FMT, GRAY_ACK_MAGIC, GRAY_FMT, GRAY_MAGIC, HEADER_FMT,
     MOTION_ACK_FMT, MOTION_ACK_MAGIC, MOTION_FMT, MOTION_MAGIC,
     OUTS_ACK_FMT, OUTS_ACK_MAGIC, OUTS_FMT, OUTS_MAGIC, OUT_BYTES_IN_SHM,
+    AUDIO_RING_FMT, REC_DONE_FMT, REC_START_ACK_FMT, REC_START_FMT,
+    REC_STOP_FMT,
     FrameReply, OUT_FMT, OUT_MAGIC, OUT_STATUS_OK, OUT_STATUS_SKIPPED, RACK_FMT,
     RESIZE_ACK_MAGIC, RESIZE_FLAG_NR_SMALL,
     RESIZE_FMT, RESIZE_MAGIC, SHM_ACK_FMT, SHM_ACK_MAGIC, SHM_FMT,
@@ -135,6 +133,13 @@ from protocol import (  # noqa: F401
 
 
 
+
+#: Ask the worker to answer each frame as soon as it is queued on the GPU
+#: (FRAME_FLAG_EARLY_REPLY) instead of once it is on screen, so this loop's own
+#: work - the HUD, the commands, the next capture request - runs while the GPU
+#: finishes the frame rather than between frames. NS_EARLY_REPLY=0 turns it
+#: off, for comparing the two or ruling it out in a report.
+EARLY_REPLY = os.environ.get("NS_EARLY_REPLY", "1") != "0"
 
 #: How many consecutive frames without an NGX evaluation before the interface
 #: stops claiming the picture is processed. Ten frames is a fraction of a second
@@ -311,6 +316,14 @@ class _Pipeline:
         "next_auto_revive",
         "nr_direct",
         "nr_passes",
+        "convert_busy",
+        "convert_status",
+        # The conversion queue (convert_jobs), the finished jobs waiting
+        # for one combined alert, and the running file's fraction for
+        # the main page's Convert cell.
+        "convert_queue",
+        "convert_batch",
+        "convert_progress",
         # Which worker has been told the pass count: the cascade has to be
         # re-sent to every new one (see the main loop).
         "nr_passes_pid",
@@ -566,7 +579,22 @@ def main() -> int:
 
             # The answer from the "Save as" dialog (it runs in its own thread).
             commands.drain_save_dialog(st)
+            # Conversions run on their own thread; what finished is
+            # announced here, where the display may be touched.
+            commands.service_conversions(st)
             commands.poll_recording_finalizer(st)
+            # A GPU recording the worker closed by itself (its encoder failed)
+            # or lost with it (the worker died): finalize it now, with what
+            # reached the disk, rather than when the user next presses record.
+            if (st.recorder is not None
+                    and getattr(st.recorder, "stopped_elsewhere", lambda: False)()):
+                print("[main] the recording ended in the worker - finalizing it",
+                      file=sys.stderr)
+                try:
+                    commands.begin_recording_finalization(st)
+                except Exception as exc:
+                    print(f"[main] recording finalization could not start: {exc}",
+                          file=sys.stderr)
 
             # NR OFF is a real idle state unless an explicit consumer still
             # needs bypass frames.  No code below this branch captures, sends,
@@ -857,7 +885,8 @@ def main() -> int:
                            skip_static=bool(st.cfg.get("skip_static", False)),
                            frame_generation=bool(st.cfg.get("frame_generation", False)),
                            frame_multiplier=int(st.cfg.get("frame_multiplier", 2)),
-                           prepared=bool(st.gray_active))
+                           prepared=bool(st.gray_active),
+                           early_reply=EARLY_REPLY)
                 _perf("send", t0)
             except (BrokenPipeError, OSError, EOFError, RuntimeError) as exc:
                 st.consecutive_restarts += 1
@@ -1047,7 +1076,9 @@ def main() -> int:
 
             t0 = time.perf_counter()
             try:
-                if st.recorder is not None and st.output_rgba is not None:
+                if (st.recorder is not None
+                        and getattr(st.recorder, "takes_pixels", True)
+                        and st.output_rgba is not None):
                     # Our layer is excluded from capture
                     # (WDA_EXCLUDEFROMCAPTURE), so we bake the open menu onto
                     # the frame ourselves. frombuffer references the numpy
@@ -1282,6 +1313,15 @@ def main() -> int:
                 print(f"  {line}", file=sys.stderr)
         return 1
     finally:
+        # A conversion may be running on its own worker. Stop it first and
+        # wait a bounded moment: the runner reaps its worker on the way out,
+        # and the job object in pipeline covers the case where it cannot.
+        if st.convert_queue is not None:
+            try:
+                st.convert_queue.shutdown(timeout=10.0)
+            except Exception as exc:
+                print(f"[main] failed to stop the conversions: {exc}",
+                      file=sys.stderr)
         # A recording may have been running at exit. Begin the same asynchronous
         # path the UI uses, then wait here only because the UI is already gone.
         if st.recorder is not None:
