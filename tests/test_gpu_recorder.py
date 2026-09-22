@@ -54,11 +54,18 @@ def build_check(failures: list) -> Path | None:
     # re-read by cmd's own quote rule, which breaks on a space in the path
     # (the profile folder here has one).
     bat = NATIVE / "build-gpu-recorder-check.bat"
+    # The build script is cmd/bat: its own messages come out in the console
+    # codepage (cp866 here), while the child gets PYTHONIOENCODING=utf-8 from
+    # the test runner. Decoding the compiler's output as utf-8 then raises
+    # UnicodeDecodeError inside subprocess's reader thread - in a thread, so
+    # the exception never reaches the test: it surfaced only as a stray
+    # traceback in the middle of a run. Read it as bytes and decode leniently.
     proc = subprocess.run(f'cmd /s /c ""{bat}" "{WORK}""', capture_output=True,
-                          text=True, timeout=300)
+                          timeout=300)
+    output = (proc.stdout or b"").decode("utf-8", errors="replace") + \
+             (proc.stderr or b"").decode("utf-8", errors="replace")
     if proc.returncode == 0 and exe.is_file():
         return exe
-    output = (proc.stdout or "") + (proc.stderr or "")
     if "NO_COMPILER" in output:
         print("SKIP: stage 1 - no Visual Studio C++ tools to build "
               "gpu_recorder_check.exe")
@@ -68,12 +75,16 @@ def build_check(failures: list) -> Path | None:
 
 
 def run_check(exe: Path, out: Path, *args) -> dict:
+    # The recorder prints in the console codepage (cp866); decoding its output
+    # as utf-8 dies the same way the build script's does.
     proc = subprocess.run([str(exe), str(out), *map(str, args)],
-                          capture_output=True, text=True, timeout=120)
-    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+                          capture_output=True, timeout=120)
+    out_text = (proc.stdout or b"").decode("utf-8", errors="replace")
+    err_text = (proc.stderr or b"").decode("utf-8", errors="replace")
+    lines = [ln for ln in out_text.splitlines() if ln.startswith("{")]
     stats = json.loads(lines[-1]) if lines else {}
     stats["exit"] = proc.returncode
-    stats["log"] = proc.stderr
+    stats["log"] = err_text
     return stats
 
 
