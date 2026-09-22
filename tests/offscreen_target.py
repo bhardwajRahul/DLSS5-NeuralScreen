@@ -1,15 +1,25 @@
 """A capture target for GPU tests that must not show anything on screen.
 
-A plain window far off every monitor, never activated and without a taskbar
-button, painted in four bars. The worker captures it through WGC like any
-window the user picks; with NS_WINDOW_POS off-screen as well, a test drives
-the whole capture -> network -> present chain with nothing visible.
+A plain window, never activated and without a taskbar button, painted in four
+bars. The worker captures it through WGC like any window the user picks; with
+NS_WINDOW_POS off-screen as well, a test drives the whole capture -> network
+-> present chain with nothing visible.
 
-It can be resized while it is being captured - which is what a video player
-does on every fullscreen toggle - and it repaints itself afterwards, so WGC
-has a frame of the new size to deliver.
+Two placements:
 
-Not a test itself: tests import it (test_early_reply, test_hdr_resize).
+* far off every monitor (the default). DWM delivers such a window's first
+  frame and a resize frame, and nothing after that - enough for a test that
+  needs one picture;
+* a "ghost" (ghost=True): on the primary monitor, at 1/255 opacity,
+  click-through and at the bottom of the z-order. DWM composes it, so every
+  repaint reaches WGC - for a test that needs the picture to change.
+
+It can be resized while it is being captured (a video player on every
+fullscreen toggle), repainted with other colours (a scene cut), or left to
+animate on its own (a playing video).
+
+Not a test itself: tests import it (test_early_reply, test_hdr_resize,
+test_worker_scene).
 """
 import ctypes
 import threading
@@ -76,7 +86,7 @@ BARS = (0x2020D0, 0x20B020, 0xD02020, 0x808080)
 
 
 class Target:
-    """The capture source: off-screen, never activated, no taskbar button.
+    """The capture source: never activated, no taskbar button, not visible.
 
     Everything that touches the window runs on its own thread, which owns
     it: creating, painting, resizing and destroying.
@@ -88,6 +98,9 @@ class Target:
         self._size = (width, height)
         self._name = name
         self._ghost = ghost
+        self.bars = tuple(BARS)
+        # Repaint on every turn of the window's own loop (~100 a second).
+        self.animate = False
         self._resize_to = None
         self._resized = threading.Event()
         self._ready = threading.Event()
@@ -101,12 +114,13 @@ class Target:
         user32.GetClientRect(self.hwnd, ctypes.byref(rect))
         w, h = rect.right, rect.bottom
         dc = user32.GetDC(self.hwnd)
-        # The grey bar steps a shade on every paint: a paint that leaves every
+        # The last bar steps a shade on every paint: a paint that leaves every
         # pixel as it was gives WGC nothing new to deliver, and a playing video
-        # - what this stands in for - never does that.
+        # - what this stands in for - never does that. Eight shades of one
+        # channel's low bits: far below anything that reads as a scene cut.
         self._shade = (getattr(self, "_shade", 0) + 1) % 8
-        grey = 0x78 + self._shade
-        for k, colour in enumerate(BARS[:3] + (grey * 0x010101,)):
+        bars = self.bars[:3] + (self.bars[3] ^ self._shade,)
+        for k, colour in enumerate(bars):
             brush = gdi32.CreateSolidBrush(colour)
             r = wintypes.RECT(k * w // 4, 0, (k + 1) * w // 4, h)
             user32.FillRect(dc, ctypes.byref(r), brush)
@@ -148,6 +162,8 @@ class Target:
                                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)
                 self._paint()
                 self._resized.set()
+            elif self.animate:
+                self._paint()
             time.sleep(0.01)
         user32.DestroyWindow(self.hwnd)
 
@@ -160,6 +176,11 @@ class Target:
     def repaint(self) -> None:
         """A fresh frame for WGC without changing the size."""
         self.resize(*self._current())
+
+    def set_bars(self, colours) -> None:
+        """Four COLORREFs (0x00BBGGRR), painted at once - a scene cut."""
+        self.bars = tuple(colours)
+        self.repaint()
 
     def _current(self):
         rect = wintypes.RECT()

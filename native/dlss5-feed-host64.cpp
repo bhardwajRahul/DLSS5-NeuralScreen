@@ -48,6 +48,7 @@
 #include <cstdlib>   // strtoull: the panel's handle out of the environment
 #include <cstring>
 #include <algorithm>
+#include <emmintrin.h>   // _mm_sad_epu8: the scene score
 #include <fcntl.h>
 #include <io.h>
 #include <string>
@@ -1667,6 +1668,13 @@ static constexpr uint32_t FRAME_MAGIC = 0x314D5246u; // "FRM1"
 static constexpr uint32_t OUT_MAGIC   = 0x3154554Fu; // "OUT1"
 static constexpr uint32_t OUT_STATUS_OK = 0x1u;
 static constexpr uint32_t OUT_STATUS_SKIPPED = 0x2u;
+// FRAME_FLAG_WORKER_SCENE frames: this reply carries the worker's scene
+// score in bits 16-31 (x65535), and SCENE_CUT says the frame was reset on it.
+static constexpr uint32_t OUT_STATUS_SCENE = 0x4u;
+static constexpr uint32_t OUT_STATUS_SCENE_CUT = 0x8u;
+// ORed into every reply the current frame gets; cleared as each frame starts,
+// so an idle or empty answer never carries an old score.
+static uint32_t g_frame_status = 0u;
 static constexpr uint32_t RESIZE_MAGIC    = 0x5A534E52u; // "RNSZ" -- reconfigure on the fly (work size + params)
 static constexpr uint32_t RESIZE_ACK_MAGIC = 0x4B434152u; // "RACK" -- worker -> client reply to RNSZ
 static constexpr uint32_t CREATE_ACK_MAGIC = 0x4B434143u; // "CACK" -- initial CreateFeature verdict
@@ -1738,6 +1746,14 @@ static constexpr uint32_t FRAME_FLAG_SKIP_STATIC = 0x40u;
 // frame, present mode, worker capture, no pixels, no wipe, no HDR, no Frame
 // Generation): everywhere else the answer still follows the present.
 static constexpr uint32_t FRAME_FLAG_EARLY_REPLY = 0x2000u;
+// The client leaves the scene cut to the worker. With NVOFA the client's only
+// use for the capture before FRM1 was mean(|gray - previous|)/255 > 0.24, and
+// fetching it cost a round trip per frame (CAP1 -> Python -> FRM1) with the
+// GPU idle in between: 2.07 ms a frame in a Boost run. The worker has the
+// same gray already, so it scores it as it captures (UpdateSceneScore) and
+// sets the reset itself - before NVOFA, the evaluate and Frame Generation
+// read it.
+static constexpr uint32_t FRAME_FLAG_WORKER_SCENE = 0x4000u;
 
 static UINT SplitXFromFlags(uint32_t reserved, UINT width)
 {
@@ -3000,7 +3016,8 @@ static void SendEarlyReply()
     g_early_reply.sent = true;
     // The NGX result is known: the evaluate call returned before the present
     // list was recorded. Only the GPU's execution of it is still running.
-    const VideoResultHeader out = { OUT_MAGIC, g_early_reply.index, OUT_STATUS_OK,
+    const VideoResultHeader out = { OUT_MAGIC, g_early_reply.index,
+                                    OUT_STATUS_OK | g_frame_status,
                                     0u, g_last_eval_result, g_early_reply.pts };
     if (!WriteExact(g_wire, &out, sizeof(out))) g_early_reply.failed = true;
 }
@@ -4065,11 +4082,11 @@ static bool DeliverPixels(const std::vector<BYTE> &output, uint32_t index,
         memcpy(g_out_map + 8, output.data(), output.size());
         ++seq;                              // even: done
         memcpy(g_out_map, &seq, sizeof(seq));
-        VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK, OUT_BYTES_IN_SHM,
-                                  g_last_eval_result, pts };
+        VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK | g_frame_status,
+                                  OUT_BYTES_IN_SHM, g_last_eval_result, pts };
         return WriteExact(g_wire, &out, sizeof(out));
     }
-    VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK,
+    VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK | g_frame_status,
                               static_cast<uint32_t>(output.size()),
                               g_last_eval_result, pts };
     return WriteExact(g_wire, &out, sizeof(out))
@@ -4204,6 +4221,46 @@ static bool AreaToGray()
                mapped + static_cast<size_t>(y) * g_gray_pitch, g_gray_w);
     g_gray_readback->Unmap(0, nullptr);
     return true;
+}
+
+// The scene score of the last capture: mean(|gray - previous gray|) / 255, the
+// same number guides.py computes on the client from the same buffer, so the
+// cut lands on the same frames whichever side decides it. The previous gray
+// is the worker's own copy - g_gray_map is the client's to read.
+static std::vector<uint8_t> g_scene_prev;
+static float g_scene_score = 0.0f;
+static bool g_scene_fresh = false;      // a capture scored since a frame took it
+static constexpr float kSceneCutScore = 0.24f;   // guides.py: reset = score > 0.24
+
+static void UpdateSceneScore()
+{
+    const size_t n = static_cast<size_t>(g_gray_w) * g_gray_h;
+    if (g_gray_map == nullptr || n == 0) return;
+    g_scene_fresh = true;
+    if (g_scene_prev.size() != n)
+    {
+        // Nothing to compare with - a first frame, or a new gray size. The
+        // client counted that as a cut too (previous_gray None -> reset).
+        g_scene_prev.assign(g_gray_map, g_gray_map + n);
+        g_scene_score = 1.0f;
+        return;
+    }
+    // Sums of absolute differences, 16 pixels an instruction: ~58k pixels
+    // come to a few microseconds.
+    uint64_t sum = 0;
+    size_t i = 0;
+    for (; i + 16 <= n; i += 16)
+    {
+        const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i *>(g_gray_map + i));
+        const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i *>(g_scene_prev.data() + i));
+        const __m128i d = _mm_sad_epu8(a, b);
+        sum += static_cast<uint64_t>(_mm_cvtsi128_si64(d)) +
+               static_cast<uint64_t>(_mm_cvtsi128_si64(_mm_srli_si128(d, 8)));
+    }
+    for (; i < n; ++i)
+        sum += static_cast<uint64_t>(abs(int(g_gray_map[i]) - int(g_scene_prev[i])));
+    g_scene_score = static_cast<float>(static_cast<double>(sum) / (static_cast<double>(n) * 255.0));
+    memcpy(g_scene_prev.data(), g_gray_map, n);
 }
 
 // ---------------------------------------------------------------------------
@@ -4884,7 +4941,8 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     const UINT64 fence = EndCommands();
     if (!ProfileWait(PS_SWIZZLE, fence, 10000)) { Log("[cap] swizzle fence timeout"); return false; }
     // Hand the client the luminance frame (320x180) for the optical flow
-    if (!AreaToGray()) { /* best effort: guides go without a fresh frame */ }
+    if (AreaToGray()) UpdateSceneScore();
+    // else best effort: guides go without a fresh frame
     g_capture_gray_ok = g_gray_mapped;
     if (g_submission_failed) return false;
     UpdateAdaptiveExposure();
@@ -6900,6 +6958,7 @@ static int RunVideo()
             if (!FinishRecording(v, 0, false)) return 10;
         }
         ++g_frame_serial;
+        g_frame_status = 0u;
         ConfigureFgFrame(fh.reserved);
         const double t_frame = PhaseNow();
         const bool phase_on = PhaseEnabled();
@@ -6985,6 +7044,18 @@ static int RunVideo()
                 }
             }
             source_fresh = got && g_capture_visual_changed;
+            // The scene cut, when the client leaves it here. Only a frame that
+            // really captured something has a score; a skipped or idle frame
+            // leaves the reply without one.
+            if ((fh.reserved & FRAME_FLAG_WORKER_SCENE) != 0 && got && g_scene_fresh)
+            {
+                const bool cut = g_scene_score > kSceneCutScore;
+                if (cut) fh.reset = 1;
+                const float clamped = (std::min)(1.0f, (std::max)(0.0f, g_scene_score));
+                g_frame_status = OUT_STATUS_SCENE | (cut ? OUT_STATUS_SCENE_CUT : 0u) |
+                    (static_cast<uint32_t>(clamped * 65535.0f + 0.5f) << 16);
+            }
+            g_scene_fresh = false;
             if (phase_on && source_fresh) ++g_ph_fresh_sources;            PhaseAdd(PH_DDA, t_dda);
             // R12: the pause detector. Fresh source = the clock restarts; a
             // silence longer than a second marks the reset for the next
@@ -7227,7 +7298,8 @@ static int RunVideo()
             }
             else if (!replied)
             {
-                VideoResultHeader out = { OUT_MAGIC, fh.index, OUT_STATUS_OK, 0u, g_last_eval_result, fh.pts };
+                VideoResultHeader out = { OUT_MAGIC, fh.index, OUT_STATUS_OK | g_frame_status,
+                                          0u, g_last_eval_result, fh.pts };
                 if (!WriteExact(g_wire, &out, sizeof(out))) return 10;
             }
         }

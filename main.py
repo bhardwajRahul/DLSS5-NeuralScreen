@@ -141,6 +141,13 @@ from protocol import (  # noqa: F401
 #: off, for comparing the two or ruling it out in a report.
 EARLY_REPLY = os.environ.get("NS_EARLY_REPLY", "1") != "0"
 
+#: Leave the scene cut to the worker wherever this loop has no other use for
+#: the capture (FRAME_FLAG_WORKER_SCENE): with NVOFA, and with NR off. The
+#: capture round trip before each frame (CAP1 -> the gray -> FRM1) then goes -
+#: it left the GPU idle ~2 ms a frame. The CPU optical flow still needs the
+#: gray first and keeps it. NS_WORKER_SCENE=0 turns it off.
+WORKER_SCENE = os.environ.get("NS_WORKER_SCENE", "1") != "0"
+
 #: How many consecutive frames without an NGX evaluation before the interface
 #: stops claiming the picture is processed. Ten frames is a fraction of a second
 #: at any rate the pass runs at, and long enough that a single skipped slot or a
@@ -515,6 +522,7 @@ def main() -> int:
 
         # The loop's own state, next to the loop that owns it.
         guide = None  # Num1 before the first NR frame must not raise NameError
+        worker_scene = False  # the same, for the status line's scene score
         startup_pending = True  # open the menu once the picture is alive
         nr_rate = FrameRateMeter(FPS_LOG_INTERVAL)
         frame_pacer = FramePacer()
@@ -810,11 +818,25 @@ def main() -> int:
             # the program does not fall over.
             try:
                 check_worker(st.worker, st.worker_logs)
-                if st.gray_active:
+                plain_bypass = bypass and not st.cfg.get("frame_generation", False)
+                hardware_motion = False
+                if st.gray_active and not plain_bypass:
+                    was_failed = motion_status.failed and motion_status.worker is st.worker
+                    hardware_motion = motion_status.update(st.worker, st.worker_logs)
+                    if motion_status.failed and not was_failed:
+                        st.display.alert(UI_STRINGS[st.lang].get(
+                            "motion_fallback", "NVOFA unavailable - using CPU DIS"))
+                nvofa = st.cfg.get("motion_backend") == "nvofa" and hardware_motion
+                # The capture round trip, only where this loop reads the gray:
+                # the CPU optical flow. NVOFA makes its field in the worker and
+                # the worker scores the scene from the same gray; NR off without
+                # FG needs no guides at all.
+                worker_scene = bool(st.gray_active) and WORKER_SCENE and (nvofa or plain_bypass)
+                if st.gray_active and not worker_scene:
                     prepare_capture(st.worker, st.reader, st.frame_index, st.pts)
                 try:
                     t0 = time.perf_counter()
-                    if bypass and not st.cfg.get("frame_generation", False):
+                    if plain_bypass:
                         # NR OFF, and FG is not presenting these frames: the
                         # worker skips the NGX evaluate, so nothing ever reads
                         # this motion field. Computing it anyway cost 2.9 ms of
@@ -840,18 +862,13 @@ def main() -> int:
                         # interpolate (#104). The guides below are then the
                         # ordinary ones - with the hardware backend that is a
                         # scene score, not a DIS call.
-                        st.guides.previous_gray = None
+                        st.guides.forget()
                         guide = st.guides.zero_guide()
+                    elif worker_scene:
+                        guide = st.guides.handoff()
                     elif st.gray_active:
-                        was_failed = motion_status.failed and motion_status.worker is st.worker
-                        hardware_motion = motion_status.update(st.worker, st.worker_logs)
-                        if motion_status.failed and not was_failed:
-                            st.display.alert(UI_STRINGS[st.lang].get(
-                                "motion_fallback", "NVOFA unavailable - using CPU DIS"))
-                        guide = st.guides.process(
-                            gray=st.shm.read_gray(),
-                            compute_motion=not (st.cfg.get("motion_backend") == "nvofa"
-                                                and hardware_motion))
+                        guide = st.guides.process(gray=st.shm.read_gray(),
+                                                  compute_motion=not nvofa)
                     else:
                         guide = st.guides.process(st.work_frame)
                     _perf("guides", t0)
@@ -885,8 +902,8 @@ def main() -> int:
                            skip_static=bool(st.cfg.get("skip_static", False)),
                            frame_generation=bool(st.cfg.get("frame_generation", False)),
                            frame_multiplier=int(st.cfg.get("frame_multiplier", 2)),
-                           prepared=bool(st.gray_active),
-                           early_reply=EARLY_REPLY)
+                           prepared=bool(st.gray_active) and not worker_scene,
+                           early_reply=EARLY_REPLY, worker_scene=worker_scene)
                 _perf("send", t0)
             except (BrokenPipeError, OSError, EOFError, RuntimeError) as exc:
                 st.consecutive_restarts += 1
@@ -1272,7 +1289,10 @@ def main() -> int:
 
             log_now = time.monotonic()
             if log_now - last_log >= FPS_LOG_INTERVAL:
-                scene = f" | scene {guide.scene_score:.3f}" if guide is not None else ""
+                # The worker's score when it decided the cut, else the loop's.
+                score = (st.reader.last_scene if worker_scene
+                         else guide.scene_score if guide is not None else None)
+                scene = f" | scene {score:.3f}" if score is not None else ""
                 print(f"[main] {status} | NR {last_fps:5.1f} fps | "
                       f"skipped {st.skipped_static_frames} | frames {st.frame_index} | "
                       f"work {st.work_w}x{st.work_h}{scene}")
