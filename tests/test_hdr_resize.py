@@ -19,6 +19,7 @@ passes), with Frame Generation off and then on:
   the same holds;
 * nothing refuses a frame, and the worker is alive at the end.
 
+A light test: frames are paced to 60 fps at 960x540, a few seconds per run.
 Needs an HDR display nearest the capture target (the worker only captures
 FP16 there); elsewhere it says SKIP. Nothing shows: the worker's window is far
 off every monitor, and the target is a "ghost" - on the primary monitor at
@@ -46,11 +47,12 @@ import numpy as np  # noqa: E402
 from offscreen_target import Target  # noqa: E402
 from paths import WORKER_EXE  # noqa: E402
 
-W, H = 1280, 720
+W, H = 960, 540
 GROWN = H + 48            # 1392 -> 1440 is what the user's player did
 PASSES = 2
 STEADY = 30
 MISMATCHED_S = 1.0        # longer than the client's 0.5 s debounce
+MAX_FPS = 60              # a light test: never an uncapped loop on the GPU
 
 
 class WorkerGone(Exception):
@@ -72,7 +74,7 @@ def run(fg: bool, failures: list) -> bool:
     shm = SharedFrameBuffer(W, H)
     work = _work_size(W, H, 1.0, PASSES)
     worker, logs, reader, stop = start_worker(params, work[0], work[1], 2, W, H, None)
-    state = {"index": 0}
+    state = {"index": 0, "due": 0.0}
     motion = np.zeros((90, 160, 2), np.float16)
 
     def frames(n: int = 0, seconds: float = 0.0):
@@ -87,6 +89,10 @@ def run(fg: bool, failures: list) -> bool:
             if seconds and time.perf_counter() - painted > 0.05:
                 target.repaint()
                 painted = time.perf_counter()
+            wait = state["due"] - time.perf_counter()
+            if wait > 0:
+                time.sleep(wait)
+            state["due"] = max(state["due"], time.perf_counter()) + 1.0 / MAX_FPS
             i = state["index"]
             state["index"] += 1
             try:
