@@ -8,7 +8,7 @@ in UTC, not the tag timestamps.
 
 Scope and honesty notes:
 
-* The list starts at `v1.0.0` and ends at `v2.1.0`; every tag in that range has a
+* The list starts at `v1.0.0` and ends at `v2.1.1`; every tag in that range has a
   published GitHub release. GitHub returns more releases than the tag count
   because the count includes the tags listed as out of scope below.
   The tag `v0.1.0-alpha` (2026-09-06) is **not** part of this history: it is a tag
@@ -29,6 +29,36 @@ Scope and honesty notes:
   (the early releases carried a different set - see the individual entries).
 
 ---
+
+## v2.1.1 - 2026-09-23 - cheaper and smarter
+
+Patch release on the v2.1.0 line: the file-conversion defect reported against
+the published build, and three items from a contributor on top of it.
+
+* **Conversion no longer fails on a variable-rate file.** The Media tab's
+  converter wrote every frame on a grid derived from the file's *average* rate
+  (`1 / average_rate`). A recording whose rate varies - and a GPU recording does,
+  because the recorder drops the frames the pipeline never handed over - has
+  frames arriving faster than that grid, so two neighbours landed on one tick
+  and the multiplexer refused the file with `Invalid argument: ... returned 22`
+  (libav's `non monotonically increasing dts to muxer`). Frames are now written
+  on the source's own time base; the same grid goes to the muxer, so the
+  timescale stays inside the 32-bit range (`60000`, 19.9 hours) instead of the
+  `19 620 000` the old shape produced (6 minutes). `MAX_TIMESCALE` keeps a
+  nanosecond container from pushing the mp4 past that limit. On the bench two of
+  three recordings failed before the fix and convert cleanly after it.
+* **A refused write no longer reads as a stopped worker.** A muxing failure at
+  the process stage was reported with the sentence meant for a dead worker
+  ("the network stopped - try again"), which sent the reader after the wrong
+  cause. A libav error at that stage is now its own case - "the file could not
+  be written" - in all twelve languages.
+* **From a contributor (PR #119), on top of the above:** a captured window
+  changing size no longer ends the worker with HDR on; with NVOFA the worker
+  decides the scene cut itself, so a frame no longer pays a capture round trip
+  (+3.3% full-resolution NR, +3.6% with two Boost passes, measured on an RTX
+  5080 at 2560x1440); and an HDR session's GPU recording now holds what the
+  display gets - 10-bit, BT.2020, PQ, tagged - where it used to be the SDR
+  proxy. `NS_WORKER_SCENE=0` and `NS_GREC_HDR=0` turn the last two off.
 
 ## v2.1.0 - 2026-09-22 - cheaper and smarter
 
