@@ -6441,8 +6441,14 @@ static int RunVideo()
             // built them again: 113-148 ms of frozen picture per step, and
             // it was this release/create pair that leaked 420 MB a time
             // until 1.7.1 fixed which library does the releasing (#48).
+            //
+            // The small-network mode is compared as a rebuild would set it,
+            // `upscale && asked`, not as the flag: at 1:1 Boost cannot engage,
+            // so the flag never matched there and every slider step at native
+            // with Boost on rebuilt the feature - 15 such rebuilds in one
+            // user's log, 172-257 ms of frozen picture each.
             const bool asked_small = (rc.flags & RESIZE_FLAG_NR_SMALL) != 0;
-            const int want_small_now = asked_small ? 1 : 0;
+            const int want_small_now = (asked_small && rup) ? 1 : 0;
             const bool same_size = rc.width == v.w && rc.height == v.hgt &&
                                    want_small_now == (v.nr_small ? 1 : 0) &&
                                    (rup ? (v.upscale && rc.full_w == v.full_w &&
