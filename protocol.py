@@ -12,6 +12,7 @@ the other is a build error now, not a runtime desync.
 """
 from __future__ import annotations
 
+import collections
 import mmap
 import os
 import queue
@@ -824,6 +825,20 @@ class WorkerReader:
         self.rec_start_reply: RecStartReply | None = None
         self.rec_done = threading.Event()
         self.rec_done_reply: RecDoneReply | None = None
+        # Frame replies a wait_* met while waiting for its acknowledgement.
+        # Commands go out from inside the frame loop (a hotkey handled during
+        # recv), so the reply of the frame in flight can arrive in the middle
+        # of a probe - and dropping it left recv waiting for an answer that
+        # had already come and gone: 5 s, then a worker restart counted
+        # towards the three that turn NR off. recv reads these first.
+        self._frames: collections.deque = collections.deque()
+        # Acknowledgements whose wait timed out: when one arrives after all,
+        # it belongs to that command, not to the next one of the same kind.
+        # Every command goes out with pts 0, so the reply itself cannot say.
+        self._orphans: dict[str, int] = {}
+        # Set by the reader when it stops understanding the worker (a protocol
+        # error), before it goes on draining the pipe - see _run.
+        self._failed = False
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="worker-reader")
         self._thread.start()
@@ -970,219 +985,144 @@ class WorkerReader:
                     raise RuntimeError(f"invalid magic in the worker reply: 0x{magic:08X}")
         except Exception as exc:
             # EOF (the worker exited or was killed) or a protocol error - sentinel
+            self._failed = True
             self._queue.put((None, exc))
             # Whoever waits on a recording answer learns it will not come.
             self.rec_started.set()
             self.rec_done.set()
+            if not isinstance(exc, EOFError):
+                # A protocol error stops the reading, not the worker: it may
+                # be in the middle of a frame-sized payload into a pipe a few
+                # kilobytes deep, and a worker blocked on that write never
+                # reads the end of its stdin that tells it to exit - the
+                # shutdown then waited 10 s and killed it, skipping the NGX
+                # cleanup. The rest of the stream is read and thrown away.
+                try:
+                    while self._worker.stdout.read(65536):
+                        pass
+                except Exception:
+                    pass
 
     @property
     def alive(self) -> bool:
-        """Whether the reader thread still reads (the worker is there)."""
-        return self._thread.is_alive()
+        """Whether the reader still reads the worker (the worker is there).
+
+        False from the first error on, even while the thread drains what the
+        worker is still writing: nothing it reads counts any more.
+        """
+        return self._thread.is_alive() and not self._failed
 
     def set_output_size(self, width: int, height: int) -> None:
         """Change the expected size of the output frames (right after RNSZ)."""
         self._width = width
         self._height = height
+        # Frames kept from before the change are the old size's.
+        self._frames.clear()
+
+    def _death(self, payload) -> BaseException:
+        """The reader's last word, for the wait that met it - and every later one.
+
+        It goes back into the queue: taken once, as it was, the next wait saw
+        an empty queue and sat out its whole timeout. A worker dying during
+        startup cost the four negotiations after the first 15 s each - about a
+        minute of an unresponsive window before anything noticed.
+        """
+        self._queue.put((None, payload))
+        return payload if isinstance(payload, Exception) else EOFError("the worker stopped")
+
+    def _wait(self, tag: str, timeout: float, what: str, *, keep_frames: bool = True):
+        """Wait for the acknowledgement `tag`; returns its payload.
+
+        Raises TimeoutError naming `what`, or the reader's error when the
+        worker is gone. Frame replies met on the way are kept for recv
+        (keep_frames) or dropped (wait_rack: they are the old size's). Any
+        other acknowledgement is an answer nobody waits for and is dropped,
+        as it always was.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._orphans[tag] = self._orphans.get(tag, 0) + 1
+                raise TimeoutError(f"the worker did not acknowledge {what} within {timeout:.0f}s")
+            try:
+                got, payload = self._queue.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if got is None:
+                raise self._death(payload)
+            if got == tag:
+                if self._orphans.get(tag, 0) > 0:
+                    # The late answer to a command whose wait already gave up.
+                    self._orphans[tag] -= 1
+                    continue
+                return payload
+            if keep_frames and isinstance(got, int):
+                self._frames.append((got, payload))
 
     def wait_mack(self, timeout: float) -> None:
         """Wait for MACK - the acknowledgement of the motion field size (MOTS)."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"the worker did not acknowledge MOTS within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
-            if got == "mack":
-                if not payload:
-                    raise RuntimeError("the worker could not enable GPU motion upscaling")
-                return
+        if not self._wait("mack", timeout, "MOTS"):
+            raise RuntimeError("the worker could not enable GPU motion upscaling")
 
     def wait_create_ack(self, timeout: float) -> tuple[int, int, int]:
         """Wait for the initial CreateFeature verdict from the VIDEO header."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"the worker did not acknowledge feature creation within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError(
-                    "the worker stopped")
-            if got == "cack":
-                ok, ngx_result, category = payload
-                return int(ok), int(ngx_result), int(category)
+        ok, ngx_result, category = self._wait("cack", timeout, "feature creation")
+        return int(ok), int(ngx_result), int(category)
 
     def wait_wack(self, timeout: float) -> None:
         """Wait for WACK - the acknowledgement of the WNDO command."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"the worker did not acknowledge WNDO within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
-            if got == "wack":
-                if not payload:
-                    raise RuntimeError("the worker could not raise the output window")
-                return
+        if not self._wait("wack", timeout, "WNDO"):
+            raise RuntimeError("the worker could not raise the output window")
 
     def wait_dack(self, timeout: float) -> None:
         """Wait for DACK - the acknowledgement of DDA1 (capture in the worker)."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"the worker did not acknowledge DDA1 within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
-            if got == "dack":
-                if not payload:
-                    raise RuntimeError("the worker could not enable screen capture")
-                return
+        if not self._wait("dack", timeout, "DDA1"):
+            raise RuntimeError("the worker could not enable screen capture")
 
     def wait_wgak(self, timeout: float) -> tuple:
         """Wait for WGAK - the acknowledgement of WGCW; returns the capture size."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"the worker did not acknowledge WGCW within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
-            if got == "wgak":
-                ok, aw, ah = payload
-                if not ok:
-                    raise RuntimeError("the worker could not capture that window")
-                return aw, ah
+        ok, aw, ah = self._wait("wgak", timeout, "WGCW")
+        if not ok:
+            raise RuntimeError("the worker could not capture that window")
+        return aw, ah
 
     def wait_gak(self, timeout: float) -> None:
         """Wait for GAK - the acknowledgement that the reverse gray channel is open."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"the worker did not acknowledge GRAY within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
-            if got == "gak":
-                if not payload:
-                    raise RuntimeError("the worker could not open the gray channel")
-                return
+        if not self._wait("gak", timeout, "GRAY"):
+            raise RuntimeError("the worker could not open the gray channel")
 
     def wait_oak(self, timeout: float) -> None:
         """Wait for OAK2 - the acknowledgement of the shared-memory pixel channel."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"the worker did not acknowledge OUTS within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
-            if got == "outs":
-                if not payload:
-                    raise RuntimeError("the worker could not open the pixel channel")
-                return
+        if not self._wait("outs", timeout, "OUTS"):
+            raise RuntimeError("the worker could not open the pixel channel")
 
     def wait_sack(self, timeout: float) -> None:
         """Wait for SACK - the shared memory acknowledgement (SHMI)."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"the worker did not acknowledge SHMI within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
-            if got == "sack":
-                if not payload:
-                    raise RuntimeError("the worker could not open the shared memory")
-                return
+        if not self._wait("sack", timeout, "SHMI"):
+            raise RuntimeError("the worker could not open the shared memory")
 
     def wait_per_pass(self, timeout: float) -> None:
         """Wait for PAAP - the acknowledgement of a per-pass change (PPRM).
 
-        Frames that arrive before it are skipped, exactly as in wait_rack.
+        Frames that arrive before it are kept for recv: a per-pass change does
+        not change the frame, and the menu sends it from inside the frame loop.
         """
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"the worker did not acknowledge the per-pass parameters "
-                    f"within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
-            if got == "paap":
-                if not payload:
-                    raise RuntimeError("the worker rejected the per-pass parameters")
-                return
+        if not self._wait("paap", timeout, "the per-pass parameters"):
+            raise RuntimeError("the worker rejected the per-pass parameters")
 
     def wait_rack(self, timeout: float) -> None:
         """Wait for RACK - the acknowledgement of a resolution change (RNSZ).
 
-        Frames that arrived before RACK (after a recv timeout) are skipped.
+        Frames that arrived before RACK (after a recv timeout) are skipped:
+        they are the old size's. A dead worker surfaces at once, as in every
+        other wait (audit F7).
         """
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"the worker did not acknowledge the resolution change within {timeout:.0f}s")
-            try:
-                got, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            # The worker is gone. Every other wait_* re-raises this; here it
-            # used to be skipped as if it were a stale frame, so a dead
-            # worker cost the whole budget and then reported a timeout -
-            # "did not acknowledge within 2s" instead of "the worker
-            # stopped", and the caller fell back to a full restart two
-            # seconds later than it had to (audit F7).
-            if got is None:
-                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
-            if got == "rack":
-                ok, ngx_result = payload
-                if not ok:
-                    raise RuntimeError(f"RNSZ rejected by the worker: ngx=0x{ngx_result:08X}")
-                return
-            # (index, frame) - a frame from before RACK - skip it
+        self._frames.clear()
+        ok, ngx_result = self._wait("rack", timeout, "the resolution change",
+                                    keep_frames=False)
+        if not ok:
+            raise RuntimeError(f"RNSZ rejected by the worker: ngx=0x{ngx_result:08X}")
 
     def recv(self, index: int, timeout: float):
         """Wait for frame index; timeout > 0 guards against an NGX hang.
@@ -1195,18 +1135,20 @@ class WorkerReader:
         """
         deadline = time.monotonic() + timeout
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"the worker has been silent for {timeout:.0f}s on frame {index} - NGX did not answer after the restart")
-            try:
-                got_index, payload = self._queue.get(timeout=remaining)
-            except queue.Empty:
-                continue  # the loop raises TimeoutError itself once the deadline passes
+            if self._frames:
+                # A reply a wait_* met while this frame was in flight.
+                got_index, payload = self._frames.popleft()
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"the worker has been silent for {timeout:.0f}s on frame {index} - NGX did not answer after the restart")
+                try:
+                    got_index, payload = self._queue.get(timeout=remaining)
+                except queue.Empty:
+                    continue  # the loop raises TimeoutError itself once the deadline passes
             if got_index is None:
-                if isinstance(payload, Exception):
-                    raise payload
-                raise EOFError("the worker stopped")
+                raise self._death(payload)
             if got_index == index:
                 if isinstance(payload, FrameReply):
                     self.last_skipped = payload.skipped

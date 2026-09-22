@@ -58,7 +58,24 @@ def main() -> int:
     if abs(float(above) - float(below)) > 2 * eps:
         failures.append("the limiter jumps at the threshold")
 
-    # 6. The stereo path applies the limiter too (the real pipeline).
+    # 6. A MIXED packet - a quiet signal with one loud peak, which is what a
+    #    real 10 ms packet of game audio is. Every case above is all quiet or
+    #    a monotonic ramp, and that is how a limiter that folded the WHOLE
+    #    packet passed: once one sample crossed the threshold, 0.01 came out
+    #    as 0.80 and the packet turned into a square wave.
+    t = np.linspace(0.0, 1.0, 480, dtype=np.float32)
+    mixed = (0.3 * np.sin(2 * np.pi * 5 * t)).astype(np.float32)
+    mixed[100] = 1.2
+    out = LoopbackCapture._limit(mixed)
+    rest = np.delete(np.arange(mixed.size), 100)
+    if not np.array_equal(out[rest], mixed[rest]):
+        worst = float(np.abs(out[rest] - mixed[rest]).max())
+        failures.append(f"a packet with one peak changed its quiet samples "
+                        f"(by up to {worst:.2f}) - the fold ran on all of them")
+    if not (TH < float(out[100]) <= 1.0):
+        failures.append(f"the peak of a mixed packet was not folded: {out[100]}")
+
+    # 7. The stereo path applies the limiter too (the real pipeline).
     stereo = np.array([[0.0, 0.0], [2.0, -2.0]], dtype=np.float32)
     out = LoopbackCapture._to_stereo(stereo, 1.0)
     if float(np.abs(out).max()) > 1.0:

@@ -13,8 +13,11 @@ The resulting ZIP always contains exactly two files:
 ``log_tail.txt``
     A bounded, scrubbed tail of ``NeuralScreen.log``.
 
-No configuration or environment dump is collected.  ZIP metadata and JSON
-ordering are fixed, making identical inputs produce identical bytes.
+No environment dump is collected, and of the configuration only an
+allow-list of product settings (_SETTINGS_KEYS), each value bounded - no
+paths, no presets, no hotkeys. Other programs' window titles are cut out of
+the log tail. ZIP metadata and JSON ordering are fixed, making identical
+inputs produce identical bytes.
 """
 from __future__ import annotations
 
@@ -221,6 +224,28 @@ def _redact_absolute_paths(text: str) -> str:
     return text
 
 
+# `title='...'` as display.describe_window writes it (a repr, either quote).
+# The z-order guard names every window that took the top, and on a user's
+# desktop that is their chat, their mail, their Task Manager - the title of
+# another program is theirs, not ours. Only our own window's title stays.
+_WINDOW_TITLE_RE = re.compile(
+    r"""title=(?P<repr>'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")""")
+_OWN_TITLES = {"'NeuralScreen'", "''"}
+# A file the conversion queue refused is named by the log line; the name is
+# the user's (the folder is already cut out as a path).
+_REFUSED_FILE_RE = re.compile(r"(not queued for conversion: )(.+?)( \()")
+
+
+def _redact_titles(text: str) -> str:
+    def shield(match: "re.Match[str]") -> str:
+        quoted = match.group("repr")
+        if quoted in _OWN_TITLES:
+            return match.group(0)
+        return f"title=<{max(0, len(quoted) - 2)} chars>"
+    text = _WINDOW_TITLE_RE.sub(shield, text)
+    return _REFUSED_FILE_RE.sub(lambda m: m.group(1) + "<FILE>" + m.group(3), text)
+
+
 def sanitize_text(text: object, *, sensitive_values: Sequence[str] = ()) -> str:
     """Return text safe to place in a support bundle.
 
@@ -253,6 +278,7 @@ def sanitize_text(text: object, *, sensitive_values: Sequence[str] = ()) -> str:
     )
     for pattern in _KNOWN_TOKEN_RES:
         result = pattern.sub(_REDACTED, result)
+    result = _redact_titles(result)
     return _redact_absolute_paths(result)
 
 
@@ -585,22 +611,42 @@ _SETTINGS_KEYS = (
 _MAX_SETTINGS_VALUE = 120
 
 
+#: The only keys whose value may be a list of numbers / a flat mapping.
+_LIST_SETTINGS = frozenset({"gpu_no_nr"})
+_MAPPING_SETTINGS = frozenset({"nr_pass_params"})
+
+
 def _bounded_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
     """The product settings, keyed by an allow-list and bounded per value.
 
-    A value that is not a bool, number or short string is dropped: a nested
-    object here would be an unbounded part of the report, and the point of the
-    section is a dozen scalars that say how the program was configured.
+    Scalars, and two bounded shapes: a short list of numbers (gpu_no_nr) and
+    a small flat mapping of scalars (nr_pass_params). Both are allow-listed on
+    purpose, and both used to be dropped by a scalar-only rule - the report
+    could not say what passes 2..N ran with, which is the reason the key is on
+    the list. Anything larger or nested is still left out: the section is a
+    summary of how the program was configured, not a copy of the file.
     """
+    def scalar(value) -> bool:
+        return (isinstance(value, (bool, int, float))
+                or (isinstance(value, str) and len(value) <= _MAX_SETTINGS_VALUE))
+
     result: dict[str, Any] = {}
     for key in _SETTINGS_KEYS:
         if key not in settings:
             continue
         value = settings[key]
-        if isinstance(value, bool) or isinstance(value, (int, float)):
+        if scalar(value):
             result[key] = value
-        elif isinstance(value, str) and len(value) <= _MAX_SETTINGS_VALUE:
-            result[key] = value
+        elif (key in _LIST_SETTINGS and isinstance(value, (list, tuple))
+              and len(value) <= 16
+              and all(isinstance(item, (int, float)) and not isinstance(item, bool)
+                      for item in value)):
+            result[key] = list(value)
+        elif (key in _MAPPING_SETTINGS and isinstance(value, Mapping)
+              and len(value) <= 16
+              and all(isinstance(k, str) and len(k) <= 40 and scalar(v)
+                      for k, v in value.items())):
+            result[key] = {k: value[k] for k in sorted(value)}
     return result
 
 

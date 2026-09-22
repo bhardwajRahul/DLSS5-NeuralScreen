@@ -17,6 +17,36 @@ import os
 from ctypes import wintypes
 
 
+# A private user32, prototypes stated: handles are pointer-sized, and without
+# a restype ctypes reads them as a signed C int - the window list handed out
+# unsigned handles (EnumWindows' HWND) while window_under_cursor handed out
+# signed ones (GetAncestor's default int), and one window could compare
+# unequal to itself. Private because windll.user32's function objects are
+# shared process-wide and other modules (pystray) declare their own on them.
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+for _name, _args, _res in (
+        ("GetWindowThreadProcessId", [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)],
+         wintypes.DWORD),
+        ("GetClassNameW", [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
+        ("GetForegroundWindow", [], wintypes.HWND),
+        ("IsWindowVisible", [wintypes.HWND], wintypes.BOOL),
+        ("IsIconic", [wintypes.HWND], wintypes.BOOL),
+        ("GetCursorPos", [ctypes.POINTER(wintypes.POINT)], wintypes.BOOL),
+        ("WindowFromPoint", [wintypes.POINT], wintypes.HWND),
+        ("GetAncestor", [wintypes.HWND, wintypes.UINT], wintypes.HWND),
+        ("GetWindow", [wintypes.HWND, wintypes.UINT], wintypes.HWND),
+        ("GetWindowLongW", [wintypes.HWND, ctypes.c_int], wintypes.LONG),
+        ("GetWindowTextLengthW", [wintypes.HWND], ctypes.c_int),
+        ("GetWindowTextW", [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
+        ("EnumWindows", [_WNDENUMPROC, wintypes.LPARAM], wintypes.BOOL)):
+    _fn = getattr(_user32, _name)
+    _fn.argtypes = _args
+    _fn.restype = _res
+# GetWindowRect keeps a free argument list: callers pass this module's _RECT.
+_user32.GetWindowRect.restype = wintypes.BOOL
+
+
 class _RECT(ctypes.Structure):
     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
                 ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
@@ -28,13 +58,13 @@ OUR_NATIVE_WINDOW_CLASSES = frozenset({"NeuralScreenPresent"})
 
 def _window_pid(hwnd: int) -> int:
     pid = ctypes.c_ulong(0)
-    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     return int(pid.value)
 
 
 def _window_class_name(hwnd: int) -> str:
     cls = ctypes.create_unicode_buffer(128)
-    if not ctypes.windll.user32.GetClassNameW(hwnd, cls, len(cls)):
+    if not _user32.GetClassNameW(hwnd, cls, len(cls)):
         return ""
     return cls.value
 
@@ -65,7 +95,7 @@ def window_frame_rect(hwnd: int):
         ctypes.c_void_p(int(hwnd)), ctypes.c_uint(DWMWA_EXTENDED_FRAME_BOUNDS),
         ctypes.byref(r), ctypes.sizeof(r))
     if hr != 0:
-        if not ctypes.windll.user32.GetWindowRect(ctypes.c_void_p(int(hwnd)),
+        if not _user32.GetWindowRect(ctypes.c_void_p(int(hwnd)),
                                                   ctypes.byref(r)):
             return None
     return (int(r.left), int(r.top), int(r.right - r.left), int(r.bottom - r.top))
@@ -78,7 +108,7 @@ def foreign_foreground() -> int:
     focus, and capturing our own overlay is exactly the loop this mode exists
     to avoid.
     """
-    user32 = ctypes.windll.user32
+    user32 = _user32
     hwnd = user32.GetForegroundWindow()
     if not hwnd or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
         return 0
@@ -97,7 +127,7 @@ def _is_desktop_window(hwnd: int) -> bool:
     transparent above it. The desktop is not a window - exclude it (user
     report: "only the desktop is shown, the windows are transparent").
     """
-    user32 = ctypes.windll.user32
+    user32 = _user32
     cls = ctypes.create_unicode_buffer(64)
     if not user32.GetClassNameW(hwnd, cls, 64):
         return False
@@ -111,7 +141,7 @@ def window_under_cursor() -> int:
     and press. Works on the desktop too - the focused window there is
     Progman, which is not capturable.
     """
-    user32 = ctypes.windll.user32
+    user32 = _user32
     pt = wintypes.POINT()
     if not user32.GetCursorPos(ctypes.byref(pt)):
         return 0
@@ -141,7 +171,7 @@ def _is_taskbar_window(hwnd: int) -> bool:
     apps and must not appear in the window list (user report: "сторонние
     процессы попадают в список").
     """
-    user32 = ctypes.windll.user32
+    user32 = _user32
     if user32.GetWindow(hwnd, 4):  # GW_OWNER
         return False
     ex = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
@@ -168,10 +198,10 @@ def list_capturable_windows() -> list[tuple[int, str]]:
     reads as broken (user report, 11.09). Picking one restores it first,
     see pipeline.switch_window.
     """
-    user32 = ctypes.windll.user32
+    user32 = _user32
     out: list[tuple[int, str]] = []
 
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    @_WNDENUMPROC
     def cb(hwnd, _lparam):
         if not user32.IsWindowVisible(hwnd):
             return True

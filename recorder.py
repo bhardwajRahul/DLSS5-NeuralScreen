@@ -917,7 +917,11 @@ class GpuRecorder:
                  audio: bool = True, codec: int = REC_CODEC_AUTO,
                  hdr: bool = False):
         self.path = str(Path(path))
-        self.partial_path = f"{self.path}.partial"
+        # Its own staging name, not the CPU recorder's: when the start times out
+        # the worker may still act on the RECS afterwards and create this file,
+        # while the CPU fallback (commands.start_recorder) is already writing
+        # its own - under the same `.partial` they overwrote each other.
+        self.partial_path = f"{self.path}.gpu.partial"
         self.fps = float(fps)
         self.width = 0
         self.height = 0

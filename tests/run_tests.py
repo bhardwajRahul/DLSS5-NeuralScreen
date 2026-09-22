@@ -82,7 +82,12 @@ ABOUT = {
     "test_bypass.py": "explicit OFF consumers receive raw frames and the pipeline survives",
     "test_out_ring.py": "read_out reuses its buffers and never overwrites one in use",
     "test_verdict_forget.py": "the feature-18 verdict dies with the worker that gave it",
-    "test_audio_limiter.py": "the soft limiter keeps the recording from clipping",
+    "test_audio_limiter.py": "the soft limiter folds only the peaks - a packet with one keeps its quiet samples",
+    "test_worker_zorder_and_safety.py": "the worker keeps the panel above the picture; HDR/FG, presenter, descriptor, DLL-gate and recorder fixes",
+    "test_reader_resilience.py": "a dead worker reaches every wait at once, frames met during a probe are kept, late acks stay with their command",
+    "test_config_resilience.py": "BOM and broken configs, gpu: null saves, hostile values, another copy's autostart, a release over another",
+    "test_conversion_colour_and_hdr.py": "converted streams carry their colour tags, the timescale is capped, HDR sources are refused",
+    "test_ui_containment.py": "failures stay local, taken keys are refused, a failed probe restores the source, no focus theft",
     "test_audio_pack.py": "the audio format structs are byte-packed, truncated formats rejected",
     "test_bake_menu.py": "an open menu is baked into the file, a closed one is not",
     "test_bake_menu_position.py": "the baked menu lands where the user saw it, not at the frame centre",
@@ -246,7 +251,11 @@ ABOUT = {
 # unit/static; GUI-E2E is reserved for real desktop/app-shell scenarios.
 TEST_GROUPS = {
     GROUP_UNIT_STATIC: frozenset({
-        "test_adaptive_exposure.py",
+        "test_config_resilience.py",
+        "test_conversion_colour_and_hdr.py",
+        "test_reader_resilience.py",
+        "test_ui_containment.py",
+        "test_worker_zorder_and_safety.py",
         "test_alert_font_size.py",
         "test_alert_position.py",
         "test_apply_debounce.py",
@@ -416,6 +425,10 @@ TEST_GROUPS = {
         "test_quality_gpu.py",
     }),
     GROUP_GPU: frozenset({
+        # Starts the real program with its worker twice (and the log it
+        # writes is the program's own) - it sat among the unit tests, so a
+        # "static only" run took the GPU and cleared NeuralScreen.log.
+        "test_adaptive_exposure.py",
         "test_media_convert.py",
         "test_gpu_recorder.py",
         "test_early_reply.py",

@@ -35,6 +35,7 @@ the same reason the desktop is.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -463,7 +464,7 @@ def _estimate_frames(container, stream, rate) -> int:
     return max(0, int(round(seconds * float(rate)))) if seconds > 0 else 0
 
 
-MAX_TIMESCALE = 1_000_000
+MAX_TIMESCALE = 90_000
 
 
 def _encoder_grid(stream, rate: Fraction) -> Fraction:
@@ -479,10 +480,11 @@ def _encoder_grid(stream, rate: Fraction) -> Fraction:
 
     The source's own time_base is the grid its timestamps live on, so writing
     in it is exact for any file, variable rate or not - but it also becomes the
-    mp4 timescale, and a container that declares nanoseconds would put a 32-bit
-    player past its limit in seconds. Anything finer than a microsecond is
-    therefore coarsened to it: no frame rate in use comes near that tick, so
-    frames still land on ticks of their own.
+    mp4 timescale, and a fine one puts a 32-bit player past its limit: 2^32
+    ticks of a microsecond is 71 minutes. Anything finer than 1/90000 s (the
+    MPEG system clock, 13 hours in 32 bits) is therefore coarsened to it: no
+    frame rate in use comes near that tick, so frames still land on ticks of
+    their own, and the pts rounding keeps them in order.
     """
     grid = Fraction(getattr(stream, "time_base", None) or 0)
     if not grid:
@@ -544,6 +546,20 @@ def _add_video_stream(out_container, name, rate, width, height, quality,
         # overflows after six minutes. The source's grid is 60000 there.
         stream.time_base = grid
         stream.codec_context.time_base = grid
+    # The colour tags on the STREAM, before it opens: the encoder's colour
+    # description and the mp4 `colr` box are fixed at open(), and the frames
+    # alone (convert_video tags them too) never reached them. The samples are
+    # full-range sRGB, and a file that says nothing is read by players as
+    # limited range - crushed blacks and clipped whites in every conversion.
+    # The same four values the recorder writes (recorder.py).
+    try:
+        context = stream.codec_context
+        context.color_range = 2          # full
+        context.colorspace = 1           # BT.709
+        context.color_primaries = 1      # BT.709
+        context.color_trc = 13           # sRGB
+    except Exception as exc:
+        print(f"[convert] colour metadata not set: {exc}", file=sys.stderr)
     if name == SOFTWARE_CODEC:
         stream.options = {"preset": "medium",
                           "crf": str(SOFTWARE_CRF.get(quality, 17))}
@@ -552,6 +568,23 @@ def _add_video_stream(out_container, name, rate, width, height, quality,
         stream.options = encoder_options(quality)
     stream.open()
     return stream
+
+
+#: The transfer curves that mean an HDR source: SMPTE ST 2084 (PQ, HDR10) and
+#: ARIB STD-B67 (HLG), as libav numbers them.
+HDR_TRANSFERS = frozenset({16, 18})
+#: Undecodable packets tolerated before a conversion gives up: a recording that
+#: was cut short ends in one or two, and losing the whole file to them is worse
+#: than losing those frames.
+MAX_BAD_PACKETS = 30
+
+
+def _is_hdr(stream) -> bool:
+    """Whether a video stream is HDR (PQ or HLG), by its transfer tag."""
+    try:
+        return int(stream.codec_context.color_trc) in HDR_TRANSFERS
+    except Exception:
+        return False
 
 
 class _AacTrack:
@@ -664,6 +697,13 @@ def convert_video(source: Path, output: Path, params: dict, *,
         if stream is None:
             raise ConversionError("decode", "the file carries no video stream")
         stream.thread_type = "AUTO"
+        if _is_hdr(stream):
+            # The frames would reach the network as PQ/HLG code values read as
+            # sRGB and come out tagged BT.709: washed out and desaturated, with
+            # no word of warning - including the program's own HDR10
+            # recordings. There is no tone mapping here yet, so it refuses.
+            raise ConversionError(
+                "hdr", "the source is HDR (PQ/HLG) - conversion takes SDR video")
         width = int(stream.codec_context.width)
         height = int(stream.codec_context.height)
         if width < 64 or height < 64:
@@ -737,28 +777,59 @@ def convert_video(source: Path, output: Path, params: dict, *,
                 else:
                     raise ConversionError("encode", exc) from exc
 
-        stage = "process"
+        # The stage follows the work, frame by frame: reading the source is
+        # "decode", the network is "process", writing the file is "encode".
+        # It used to be "process" for all three, and a truncated source was
+        # reported as "the file could not be written".
+        stage = "decode"
         done = 0
         skipped = 0
+        bad = 0
         last_pts = -1
         time_base = out_stream.time_base
+        # One frame's length on the output clock: the step for a frame the
+        # demuxer left without a timestamp. `last_pts + 1` assumed one tick per
+        # frame, and the muxer's tick is far finer (1/12800 s for a 25 fps AVI
+        # in mp4) - a 10-minute film came out a second long.
+        step = max(1, int(round(float(1 / rate) / float(time_base))))
         streams = [stream] + ([audio_in] if audio_mode in ("copy", "aac") else [])
         say("starting", 0, total, size_text)
+
+        def decoded(packet):
+            """The packet's frames; a packet that will not decode is skipped."""
+            nonlocal bad
+            try:
+                return packet.decode()
+            except av.error.InvalidDataError as exc:
+                bad += 1
+                if bad == 1:
+                    notes.append("some of the source could not be decoded - "
+                                 "those frames are left out")
+                if bad > MAX_BAD_PACKETS:
+                    raise ConversionError("decode", exc) from exc
+                return ()
+
         for packet in container.demux(*streams):
             _check(cancel)
+            stage = "decode"
             if packet.stream.index != stream.index:
                 if audio_mode == "copy":
                     if packet.dts is None:
                         continue          # the demuxer's flush packet
                     packet.stream = audio_out
+                    stage = "encode"
                     out_container.mux(packet)
                 elif aac is not None:
-                    for audio_frame in packet.decode():
+                    for audio_frame in decoded(packet):
+                        stage = "encode"
                         aac.push(audio_frame, out_container)
+                        stage = "decode"
                 continue
-            for frame in packet.decode():
+            for frame in decoded(packet):
                 _check(cancel)
+                stage = "decode"
                 rgba = _as_rgba(frame.to_ndarray(format="rgba"))
+                stage = "process"
                 if rgba.shape[1] != even_w or rgba.shape[0] != even_h:
                     rgba = np.ascontiguousarray(rgba[:even_h, :even_w])
                 if engine is None:
@@ -782,11 +853,12 @@ def convert_video(source: Path, output: Path, params: dict, *,
                 video_frame.color_trc = 13           # sRGB
                 when = frame.time
                 pts = (int(round(float(when) / float(time_base)))
-                       if when is not None else last_pts + 1)
+                       if when is not None else last_pts + step)
                 pts = max(pts, last_pts + 1)
                 last_pts = pts
                 video_frame.pts = pts
                 video_frame.time_base = time_base
+                stage = "encode"
                 for out_packet in out_stream.encode(video_frame):
                     out_container.mux(out_packet)
                 done += 1

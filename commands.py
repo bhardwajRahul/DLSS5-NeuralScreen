@@ -24,6 +24,7 @@ import queue
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -78,7 +79,8 @@ def _unique_media_path(directory: Path, prefix: str, suffix: str) -> Path:
     for serial in range(10_000):
         tail = "" if serial == 0 else f"-{serial}"
         candidate = directory / f"{stem}{tail}{suffix}"
-        if not candidate.exists() and not Path(f"{candidate}.partial").exists():
+        if (not candidate.exists() and not Path(f"{candidate}.partial").exists()
+                and not Path(f"{candidate}.gpu.partial").exists()):
             return candidate
     raise RuntimeError("could not allocate a unique media filename")
 
@@ -643,6 +645,75 @@ def _window_action_hwnd(value) -> int:
     return int(prefix, 16)
 
 
+def _hotkey_owner(st, parsed, cmd: str) -> str | None:
+    """The command that already has this combination, or None.
+
+    Compared without MOD_NOREPEAT: parse_binding adds it to every binding,
+    and a key is the same key with or without it.
+    """
+    from hotkeys import MOD_NOREPEAT
+    mods, vk = parsed
+    for other_mods, other_vk, other_cmd, _name in (st.hotkey_bindings or {}).values():
+        if other_cmd == cmd:
+            continue
+        if other_vk == vk and (other_mods & ~MOD_NOREPEAT) == (mods & ~MOD_NOREPEAT):
+            return other_cmd
+    return None
+
+
+def _send_per_pass_now(st, params, *, enabled: bool, wait: bool = True) -> None:
+    """Send the second set to the running worker - if there is one to send to.
+
+    After the restart budget runs out the worker is shut down (its stdin is
+    closed) while the menu stays usable, and a per-pass control moved in that
+    state wrote into the closed pipe: ValueError, unhandled, the program
+    closed. The set is kept on st and in the config either way; the next
+    worker is told it by _send_per_pass_if_any after its first RNSZ.
+    """
+    worker = getattr(st, "worker", None)
+    if (getattr(st, "worker_failed", False) or worker is None
+            or worker.poll() is not None):
+        print("[main] the per-pass parameters wait for a running worker")
+        return
+    try:
+        pipeline.send_per_pass(worker, params, enabled=enabled)
+        if wait:
+            st.reader.wait_per_pass(timeout=pipeline.RACK_TIMEOUT)
+    except Exception as exc:
+        print(f"[main] the per-pass parameters did not go through ({exc})",
+              file=sys.stderr)
+
+
+def run_contained(st, what: str, fn, *args):
+    """Run one dispatcher step for the main loop; a failure is not fatal.
+
+    Every handler exception used to travel up to main's top-level handler and
+    end the program: a click in a state nobody had tried - a per-pass slider
+    after the worker failed (a write into its closed stdin), a monitor switch
+    whose fallback capture could not open during a dock change, the GPU
+    revert's rebuild - closed NeuralScreen with the picture gone. The failure
+    is now logged with its traceback and shown, and the loop goes on; the
+    next frame's own checks restart what the failed step left down.
+
+    Only the main loop goes through here. apply_menu_action and
+    drain_commands themselves still raise, so the tests that drive every
+    control through them still see a crash as a crash.
+    Returns what `fn` returned, or None when it raised.
+    """
+    try:
+        return fn(*args)
+    except Exception as exc:
+        print(f"[main] {what} failed: {exc!r}", file=sys.stderr)
+        traceback.print_exc()
+        try:
+            st.display.alert(UI_STRINGS[st.lang].get(
+                "action_failed",
+                "That did not work - the details are in NeuralScreen.log"))
+        except Exception:
+            pass
+        return None
+
+
 def apply_menu_action(st, action: tuple) -> None:
     """A menu action -> a real setting.
 
@@ -801,17 +872,12 @@ def apply_menu_action(st, action: tuple) -> None:
         # frame is evaluated with it. request_apply would rebuild the cascade
         # for nothing - and the cascade is not what changed.
         if st.nr_pass_params:
-            pipeline.send_per_pass(st.worker, st.nr_pass_params, enabled=True)
-            try:
-                st.reader.wait_per_pass(timeout=pipeline.RACK_TIMEOUT)
-            except Exception as exc:
-                print(f"[main] the per-pass parameters did not go through "
-                      f"({exc})", file=sys.stderr)
+            _send_per_pass_now(st, st.nr_pass_params, enabled=True)
         else:
             # An explicit clear, not silence: the worker is running a set right
             # now and has to be told to drop it. A fresh worker would not need
             # this, but this one is mid-flight.
-            pipeline.send_per_pass(st.worker, None, enabled=False)
+            _send_per_pass_now(st, None, enabled=False, wait=False)
     elif kind == "pass_param":
         # One control inside the second set. Held on st and written through on
         # the menu's close, like the main sliders - only the wire is immediate.
@@ -836,12 +902,7 @@ def apply_menu_action(st, action: tuple) -> None:
         st.nr_pass_params[name] = value
         st.cfg["nr_pass_params"] = dict(st.nr_pass_params)
         print(f"[main] pass 2+ {name} -> {value}")
-        pipeline.send_per_pass(st.worker, st.nr_pass_params, enabled=True)
-        try:
-            st.reader.wait_per_pass(timeout=pipeline.RACK_TIMEOUT)
-        except Exception as exc:
-            print(f"[main] the per-pass parameters did not go through ({exc})",
-                  file=sys.stderr)
+        _send_per_pass_now(st, st.nr_pass_params, enabled=True)
     elif kind == "style":
         # Style travels with the parameters, so it applies the same way they
         # do since C1: a resize command with unchanged sizes, no feature
@@ -931,9 +992,18 @@ def apply_menu_action(st, action: tuple) -> None:
     elif kind == "hotkey":
         cmd, text = action[1], action[2]
         parsed = parse_binding(text)
+        taken_by = _hotkey_owner(st, parsed, cmd) if parsed is not None else None
         if parsed is None:
             print(f"[main] could not parse the combination {text!r}", file=sys.stderr)
             st.display.alert(UI_STRINGS[st.lang]["hotkey_bad"])
+        elif taken_by is not None:
+            # Two commands on one key: RegisterHotKey refuses the second, the
+            # poller fires only the first, and the label showed both - one of
+            # them silently dead while the panel said "settings applied".
+            print(f"[main] {text} is already bound to {taken_by} - {cmd} keeps "
+                  f"its key", file=sys.stderr)
+            st.display.alert(UI_STRINGS[st.lang].get(
+                "hotkey_taken", "{} is already used by another action").format(text))
         else:
             over = st.cfg.get("hotkeys")
             over = dict(over) if isinstance(over, dict) else {}
@@ -948,6 +1018,18 @@ def apply_menu_action(st, action: tuple) -> None:
                 st.display.alert(UI_STRINGS[st.lang]["save_fail"])
                 return
             print(f"[main] {cmd} -> {text}")
+            waiter = getattr(st.hotkeys, "wait_rebound", None)
+            if (waiter is not None and waiter(0.5)
+                    and text in getattr(st.hotkeys, "failed", [])):
+                # Another program holds the combination. Kept (it is what the
+                # user chose, and the other program may let go of it), but
+                # not reported as working.
+                print(f"[main] {text} is held by another program - "
+                      f"RegisterHotKey refused it", file=sys.stderr)
+                st.display.alert(UI_STRINGS[st.lang].get(
+                    "hotkey_in_use",
+                    "{} is taken by another program - it will not work").format(text))
+                return
             st.display.alert(UI_STRINGS[st.lang]["settings_applied"])
     elif kind == "theme":
         # The menu has already applied the theme to itself (overlay_ui).
@@ -1159,7 +1241,8 @@ def apply_menu_action(st, action: tuple) -> None:
             st.display.menu.set_state(
                 {"profiles": list(PROFILES) + list(st.presets)})
             print(f"[main] preset saved: {name}")
-            st.display.alert(f"Preset saved: {name}")
+            st.display.alert(UI_STRINGS[st.lang].get(
+                "preset_saved", "Preset saved: {}").format(name))
         elif name == "delete_preset":
             # Only a user preset can be deleted - the built-in
             # profiles are not deletable.
@@ -1172,7 +1255,8 @@ def apply_menu_action(st, action: tuple) -> None:
                 st.display.menu.set_state(
                     {"profiles": list(PROFILES) + list(st.presets)})
                 print(f"[main] preset deleted: {st.cfg['profile']}")
-                st.display.alert(f"Preset deleted: {st.cfg['profile']}")
+                st.display.alert(UI_STRINGS[st.lang].get(
+                    "preset_deleted", "Preset deleted: {}").format(st.cfg["profile"]))
                 new_params = dict(PROFILES["Natural"])
                 new_params["style"] = int(st.params.get("style", 1))
                 pipeline.request_apply(st, st.work_scale, "Natural", new_params)

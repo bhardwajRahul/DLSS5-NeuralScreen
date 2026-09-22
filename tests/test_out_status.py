@@ -123,12 +123,19 @@ def main() -> int:
             failures.append(f"status=0: expected a RuntimeError, got {got!r}")
 
         # 5. A real NGX failure: 0xBAD00001 - must surface as an error.
-        reader2 = WorkerReader(fake, 1, 1, shm=None)
-        fake.send_out(5, 1, 0, 0xBAD00001)
+        #    Its own worker as well: a reader that met an error goes on
+        #    draining its stream (so a worker mid-payload can still exit), and
+        #    a second reader on the same pipe would be read out from under.
+        fake2 = FakeWorker()
+        reader2 = WorkerReader(fake2, 1, 1, shm=None)
+        fake2.send_out(5, 1, 0, 0xBAD00001)
         got = reader2._queue.get(timeout=5.0)
         if got[0] is not None or not isinstance(got[1], RuntimeError) or \
                 "0xBAD00001" not in str(got[1]):
             failures.append(f"0xBAD00001: expected a RuntimeError, got {got!r}")
+        if reader2.alive:
+            failures.append("a reader that met an error still reports the worker alive")
+        fake2.close()
         reader2._thread.join(timeout=2.0)
     finally:
         fake.close()

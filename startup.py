@@ -225,8 +225,13 @@ def _apply_residual_env(cfg: dict) -> None:
     if value is None:
         return  # the worker's own 1.0: more passes, more effect
     try:
-        strength = min(1.0, max(0.0, float(value)))
-    except (TypeError, ValueError):
+        strength = float(value)
+        if strength != strength:
+            raise ValueError("NaN")
+        strength = min(1.0, max(0.0, strength))
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: a huge integer does not fit a float, and it used to
+        # raise out of the launch.
         print(f"[main] config.json: residual_strength {value!r} is not a "
               f"number - the worker's default stands", file=sys.stderr)
         return

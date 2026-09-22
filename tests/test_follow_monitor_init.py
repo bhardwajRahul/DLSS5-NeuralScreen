@@ -33,6 +33,7 @@ BASE = _repo_root(Path(__file__).resolve().parent)
 sys.path.insert(0, str(BASE))
 
 import pipeline  # noqa: E402
+import startup  # noqa: E402
 
 
 def main() -> int:
@@ -53,10 +54,12 @@ def main() -> int:
         width=2560, height=1440, mon_w=2560, mon_h=1440,
         monitor=0, work_scale=0.65, work_w=1664, work_h=936,
         follow_pos=None, follow_resize=None, mon_resize=None,
+        mon_origin=(0, 0), cfg={}, lang="en",
         capture=types.SimpleNamespace(devicename=r"\\.\DISPLAY1",
                                       resolution=(2560, 1440),
                                       close=lambda: None),
-        display=types.SimpleNamespace(alert=lambda *a, **k: None),
+        display=types.SimpleNamespace(alert=lambda *a, **k: None,
+                                      set_origin=lambda x, y: None),
     )
 
     calls = {"teardown": 0, "rebuild": 0, "refresh": 0}
@@ -75,6 +78,9 @@ def main() -> int:
         "rebuild": pipeline.rebuild_pipeline,
         "refresh": pipeline._refresh_dxcam_factory,
         "screen": pipeline.ScreenCapture,
+        "origin": pipeline.monitor_origin,
+        "resolve": pipeline.resolve_output_idx,
+        "env": startup._apply_monitor_env,
     }
     try:
         # The FIRST call of the session already sees a changed size.
@@ -86,13 +92,17 @@ def main() -> int:
         pipeline._refresh_dxcam_factory = lambda: calls.__setitem__(
             "refresh", calls["refresh"] + 1)
         pipeline.ScreenCapture = _Cap
+        # The corner is the test's, not this machine's monitor layout.
+        pipeline.monitor_origin = lambda name: (0, 0)
+        pipeline.resolve_output_idx = lambda name: 0
+        startup._apply_monitor_env = lambda capture: (0, 0)
 
         try:
             # Two ticks: the first records the size and returns; the second
             # (after the 0.5 s settle) rebuilds. Both must not raise.
             pipeline.follow_monitor(st)
             import time
-            st.mon_resize = ((3840, 2160),
+            st.mon_resize = (((3840, 2160), (0, 0)),
                              time.monotonic() - 1.0)  # pretend it settled
             pipeline.follow_monitor(st)
         except AttributeError as exc:
@@ -106,6 +116,9 @@ def main() -> int:
         pipeline.rebuild_pipeline = real["rebuild"]
         pipeline._refresh_dxcam_factory = real["refresh"]
         pipeline.ScreenCapture = real["screen"]
+        pipeline.monitor_origin = real["origin"]
+        pipeline.resolve_output_idx = real["resolve"]
+        startup._apply_monitor_env = real["env"]
 
     if not failures:
         if calls["rebuild"] != 1:

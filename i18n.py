@@ -2162,7 +2162,7 @@ STRINGS["ru"].update({
 
 })
 
-STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicateur de trames de sortie', 'fg_capped': 'this card caps at x{live}; x{want} is retried next time'})
+STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier', 'fg_capped': 'this card caps at x{live}; x{want} is retried next time'})
 
 for _strings in STRINGS.values():
     _strings.update({
@@ -2180,7 +2180,7 @@ STRINGS["ru"].update({
 
 STRINGS['ru'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множитель кадров', 'fg_capped': 'карта ограничена до x{live}; x{want} - в следующий раз'})
 
-STRINGS['fr'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier', 'fg_capped': 'cette carte plafonne a x{live}; x{want} sera retente'})
+STRINGS['fr'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicateur de trames de sortie', 'fg_capped': 'cette carte plafonne a x{live}; x{want} sera retente'})
 
 STRINGS['de'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplikator der Ausgabebilder', 'fg_capped': 'diese Karte kann nur x{live}; x{want} wird erneut versucht'})
 
@@ -3253,3 +3253,212 @@ STRINGS["ko"].update({
     'convert_batch_done': '{total}개 중 {done}개 변환 완료',
     'select_convert_dir': '변환된 파일을 저장할 폴더 선택',
 })
+
+
+# --- 22.09 audit pass: messages that were missing, hardcoded or one-language -----
+# A failed menu action, a hotkey that cannot be had, the preset alerts (they
+# were English in every language), a source the converter refuses, and the
+# compatibility dialog (it was Russian in every language).
+_AUDIT_STRINGS = {
+    "en": {
+        "action_failed": "That did not work - the details are in NeuralScreen.log",
+        "hotkey_taken": "{} is already used by another action",
+        "hotkey_in_use": "{} is taken by another program - it will not work",
+        "preset_saved": "Preset saved: {}",
+        "preset_deleted": "Preset deleted: {}",
+        "convert_err_hdr": "HDR video cannot be converted yet",
+        "compat_title": "NeuralScreen - compatibility check",
+        "compat_blocked": (
+            "NeuralScreen will not start screen capture: the compatibility "
+            "check did not pass.\n\nResult: {verdict}.\n\nDiagnostic package:\n"
+            "{bundle}\n\n\"Retry\" clears this verdict and runs the check again."),
+        "compat_verdict": "{status}; stage {stage}; passed {passed}/{attempted}, expected {expected}",
+        "compat_not_run": "the check did not run",
+        "compat_bundle_failed": "could not be created; details in NeuralScreen.log",
+    },
+    "ru": {
+        "action_failed": "Не получилось - подробности в NeuralScreen.log",
+        "hotkey_taken": "{} уже назначена другому действию",
+        "hotkey_in_use": "{} занята другой программой - она работать не будет",
+        "preset_saved": "Пресет сохранён: {}",
+        "preset_deleted": "Пресет удалён: {}",
+        "convert_err_hdr": "HDR-видео пока не конвертируется",
+        "compat_title": "NeuralScreen - проверка совместимости",
+        "compat_blocked": (
+            "NeuralScreen не будет запускать захват экрана: проверка "
+            "совместимости не пройдена.\n\nРезультат: {verdict}.\n\n"
+            "Диагностический пакет:\n{bundle}\n\n«Повторить» очистит этот "
+            "вердикт и выполнит проверку ещё раз."),
+        "compat_verdict": "{status}; этап {stage}; успешно {passed}/{attempted}, ожидалось {expected}",
+        "compat_not_run": "проверка не запустилась",
+        "compat_bundle_failed": "создать не удалось; подробности в NeuralScreen.log",
+    },
+    "fr": {
+        "action_failed": "Cela n'a pas fonctionné - les détails sont dans NeuralScreen.log",
+        "hotkey_taken": "{} est déjà utilisée par une autre action",
+        "hotkey_in_use": "{} est prise par un autre programme - elle ne fonctionnera pas",
+        "preset_saved": "Préréglage enregistré : {}",
+        "preset_deleted": "Préréglage supprimé : {}",
+        "convert_err_hdr": "la vidéo HDR ne peut pas encore être convertie",
+        "compat_title": "NeuralScreen - vérification de compatibilité",
+        "compat_blocked": (
+            "NeuralScreen ne lancera pas la capture d'écran : la vérification "
+            "de compatibilité a échoué.\n\nRésultat : {verdict}.\n\nPaquet de "
+            "diagnostic :\n{bundle}\n\n« Réessayer » efface ce verdict et "
+            "relance la vérification."),
+        "compat_verdict": "{status} ; étape {stage} ; réussis {passed}/{attempted}, attendus {expected}",
+        "compat_not_run": "la vérification n'a pas pu démarrer",
+        "compat_bundle_failed": "impossible à créer ; détails dans NeuralScreen.log",
+    },
+    "de": {
+        "action_failed": "Das hat nicht funktioniert - Details in NeuralScreen.log",
+        "hotkey_taken": "{} ist bereits einer anderen Aktion zugewiesen",
+        "hotkey_in_use": "{} wird von einem anderen Programm belegt - sie funktioniert nicht",
+        "preset_saved": "Voreinstellung gespeichert: {}",
+        "preset_deleted": "Voreinstellung gelöscht: {}",
+        "convert_err_hdr": "HDR-Video kann noch nicht konvertiert werden",
+        "compat_title": "NeuralScreen - Kompatibilitätsprüfung",
+        "compat_blocked": (
+            "NeuralScreen startet die Bildschirmaufnahme nicht: Die "
+            "Kompatibilitätsprüfung ist fehlgeschlagen.\n\nErgebnis: {verdict}."
+            "\n\nDiagnosepaket:\n{bundle}\n\n„Wiederholen“ löscht dieses "
+            "Ergebnis und führt die Prüfung erneut aus."),
+        "compat_verdict": "{status}; Phase {stage}; erfolgreich {passed}/{attempted}, erwartet {expected}",
+        "compat_not_run": "die Prüfung konnte nicht starten",
+        "compat_bundle_failed": "konnte nicht erstellt werden; Details in NeuralScreen.log",
+    },
+    "es": {
+        "action_failed": "No ha funcionado - los detalles están en NeuralScreen.log",
+        "hotkey_taken": "{} ya está asignada a otra acción",
+        "hotkey_in_use": "{} la usa otro programa - no funcionará",
+        "preset_saved": "Preajuste guardado: {}",
+        "preset_deleted": "Preajuste eliminado: {}",
+        "convert_err_hdr": "el vídeo HDR aún no se puede convertir",
+        "compat_title": "NeuralScreen - comprobación de compatibilidad",
+        "compat_blocked": (
+            "NeuralScreen no iniciará la captura de pantalla: la comprobación "
+            "de compatibilidad no se ha superado.\n\nResultado: {verdict}.\n\n"
+            "Paquete de diagnóstico:\n{bundle}\n\n«Reintentar» borra este "
+            "veredicto y vuelve a ejecutar la comprobación."),
+        "compat_verdict": "{status}; etapa {stage}; correctas {passed}/{attempted}, esperadas {expected}",
+        "compat_not_run": "la comprobación no se pudo iniciar",
+        "compat_bundle_failed": "no se pudo crear; detalles en NeuralScreen.log",
+    },
+    "it": {
+        "action_failed": "Non ha funzionato - i dettagli sono in NeuralScreen.log",
+        "hotkey_taken": "{} è già assegnato a un'altra azione",
+        "hotkey_in_use": "{} è occupato da un altro programma - non funzionerà",
+        "preset_saved": "Preset salvato: {}",
+        "preset_deleted": "Preset eliminato: {}",
+        "convert_err_hdr": "i video HDR non si possono ancora convertire",
+        "compat_title": "NeuralScreen - verifica di compatibilità",
+        "compat_blocked": (
+            "NeuralScreen non avvierà la cattura dello schermo: la verifica di "
+            "compatibilità non è stata superata.\n\nRisultato: {verdict}.\n\n"
+            "Pacchetto diagnostico:\n{bundle}\n\n«Riprova» cancella questo "
+            "esito ed esegue di nuovo la verifica."),
+        "compat_verdict": "{status}; fase {stage}; riusciti {passed}/{attempted}, attesi {expected}",
+        "compat_not_run": "la verifica non è partita",
+        "compat_bundle_failed": "non è stato possibile crearlo; dettagli in NeuralScreen.log",
+    },
+    "pt": {
+        "action_failed": "Não funcionou - os detalhes estão em NeuralScreen.log",
+        "hotkey_taken": "{} já está atribuída a outra ação",
+        "hotkey_in_use": "{} está ocupada por outro programa - não vai funcionar",
+        "preset_saved": "Predefinição salva: {}",
+        "preset_deleted": "Predefinição excluída: {}",
+        "convert_err_hdr": "vídeo HDR ainda não pode ser convertido",
+        "compat_title": "NeuralScreen - verificação de compatibilidade",
+        "compat_blocked": (
+            "O NeuralScreen não vai iniciar a captura de tela: a verificação "
+            "de compatibilidade não passou.\n\nResultado: {verdict}.\n\nPacote "
+            "de diagnóstico:\n{bundle}\n\n\"Repetir\" apaga este resultado e "
+            "executa a verificação novamente."),
+        "compat_verdict": "{status}; etapa {stage}; aprovados {passed}/{attempted}, esperados {expected}",
+        "compat_not_run": "a verificação não iniciou",
+        "compat_bundle_failed": "não foi possível criar; detalhes em NeuralScreen.log",
+    },
+    "pl": {
+        "action_failed": "Nie udało się - szczegóły w NeuralScreen.log",
+        "hotkey_taken": "{} jest już przypisany do innej akcji",
+        "hotkey_in_use": "{} jest zajęty przez inny program - nie będzie działać",
+        "preset_saved": "Zapisano ustawienie: {}",
+        "preset_deleted": "Usunięto ustawienie: {}",
+        "convert_err_hdr": "wideo HDR nie może jeszcze zostać przekonwertowane",
+        "compat_title": "NeuralScreen - test zgodności",
+        "compat_blocked": (
+            "NeuralScreen nie uruchomi przechwytywania ekranu: test zgodności "
+            "nie przeszedł.\n\nWynik: {verdict}.\n\nPakiet diagnostyczny:\n"
+            "{bundle}\n\n„Ponów” usuwa ten wynik i uruchamia test ponownie."),
+        "compat_verdict": "{status}; etap {stage}; udane {passed}/{attempted}, oczekiwano {expected}",
+        "compat_not_run": "test się nie uruchomił",
+        "compat_bundle_failed": "nie udało się utworzyć; szczegóły w NeuralScreen.log",
+    },
+    "uk": {
+        "action_failed": "Не вдалося - подробиці в NeuralScreen.log",
+        "hotkey_taken": "{} уже призначена іншій дії",
+        "hotkey_in_use": "{} зайнята іншою програмою - вона не працюватиме",
+        "preset_saved": "Пресет збережено: {}",
+        "preset_deleted": "Пресет видалено: {}",
+        "convert_err_hdr": "HDR-відео поки не конвертується",
+        "compat_title": "NeuralScreen - перевірка сумісності",
+        "compat_blocked": (
+            "NeuralScreen не запускатиме захоплення екрана: перевірку "
+            "сумісності не пройдено.\n\nРезультат: {verdict}.\n\n"
+            "Діагностичний пакет:\n{bundle}\n\n«Повторити» очистить цей "
+            "вердикт і виконає перевірку ще раз."),
+        "compat_verdict": "{status}; етап {stage}; успішно {passed}/{attempted}, очікувалося {expected}",
+        "compat_not_run": "перевірка не запустилася",
+        "compat_bundle_failed": "створити не вдалося; подробиці в NeuralScreen.log",
+    },
+    "zh": {
+        "action_failed": "操作未成功 - 详情见 NeuralScreen.log",
+        "hotkey_taken": "{} 已分配给其他操作",
+        "hotkey_in_use": "{} 已被其他程序占用 - 该热键将无法使用",
+        "preset_saved": "预设已保存：{}",
+        "preset_deleted": "预设已删除：{}",
+        "convert_err_hdr": "暂不支持转换 HDR 视频",
+        "compat_title": "NeuralScreen - 兼容性检查",
+        "compat_blocked": (
+            "NeuralScreen 不会启动屏幕捕获：兼容性检查未通过。\n\n结果：{verdict}。"
+            "\n\n诊断包：\n{bundle}\n\n“重试”将清除此结论并重新运行检查。"),
+        "compat_verdict": "{status}；阶段 {stage}；成功 {passed}/{attempted}，预期 {expected}",
+        "compat_not_run": "检查未能启动",
+        "compat_bundle_failed": "无法创建；详情见 NeuralScreen.log",
+    },
+    "ja": {
+        "action_failed": "うまくいきませんでした - 詳細は NeuralScreen.log にあります",
+        "hotkey_taken": "{} は既に別の操作に割り当てられています",
+        "hotkey_in_use": "{} は別のプログラムが使用中です - 動作しません",
+        "preset_saved": "プリセットを保存しました: {}",
+        "preset_deleted": "プリセットを削除しました: {}",
+        "convert_err_hdr": "HDR 動画はまだ変換できません",
+        "compat_title": "NeuralScreen - 互換性チェック",
+        "compat_blocked": (
+            "互換性チェックに合格しなかったため、NeuralScreen は画面キャプチャを"
+            "開始しません。\n\n結果: {verdict}。\n\n診断パッケージ:\n{bundle}\n\n"
+            "「再試行」でこの判定を消去し、チェックをもう一度実行します。"),
+        "compat_verdict": "{status}; 段階 {stage}; 成功 {passed}/{attempted}、期待値 {expected}",
+        "compat_not_run": "チェックを開始できませんでした",
+        "compat_bundle_failed": "作成できませんでした。詳細は NeuralScreen.log にあります",
+    },
+    "ko": {
+        "action_failed": "작업이 실패했습니다 - 자세한 내용은 NeuralScreen.log 에 있습니다",
+        "hotkey_taken": "{} 은(는) 이미 다른 동작에 지정되어 있습니다",
+        "hotkey_in_use": "{} 은(는) 다른 프로그램이 사용 중입니다 - 작동하지 않습니다",
+        "preset_saved": "프리셋 저장됨: {}",
+        "preset_deleted": "프리셋 삭제됨: {}",
+        "convert_err_hdr": "HDR 동영상은 아직 변환할 수 없습니다",
+        "compat_title": "NeuralScreen - 호환성 검사",
+        "compat_blocked": (
+            "호환성 검사를 통과하지 못해 NeuralScreen 이 화면 캡처를 시작하지 "
+            "않습니다.\n\n결과: {verdict}.\n\n진단 패키지:\n{bundle}\n\n"
+            "\"다시 시도\"를 누르면 이 판정을 지우고 검사를 다시 실행합니다."),
+        "compat_verdict": "{status}; 단계 {stage}; 성공 {passed}/{attempted}, 예상 {expected}",
+        "compat_not_run": "검사를 시작하지 못했습니다",
+        "compat_bundle_failed": "만들지 못했습니다. 자세한 내용은 NeuralScreen.log 에 있습니다",
+    },
+}
+for _lang, _extra in _AUDIT_STRINGS.items():
+    STRINGS[_lang].update(_extra)
+del _lang, _extra

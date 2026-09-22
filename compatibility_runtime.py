@@ -410,6 +410,11 @@ def startup_gate(st) -> bool:
         if result is not None and result.is_pass:
             return True
 
+        # In the user's language: this is the one message a user sees when
+        # the program refuses to start, and it was Russian in every language.
+        from i18n import STRINGS
+        lang = getattr(st, "lang", None) or (getattr(st, "cfg", None) or {}).get("lang")
+        text = STRINGS.get(lang) or STRINGS["en"]
         try:
             bundle = create_support_bundle(st, stage=(
                 f"compatibility.{result.stage}" if result is not None
@@ -418,27 +423,22 @@ def startup_gate(st) -> bool:
             bundle_text = str(bundle)
         except Exception as exc:
             print(f"[compat] diagnostic bundle failed: {type(exc).__name__}: {exc}")
-            bundle_text = "создать не удалось; подробности в NeuralScreen.log"
+            bundle_text = text["compat_bundle_failed"]
 
         if result is None:
-            verdict = "проверка не запустилась"
+            verdict = text["compat_not_run"]
         else:
-            verdict = (
-                f"{result.status.value}; этап {result.stage}; "
-                f"успешно {result.passed}/{result.attempted}, ожидалось {result.expected}"
-            )
-        message = (
-            "NeuralScreen не будет запускать захват экрана: проверка "
-            f"совместимости не пройдена.\n\nРезультат: {verdict}.\n\n"
-            f"Диагностический пакет:\n{bundle_text}\n\n"
-            "«Повторить» очистит этот вердикт и выполнит проверку ещё раз."
-        )
+            verdict = text["compat_verdict"].format(
+                status=result.status.value, stage=result.stage,
+                passed=result.passed, attempted=result.attempted,
+                expected=result.expected)
+        message = text["compat_blocked"].format(verdict=verdict, bundle=bundle_text)
         retry = 4  # IDRETRY
         try:
             answer = ctypes.windll.user32.MessageBoxW(
                 None,
                 message,
-                "NeuralScreen — проверка совместимости",
+                text["compat_title"],
                 0x00000005 | 0x00000010 | 0x00040000,  # RETRY/CANCEL, error, foreground
             )
         except Exception:

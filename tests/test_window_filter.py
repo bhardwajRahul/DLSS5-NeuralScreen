@@ -100,7 +100,9 @@ def main() -> int:
     # confirm the filter AGREES with itself - it says nothing about whether
     # the filter rejects anything. These drive the rule directly, through the
     # real user32/dwmapi calls the product makes (audit: WEAK).
-    user32 = ctypes.windll.user32
+    # The module's own user32 - winapi declares its prototypes on a private
+    # instance, so that is the one the rule actually calls.
+    user32 = winapi._user32
     dwmapi = ctypes.windll.dwmapi
 
     real_getwindow = user32.GetWindow

@@ -26,10 +26,62 @@ import threading
 import time
 from pathlib import Path
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
+# Private library instances, not ctypes.windll.*. The function objects of
+# windll.user32 are shared by every module in the process, and pystray declares
+# its own prototypes on them when the tray starts: CreateWindowExW with the
+# class name as an ATOM, DefWindowProcW returning a DWORD (an LRESULT cut to
+# 32 bits), GetModuleHandleW with an errcheck. Whichever module declared last
+# decided how the calls below were marshalled - and the handles came back as a
+# C int without a restype at all: GetModuleHandleW's 64-bit image base was
+# truncated before it reached RegisterClassW and CreateWindowExW. Every
+# prototype this module relies on is stated here, on its own instances.
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+LRESULT = ctypes.c_ssize_t
+kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+kernel32.GetModuleHandleW.restype = wt.HMODULE
 user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
-user32.DefWindowProcW.restype = ctypes.c_ssize_t
+user32.DefWindowProcW.restype = LRESULT
+user32.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD,
+                                   ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE,
+                                   wt.LPVOID]
+user32.CreateWindowExW.restype = wt.HWND
+user32.DestroyWindow.argtypes = [wt.HWND]
+user32.DestroyWindow.restype = wt.BOOL
+user32.FindWindowW.argtypes = [wt.LPCWSTR, wt.LPCWSTR]
+user32.FindWindowW.restype = wt.HWND
+user32.FindWindowExW.argtypes = [wt.HWND, wt.HWND, wt.LPCWSTR, wt.LPCWSTR]
+user32.FindWindowExW.restype = wt.HWND
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wt.HWND
+user32.GetCursorPos.argtypes = [ctypes.POINTER(wt.POINT)]
+user32.GetCursorPos.restype = wt.BOOL
+user32.GetWindowRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
+user32.GetWindowRect.restype = wt.BOOL
+user32.IsIconic.argtypes = [wt.HWND]
+user32.IsIconic.restype = wt.BOOL
+user32.IsWindow.argtypes = [wt.HWND]
+user32.IsWindow.restype = wt.BOOL
+user32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wt.BOOL
+user32.LoadCursorW.argtypes = [wt.HINSTANCE, wt.LPVOID]   # a MAKEINTRESOURCE id
+user32.LoadCursorW.restype = wt.HANDLE
+user32.LoadImageW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, wt.UINT, ctypes.c_int,
+                              ctypes.c_int, wt.UINT]
+user32.LoadImageW.restype = wt.HANDLE
+user32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+user32.SendMessageW.restype = LRESULT
+user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+user32.PostMessageW.restype = wt.BOOL
+user32.PostQuitMessage.argtypes = [ctypes.c_int]
+user32.PostQuitMessage.restype = None
+user32.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT]
+user32.GetMessageW.restype = wt.BOOL
+user32.TranslateMessage.argtypes = [ctypes.POINTER(wt.MSG)]
+user32.TranslateMessage.restype = wt.BOOL
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(wt.MSG)]
+user32.DispatchMessageW.restype = LRESULT
 
 WS_POPUP = 0x80000000
 WS_VISIBLE = 0x10000000
@@ -42,6 +94,10 @@ WM_NCACTIVATE = 0x0086
 WA_CLICKACTIVE = 0x2
 WA_ACTIVE = 0x1
 WM_SYSCOMMAND = 0x0112
+#: Posted by a second copy of the program that was just started: "you are
+#: already running - show yourself". WM_APP range, so no system message can
+#: collide with it.
+WM_NS_SHOW = 0x8000 + 0x4E53
 SC_MINIMIZE = 0xF020
 SC_RESTORE = 0xF120
 SC_CLOSE = 0xF060
@@ -122,6 +178,9 @@ class TaskbarWindow:
         self._prev_thread: threading.Thread | None = None
 
     def _wnd_proc(self, hwnd, msg, wparam, lparam) -> int:
+        if msg == WM_NS_SHOW:
+            self._emit("show_settings")
+            return 0
         if msg == WM_ACTIVATE:
             # A click on the taskbar button arrives as WA_ACTIVE here (not
             # WA_CLICKACTIVE - measured on Win11 26200). System activations
@@ -230,16 +289,19 @@ class TaskbarWindow:
             pt = wt.POINT()
             if not user32.GetCursorPos(ctypes.byref(pt)):
                 return False
+            # Every taskbar, not the first of each class: with three monitors
+            # or more there is one Shell_SecondaryTrayWnd per extra screen,
+            # and FindWindowW only ever returned one of them - a click on our
+            # button on the others failed this test.
             for cls in ("Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
-                tb = user32.FindWindowW(cls, None)
-                if not tb:
-                    continue
-                rect = wt.RECT()
-                if not user32.GetWindowRect(tb, ctypes.byref(rect)):
-                    continue
-                if (rect.left <= pt.x < rect.right
-                        and rect.top <= pt.y < rect.bottom):
-                    return True
+                tb = user32.FindWindowExW(None, None, cls, None)
+                while tb:
+                    rect = wt.RECT()
+                    if (user32.GetWindowRect(tb, ctypes.byref(rect))
+                            and rect.left <= pt.x < rect.right
+                            and rect.top <= pt.y < rect.bottom):
+                        return True
+                    tb = user32.FindWindowExW(None, tb, cls, None)
             return False
         except Exception:
             return False
@@ -400,7 +462,9 @@ class TaskbarWindow:
         ico = Path(__file__).resolve().parent / "native" / "neuralscreen.ico"
         if not ico.is_file():
             return
-        hicon = user32.LoadImageW(hinst, str(ico), IMAGE_ICON, 32, 32,
+        # No module handle with LR_LOADFROMFILE: the image is a file, and
+        # an instance handle there asks for a resource inside that module.
+        hicon = user32.LoadImageW(None, str(ico), IMAGE_ICON, 32, 32,
                                   LR_LOADFROMFILE)
         if hicon:
             user32.SendMessageW(self._hwnd, WM_SETICON, ICON_SMALL, hicon)

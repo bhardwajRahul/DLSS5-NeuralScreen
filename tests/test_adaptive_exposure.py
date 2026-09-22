@@ -70,16 +70,17 @@ def _run_worker(env_extra: dict) -> str:
                     break
                 time.sleep(0.5)
         finally:
-            proc.terminate()
+            # The tree this test started, and nothing else: terminate() kills
+            # only python.exe, and the worker (nvngx.dll) it spawned has to go
+            # with it or the next GUI test finds "NeuralScreen is already
+            # running". It used to be `taskkill /IM nvngx.dll` - every worker on
+            # the machine, a NeuralScreen the developer had open included.
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-            # terminate() kills only python.exe - the worker (nvngx.dll) is a
-            # child of main.py and survives, which makes the next GUI test fail
-            # with "NeuralScreen is already running". Kill it by name.
-            subprocess.run(["taskkill", "/F", "/IM", "nvngx.dll"],
-                           capture_output=True)
     return (pw_line or "") + "|" + (nr_line or "")
 
 

@@ -20,32 +20,45 @@ BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
 import pipeline  # noqa: E402
+import startup  # noqa: E402
 
 OLD = (2560, 1440)
 NEW = (3840, 2160)
 
 
 def _state():
-    return types.SimpleNamespace(
+    st = types.SimpleNamespace(
         window_hwnd=None, worker_failed=False, running=True,
         width=OLD[0], height=OLD[1], mon_w=OLD[0], mon_h=OLD[1],
         mon_resize=None, monitor=0, work_scale=0.65, work_w=0, work_h=0,
+        mon_origin=(0, 0), cfg={}, lang="en", origins=[],
         capture=types.SimpleNamespace(devicename=r"\\.\DISPLAY1",
-                                      resolution=NEW, close=lambda: None),
-        display=types.SimpleNamespace(alert=lambda *a, **kw: None))
+                                      resolution=NEW, close=lambda: None))
+    st.display = types.SimpleNamespace(
+        alert=lambda *a, **kw: None,
+        set_origin=lambda x, y: st.origins.append((x, y)))
+    return st
 
 
-def _drive(st, size, ticks, rebuilds, step=0.1):
+def _drive(st, size, ticks, rebuilds, step=0.1, origin=(0, 0)):
     clock = {"t": 500.0}
     real = (pipeline.monitor_size, pipeline.teardown_pipeline,
             pipeline.rebuild_pipeline, pipeline.ScreenCapture,
-            pipeline._refresh_dxcam_factory, pipeline.time)
+            pipeline._refresh_dxcam_factory, pipeline.time,
+            pipeline.monitor_origin, pipeline.resolve_output_idx,
+            startup._apply_monitor_env)
     pipeline.monitor_size = lambda name: size(clock["t"]) if callable(size) else size
+    # The corner is the test's, not this machine's monitor layout.
+    pipeline.monitor_origin = lambda name: origin
+    pipeline.resolve_output_idx = lambda name: 0
+    startup._apply_monitor_env = lambda capture: origin
     pipeline.teardown_pipeline = lambda s: None
     pipeline._refresh_dxcam_factory = lambda: None
+    # A fresh capture opens at the size the monitor has at that moment.
     pipeline.ScreenCapture = lambda monitor_idx=0: types.SimpleNamespace(
-        devicename=r"\\.\DISPLAY1", resolution=NEW, monitor_idx=monitor_idx,
-        close=lambda: None)
+        devicename=r"\\.\DISPLAY1",
+        resolution=size(clock["t"]) if callable(size) else size,
+        monitor_idx=monitor_idx, close=lambda: None)
     pipeline.rebuild_pipeline = lambda s, note: rebuilds.append((s.width, s.height))
     pipeline.time = types.SimpleNamespace(monotonic=lambda: clock["t"])
     try:
@@ -55,7 +68,9 @@ def _drive(st, size, ticks, rebuilds, step=0.1):
     finally:
         (pipeline.monitor_size, pipeline.teardown_pipeline,
          pipeline.rebuild_pipeline, pipeline.ScreenCapture,
-         pipeline._refresh_dxcam_factory, pipeline.time) = real
+         pipeline._refresh_dxcam_factory, pipeline.time,
+         pipeline.monitor_origin, pipeline.resolve_output_idx,
+         startup._apply_monitor_env) = real
 
 
 def main() -> int:
@@ -108,11 +123,25 @@ def main() -> int:
     if rebuilds:
         failures.append("a failed worker was rebuilt by the monitor watcher")
 
+    # 6. Another display made the main one (Windows 11's way of moving the
+    #    taskbar): this monitor keeps its size but its corner moves on the
+    #    virtual desktop. One rebuild, and the new corner reaches the overlay
+    #    - it used to be ignored, and the picture stayed at the old corner.
+    st = _state()
+    st.capture.resolution = OLD
+    rebuilds = []
+    _drive(st, OLD, 30, rebuilds, origin=(-2560, 0))
+    if len(rebuilds) != 1:
+        failures.append(f"a moved monitor produced {len(rebuilds)} rebuilds, expected 1")
+    if tuple(st.mon_origin) != (-2560, 0) or st.origins[-1:] != [(-2560, 0)]:
+        failures.append(f"the new corner did not reach the state/overlay: "
+                        f"{st.mon_origin} {st.origins}")
+
     for f in failures:
         print("FAIL:", f)
     if failures:
         return 1
-    print("OK: a resolution change rebuilds once, after it settles")
+    print("OK: a resolution or position change rebuilds once, after it settles")
     return 0
 
 

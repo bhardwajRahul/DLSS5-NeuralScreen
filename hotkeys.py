@@ -260,6 +260,9 @@ class HotkeyController:
         self._ready = threading.Event()
         self._lock = threading.Lock()
         self._pending: dict | None = None   # bindings for MSG_REBIND
+        # Set once a MSG_REBIND has been registered, so the caller can read
+        # `failed` for the NEW bindings (see wait_rebound).
+        self._rebound = threading.Event()
         self._active = False                # hotkeys are currently registered
         # Polling fallback state: vk -> last time the command fired, and
         # vk -> was the key down on the previous tick. The timestamp kills the
@@ -316,6 +319,7 @@ class HotkeyController:
                         self._bindings = self._pending
                         self._pending = None
                 self._register()
+                self._rebound.set()
         self._unregister()
 
     # Registration lives only in the hotkey thread — see MSG_* above.
@@ -425,7 +429,18 @@ class HotkeyController:
             return
         with self._lock:
             self._pending = {k: tuple(v) for k, v in bindings.items()}
+        self._rebound.clear()
         user32.PostThreadMessageW(self._tid, MSG_REBIND, 0, 0)
+
+    def wait_rebound(self, timeout: float = 0.5) -> bool:
+        """Wait for the last rebind to be registered; False on a timeout.
+
+        The registration happens on the hotkey thread, so `registered` and
+        `failed` describe the new bindings only after this returns True. A
+        combination another program already holds used to report "settings
+        applied" and then simply never fire.
+        """
+        return self._rebound.wait(timeout)
 
     def stop(self) -> None:
         self._poll_stop.set()

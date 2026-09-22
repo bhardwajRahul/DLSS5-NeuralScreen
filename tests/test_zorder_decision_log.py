@@ -38,12 +38,14 @@ class _FakeUser32:
         self.top = top
         self.present = 0x2222
         self.raises = []
+        self.afters = []
 
     def FindWindowW(self, cls, title):
         return self.present if cls == "NeuralScreenPresent" else 0
 
     def SetWindowPos(self, hwnd, after, x, y, cx, cy, flags):
         self.raises.append(int(hwnd))
+        self.afters.append(int(after))
         return 1
 
 
@@ -60,7 +62,7 @@ class _FakeDisplay(display.Display):
         self._zlog_sig = None
         self._zlog_t = 0.0
 
-    def _top_real_window(self, ours: tuple = ()):
+    def _top_real_window(self, ours: tuple = (), area=None):
         # `ours` is what the real walk stops on - our own two windows. The
         # scripted stack decides the answer here, but the signature has to
         # match or the caller's TypeError is swallowed by the guard's
@@ -88,6 +90,7 @@ def _drive(top, hud):
         display.user32 = real_mod
         display.pygame.display.get_wm_info = real_wm
     lines = [l for l in buf.getvalue().splitlines() if l.strip()]
+    _drive.afters = fake.afters
     return lines, fake.raises
 
 
@@ -149,16 +152,21 @@ def main() -> int:
     if raises != [HUD]:
         failures.append(f"picture on top must raise the HUD, raised {raises}")
 
-    # 3. a foreign window took the slot: re-assert the pair (picture first,
-    #    HUD last - that order is what puts the HUD on top)
+    # 3. a foreign window took the slot: re-assert the pair - the HUD to the
+    #    top of the band, then the picture inserted directly BELOW it. The old
+    #    order (picture first, HUD last) left one call's worth of time with
+    #    the picture over the panel, which a refresh could catch (#96).
     lines, raises = _drive(FOREIGN, HUD)
     if _decision(lines) != "foreign-above-hud":
         failures.append(f"foreign on top logged {lines}, "
                         f"expected foreign-above-hud")
-    if raises != [PRESENT, HUD]:
+    if raises != [HUD, PRESENT]:
         failures.append(f"foreign on top must re-assert the pair, raised "
-                        f"{raises} (expected picture {hex(PRESENT)} then HUD "
-                        f"{hex(HUD)})")
+                        f"{raises} (expected HUD {hex(HUD)} then picture "
+                        f"{hex(PRESENT)})")
+    elif _drive.afters != [-1, HUD]:
+        failures.append(f"the picture must go directly below the HUD "
+                        f"(insert after {hex(HUD)}), got {_drive.afters}")
     # The line has to name the window that took the slot, otherwise the log
     # cannot tell the user's problem from a healthy one.
     if lines and "0x" not in lines[0]:

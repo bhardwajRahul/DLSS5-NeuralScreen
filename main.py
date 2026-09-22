@@ -33,10 +33,71 @@ import time
 from pathlib import Path
 
 
+def _startup_failure(kind, value, tb) -> None:
+    """An import of ours failed before logging exists: say so, somewhere.
+
+    The heavy imports below (cv2, numpy, pygame, every module of the program)
+    run before _init_logging and outside main()'s own error box. Under
+    pythonw - the .exe and .vbs launchers - a missing runtime package, a
+    half-finished unpack or a NEURALSCREEN_PYTHON pointing at a plain Python
+    showed nothing at all and wrote nothing anywhere. Installed only for the
+    imports of a real launch, and put back once they are done.
+    """
+    import traceback
+    text = "".join(traceback.format_exception(kind, value, tb))
+    try:
+        log = Path(__file__).resolve().parent / "NeuralScreen.log"
+        with open(log, "a", encoding="utf-8") as handle:
+            handle.write("\n[startup] NeuralScreen could not start:\n" + text)
+    except OSError:
+        pass
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            None, f"NeuralScreen could not start:\n{value}\n\n"
+                  f"Details in NeuralScreen.log next to the program.",
+            "NeuralScreen", 0x10)
+    except Exception:
+        pass
+    sys.__excepthook__(kind, value, tb)
 
 
+def _drop_stale_bytecode(base: Path) -> None:
+    """Throw the compiled-module cache away once per release installed over another.
+
+    Every file in the release zip is dated 1980-01-01, and Python reuses a
+    .pyc as long as the source's date and size match what it was compiled
+    from. Unpacked over the previous release, every module that kept its size
+    went on running the OLD code: settings_io.py is 73605 bytes in 2.1.0 and in
+    2.1.1 (only APP_VERSION changed), so 2.1.1 on top of 2.1.0 still called
+    itself 2.1.0 - and the compatibility cache, keyed by the version, reused
+    2.1.0's verdict. A release carries VERSION.txt, which names its commit;
+    when it differs from the one the cache was built under, the cache goes,
+    before any module of ours is imported. A development tree has no
+    VERSION.txt, and nothing happens there.
+    """
+    try:
+        stamp = (base / "VERSION.txt").read_bytes()
+    except OSError:
+        return
+    cache = base / "__pycache__"
+    marker = cache / "release.stamp"
+    try:
+        if marker.read_bytes() == stamp:
+            return
+    except OSError:
+        pass
+    import shutil
+    shutil.rmtree(cache, ignore_errors=True)
+    try:
+        cache.mkdir(exist_ok=True)
+        marker.write_bytes(stamp)
+    except OSError:
+        pass
 
 
+if __name__ == "__main__":
+    sys.excepthook = _startup_failure
+    _drop_stale_bytecode(Path(__file__).resolve().parent)
 
 
 # DPI awareness BEFORE any import (cv2, capture, display, tray): if some
@@ -130,6 +191,10 @@ from protocol import (  # noqa: F401
     WINDOW_FLAG_DISABLE, WINDOW_FMT, WINDOW_MAGIC, WorkerReader,
     _read_exact, prepare_capture, send_dda, send_frame, send_gray, send_motion_size,
     send_out, send_resize, send_wgc, send_window)
+
+# The imports are done: from here on main()'s own handler reports failures.
+if sys.excepthook is _startup_failure:
+    sys.excepthook = sys.__excepthook__
 
 
 
@@ -422,7 +487,22 @@ def main() -> int:
     # block the next launch.
     _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "NeuralScreen_SingleInstance")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-        print("[main] another NeuralScreen is already running - this copy exits", file=sys.stderr)
+        # The running copy is asked to show itself: this one used to exit
+        # with only a log line, so a double-click on the program while it sat
+        # in the tray - or on a new version while the old one ran - did
+        # nothing anyone could see. Posted, not a message box: a launch from
+        # a script must not block on a dialog.
+        print("[main] another NeuralScreen is already running - this copy "
+              "asks it to show its menu and exits", file=sys.stderr)
+        try:
+            from taskbar import WM_NS_SHOW
+            user32 = ctypes.windll.user32
+            user32.FindWindowW.restype = ctypes.c_void_p
+            running = user32.FindWindowW("NeuralScreenTaskbar", "NeuralScreen")
+            if running:
+                user32.PostMessageW(ctypes.c_void_p(running), WM_NS_SHOW, 0, 0)
+        except Exception:
+            pass
         return 1
 
     # The config file's path, kept in the state: the settings module writes
@@ -553,7 +633,8 @@ def main() -> int:
             if st.display.menu.visible:
                 for ev in pygame.event.get():
                     for action in st.display.menu.handle_event(ev):
-                        commands.apply_menu_action(st, action)
+                        commands.run_contained(st, f"menu action {action!r}",
+                                               commands.apply_menu_action, st, action)
                 if st.display.menu.visible and not st.display.menu.dragging:
                     st.display.menu.set_state(settings_io.menu_payload(st))
 
@@ -582,7 +663,10 @@ def main() -> int:
             loop_start = time.perf_counter()
             now = time.monotonic()
 
-            if not commands.drain_commands(st):
+            # False only when the user asked to quit; a command that raised
+            # returns None and the loop goes on (run_contained).
+            if commands.run_contained(st, "a command", commands.drain_commands,
+                                      st) is False:
                 break
 
             # The answer from the "Save as" dialog (it runs in its own thread).
@@ -776,7 +860,8 @@ def main() -> int:
             if st.display.menu.visible:
                 for ev in pygame.event.get():
                     for action in st.display.menu.handle_event(ev):
-                        commands.apply_menu_action(st, action)
+                        commands.run_contained(st, f"menu action {action!r}",
+                                               commands.apply_menu_action, st, action)
                 if not st.display.menu.dragging:
                     st.display.menu.set_state(settings_io.menu_payload(st))
 
@@ -1001,7 +1086,22 @@ def main() -> int:
                         # while the new worker warms up.
                         if st.display.is_switch_active():
                             st.display.draw_overlay(0.0)
-                        if not commands.drain_commands(st):
+                        else:
+                            # The window's own messages, and the z-order
+                            # guard, while main waits: a heavy frame can take
+                            # the whole 5 s, and for that long nothing pumped
+                            # the SDL window (Windows marks it "Not Responding"
+                            # after 5 s) and nothing put the panel back over a
+                            # picture that had covered it.
+                            try:
+                                pygame.event.pump()
+                                if st.display.menu.visible:
+                                    st.display.raise_topmost()
+                            except Exception:
+                                pass
+                        if commands.run_contained(st, "a command",
+                                                  commands.drain_commands,
+                                                  st) is False:
                             st.running = False
                             break
                         if st.reader is not recv_reader:
@@ -1213,6 +1313,10 @@ def main() -> int:
                     # The new window must become a transparent layer over the worker again
                     st.display.set_hud_only(True)
                     st.display.raise_topmost()
+                # The old menu may have been waiting for a hotkey to rebind
+                # (every global hotkey suspended until the field gets a key);
+                # the new one is not, so nothing would ever resume them.
+                st.hotkeys.resume()
                 st.display.alert(UI_STRINGS[st.lang]["nr_on"])
             _perf("show", t0)
             completed_at = time.perf_counter()

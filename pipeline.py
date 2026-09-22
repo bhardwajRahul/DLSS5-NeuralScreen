@@ -33,7 +33,7 @@ import numpy as np
 import channels
 import settings_io
 from capture import (ScreenCapture, _refresh_dxcam_factory,
-                     monitor_size,
+                     monitor_origin, monitor_size,
                      resolve_output_idx)
 from display import Display
 from guides import TemporalGuideGenerator
@@ -115,6 +115,10 @@ def _drain_stderr(worker, logs: list[str], stop: threading.Event) -> None:
     stop event (shutdown_worker). After a restart the old thread reads from
     the CLOSED stderr of the old worker: readline() returns b"" (EOF) and the
     thread exits - it does not hang and does not read the new worker's stderr.
+
+    shutdown_worker sets the stop event only once the process is gone, so a
+    worker's last lines - the recording it finalised, "input stream closed" -
+    still reach the log, and its stderr never fills up while it is exiting.
     """
     try:
         for raw in iter(worker.stderr.readline, b""):
@@ -344,18 +348,18 @@ def restart_worker(worker: subprocess.Popen, params: dict, width: int, height: i
 def shutdown_worker(worker: subprocess.Popen, stop: threading.Event | None = None) -> None:
     """Graceful shutdown: close stdin (EOF -> the worker exits with code 0), wait 10 s.
 
-    stop is the finish event for _drain_stderr (from start_worker): it is set
-    immediately so the drain thread does not hang on readline() of a closed
-    stderr (on Windows closing a pipe from another thread does not wake
-    readline - the thread exits only on EOF after the process dies, or on
-    stop).
+    stop is the finish event for _drain_stderr (from start_worker). It is set
+    once the process is gone, not before: set first, as it used to be, the
+    drain stopped after the next line - the worker's shutdown lines (a
+    finalised recording among them) never reached the log, and a worker whose
+    last words filled the pipe blocked on them until the 10 s ran out and it
+    was killed. The drain still cannot hang: the process's exit is the EOF
+    that ends its readline().
     """
     if worker.poll() is not None:
         if stop is not None:
             stop.set()
         return
-    if stop is not None:
-        stop.set()
     try:
         if worker.stdin and not worker.stdin.closed:
             worker.stdin.close()
@@ -376,6 +380,9 @@ def shutdown_worker(worker: subprocess.Popen, stop: threading.Event | None = Non
             except subprocess.TimeoutExpired:
                 print("[main] worker could not be reaped after kill",
                       file=sys.stderr)
+    finally:
+        if stop is not None:
+            stop.set()
 
 
 def require_compatibility(st) -> None:
@@ -563,6 +570,25 @@ def rebuild_pipeline(st, note: str) -> None:
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
         st.params, st.work_w, st.work_h, warmup, full_w, full_h,
         st.shm)
+    if getattr(st, "worker_failed", False):
+        # Rebuilt while the worker stood failed: a monitor, GPU, HDR, Spout or
+        # motion change made from the menu of a dead worker. The fresh one IS
+        # the revive. The failed state used to survive it, so the loop never
+        # fed the new worker - and the armed auto-revive, or Num1, then killed
+        # it and started another (with a 2 s pause), or left a card the user
+        # had just picked dark until Num1. The pause was the failure's, not
+        # the user's (a failure sets both), so it goes with it.
+        print("[main] the rebuild replaces the failed worker - NR resumes")
+        st.worker_failed = False
+        st.next_auto_revive = 0.0
+        st.consecutive_restarts = 0
+        st.paused = False
+        tray = getattr(st, "tray", None)
+        if tray is not None:
+            try:
+                tray._set_state(nr=True)
+            except Exception:
+                pass
     # The window and the menu are rebuilt, keeping the user settings.
     # A soft resize instead of close()+recreate: the old code went
     # through pygame.quit() and built a fresh window - the screen went
@@ -681,8 +707,15 @@ def switch_monitor(st, new_monitor: int | str) -> None:
     if isinstance(new_monitor, str):
         resolved = resolve_output_idx(new_monitor)
         if resolved is None:
+            # The menu lists monitors live, the dxcam factory enumerated them
+            # at import: a monitor plugged in after launch was offered but not
+            # selectable until a restart. Ask the factory again first.
+            _refresh_dxcam_factory()
+            resolved = resolve_output_idx(new_monitor)
+        if resolved is None:
             print(f"[main] monitor {new_monitor!r} is not connected",
                   file=sys.stderr)
+            st.display.alert(UI_STRINGS[st.lang]["mon_fail"])
             return
         new_monitor = resolved
     if new_monitor == st.monitor:
@@ -710,6 +743,10 @@ def switch_monitor(st, new_monitor: int | str) -> None:
         st.cfg["monitor"] = st.monitor
         st.display.alert(UI_STRINGS[st.lang]["mon_fail"])
     st.width, st.height = st.capture.resolution
+    # The monitor's own size goes with it: the menu's input layer in window
+    # mode is sized from mon_w/mon_h, and after a switch it kept the old
+    # monitor's - spilling onto the neighbour or clipping the panel.
+    st.mon_w, st.mon_h = st.width, st.height
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale,
                                       cascade_passes(st))
     # A monitor change IS a capture-source change, so the window target
@@ -739,6 +776,55 @@ def switch_monitor(st, new_monitor: int | str) -> None:
     st.mon_origin = _apply_monitor_env(st.capture)
     st.display.set_origin(*st.mon_origin)
     rebuild_pipeline(st, f"Monitor {st.monitor}: {st.width}x{st.height}")
+
+
+def _restore_after_failed_probe(st, hwnd: int) -> None:
+    """The probe of `hwnd` failed: put the worker's source back as it was.
+
+    The probe re-points the running worker at the window as a side effect
+    (the worker closes its current capture first), so a refusal leaves it on
+    nothing, or on a window that is not the picture. What goes back is the
+    source this pipeline was built for:
+
+      * the desktop - DDA1 at the monitor's size, and its DACK awaited so it
+        cannot answer somebody else's DDA1 later (audit #4, F2);
+      * another window, the one being processed - pointed at again, and kept
+        only if it still captures at the size the pipeline has. It used to go
+        to the desktop at THAT window's size, which is a crop of the monitor's
+        top-left corner shown where the window was, while everything else
+        still believed in window mode;
+      * the processed window itself (the follow path re-probing it) - it can
+        no longer be captured, so window mode ends honestly.
+    """
+    current = st.window_hwnd
+    try:
+        if current is None:
+            send_dda(st.worker, st.width, st.height)
+            st.reader.wait_dack(timeout=5.0)
+            restored = True
+        elif int(current) != int(hwnd):
+            aw, ah = channels.probe_window_capture(st, current)
+            restored = (int(aw), int(ah)) == (int(st.width), int(st.height))
+        else:
+            restored = False
+    except Exception as exc:
+        print(f"[main] the previous source did not come back ({exc})",
+              file=sys.stderr)
+        restored = False
+    if restored or current is None:
+        st.display.exit_switch_mode()  # the overlay was raised before the probe
+        if current is None:
+            # The size that was refused is remembered, or follow_window would
+            # ask for the same switch again in half a second and keep asking
+            # (user, 13.09: the alert kept coming back). Only in desktop mode:
+            # in window mode follow_size is the processed window's.
+            rect = window_frame_rect(hwnd) if hwnd else None
+            if rect is not None:
+                st.follow_size = rect[2:]
+        return
+    print("[main] the processed window cannot be captured any more - "
+          "back to the desktop", file=sys.stderr)
+    switch_window(st, 0)
 
 
 def switch_window(st, hwnd: int) -> None:
@@ -772,40 +858,19 @@ def switch_window(st, hwnd: int) -> None:
         try:
             aw, ah = channels.probe_window_capture(st, hwnd)
         except Exception as exc:
-            # The probe left the worker inside a WGCW session that
-            # may be half-open: put the source back on the desktop
-            # before bailing out (audit #4, F2).
-            try:
-                send_dda(st.worker, st.width, st.height)
-            except Exception:
-                pass
             st.display.alert(UI_STRINGS[st.lang]["win_fail"])
             print(f"[main] the worker cannot capture that window: {exc}",
                   file=sys.stderr)
-            st.display.exit_switch_mode()  # the overlay was raised before the probe
-            rect = window_frame_rect(hwnd) if hwnd else None
-            if rect is not None:
-                st.follow_size = rect[2:]   # do not ask again every half second
+            _restore_after_failed_probe(st, hwnd)
             return
         if aw < 64 or ah < 64:
             # Below the work-resolution floor there is nothing to
             # process - and a work size larger than the frame is how
-            # the worker gets killed. The probe above already switched
-            # the worker's source to WGCW as a side effect: put it
-            # back on the desktop, otherwise the frozen tiny window
-            # becomes the picture until the next rebuild (audit #4,
-            # F2).
-            send_dda(st.worker, st.width, st.height)
+            # the worker gets killed.
             print(f"[main] the window is {aw}x{ah} - too small to process",
                   file=sys.stderr)
             st.display.alert(UI_STRINGS[st.lang]["win_fail"])
-            st.display.exit_switch_mode()  # the overlay was raised before the probe
-            # The size that was refused is remembered, or follow_window
-            # would ask for the same switch again in half a second and keep
-            # asking (user, 13.09: the alert kept coming back).
-            rect = window_frame_rect(hwnd) if hwnd else None
-            if rect is not None:
-                st.follow_size = rect[2:]
+            _restore_after_failed_probe(st, hwnd)
             return
         teardown_pipeline(st)
         st.window_hwnd = int(hwnd)
@@ -1006,19 +1071,35 @@ def follow_monitor(st) -> None:
     """
     if st.window_hwnd is not None or st.worker_failed or not st.running:
         return
-    size = monitor_size(st.capture.devicename)
-    if size is None or size == (st.width, st.height):
+    devicename = st.capture.devicename
+    size = monitor_size(devicename)
+    if size is None:
         st.mon_resize = None
         return
+    # Where the monitor sits counts as much as its size. Making another
+    # display the main one - on Windows 11 the only way to move the taskbar to
+    # it - moves every monitor's corner on the virtual desktop without
+    # resizing any of them, and the overlay and the worker's picture stayed
+    # at the old corner, off by the difference (#96).
+    origin = monitor_origin(devicename)
+    current_origin = tuple(getattr(st, "mon_origin", None) or (0, 0))
+    if origin is None:
+        origin = current_origin
+    origin = tuple(origin)
+    if size == (st.width, st.height) and origin == current_origin:
+        st.mon_resize = None
+        return
+    key = (size, origin)
     now = time.monotonic()
-    if st.mon_resize is None or st.mon_resize[0] != size:
-        st.mon_resize = (size, now)
+    if st.mon_resize is None or st.mon_resize[0] != key:
+        st.mon_resize = (key, now)
         return
     if now - st.mon_resize[1] < 0.5:
         return
     st.mon_resize = None
-    print(f"[main] the monitor is now {size[0]}x{size[1]} "
-          f"(was {st.width}x{st.height}) - rebuilding the pipeline")
+    print(f"[main] the monitor is now {size[0]}x{size[1]} at {origin} "
+          f"(was {st.width}x{st.height} at {current_origin}) - rebuilding "
+          f"the pipeline")
     teardown_pipeline(st)
     # The dxcam factory caches the outputs it enumerated at import, and a
     # mode change is exactly what makes that cache wrong - a fresh capture
@@ -1028,17 +1109,28 @@ def follow_monitor(st) -> None:
     except Exception:
         pass
     _refresh_dxcam_factory()
+    # By name, not by the old flat index: a new main display renumbers the
+    # outputs (output 0 is always the primary), and the old index would open
+    # the other monitor.
+    idx = resolve_output_idx(devicename)
     try:
-        st.capture = ScreenCapture(monitor_idx=st.monitor)
+        st.capture = ScreenCapture(monitor_idx=st.monitor if idx is None else idx)
     except Exception as exc:
         print(f"[main] the capture did not survive the mode change: {exc}",
               file=sys.stderr)
         st.capture = ScreenCapture(monitor_idx=0)
-        st.monitor = st.capture.monitor_idx
+        st.display.alert(UI_STRINGS[st.lang]["mon_fail"])
+    st.monitor = st.capture.monitor_idx
+    st.cfg["monitor"] = st.monitor
     st.width, st.height = st.capture.resolution
     st.mon_w, st.mon_h = st.width, st.height
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale,
                                        cascade_passes(st))
+    # The new corner reaches the overlay now and the worker at its spawn
+    # (NS_WINDOW_POS is read from the worker's own environment).
+    from startup import _apply_monitor_env
+    st.mon_origin = _apply_monitor_env(st.capture)
+    st.display.set_origin(*st.mon_origin)
     rebuild_pipeline(st, f"{st.width}x{st.height}")
 
 
@@ -1056,7 +1148,8 @@ def apply_gpu(st, index: int) -> None:
     fails in the worker, with the reason in the log, rather than showing
     a black picture.
     """
-    previous = int(st.cfg.get("gpu", 0))
+    # null ("the worker chooses") is a legitimate previous value, not 0.
+    previous = settings_io._optional_index(st.cfg.get("gpu"))
     if int(index) == previous:
         return
     previous_key = getattr(st, "compatibility_key", None)
@@ -1109,7 +1202,10 @@ def apply_gpu(st, index: int) -> None:
     marked = sorted({int(i) for i in (st.cfg.get("gpu_no_nr") or [])} | {int(index)})
     st.cfg["gpu_no_nr"] = marked
     st.cfg["gpu"] = previous
-    os.environ["NS_GPU"] = str(previous)
+    if previous is None:
+        os.environ.pop("NS_GPU", None)
+    else:
+        os.environ["NS_GPU"] = str(previous)
     st.compatibility_key = previous_key
     st.compatibility_result = previous_result
     st.gpu_switch_pending = False

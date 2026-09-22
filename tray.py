@@ -107,7 +107,11 @@ class TrayController:
             pystray.MenuItem("NR: OFF", self._toggle_nr,
                              checked=lambda item: not self._state["nr"]),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Scale: {self._state['scale']:.2f}", None, enabled=False),
+            # A callable, read on every update_menu(): the f-string was
+            # evaluated once, when the menu was built, and the line kept the
+            # launch value for the whole session.
+            pystray.MenuItem(lambda item: f"Scale: {self._state['scale']:.2f}",
+                             None, enabled=False),
             pystray.MenuItem("Scale +0.05", self._scale_up),
             pystray.MenuItem("Scale -0.05", self._scale_down),
             pystray.Menu.SEPARATOR,

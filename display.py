@@ -80,6 +80,18 @@ class CURSORINFO(ctypes.Structure):
 CURSOR_SHOWING = 0x00000001
 
 
+def _cloaked(hwnd) -> int:
+    """DWMWA_CLOAKED for a window: nonzero when DWM draws none of it."""
+    try:
+        value = wintypes.DWORD(0)
+        hr = ctypes.windll.dwmapi.DwmGetWindowAttribute(
+            wintypes.HWND(int(hwnd)), 14, ctypes.byref(value),
+            ctypes.sizeof(value))
+        return int(value.value) if hr == 0 else 0
+    except Exception:
+        return 0
+
+
 def window_can_cover(rect, virtual: tuple[int, int, int, int],
                      min_px: int = 16) -> bool:
     """Whether a window's rect could be covering our layer on the desktop.
@@ -567,7 +579,11 @@ class Display:
             return
         try:
             hwnd = pygame.display.get_wm_info()["window"]
-            user32.ShowWindow(hwnd, 5 if visible else 0)  # SW_SHOW=5, SW_HIDE=0
+            # SW_SHOWNA, not SW_SHOW: showing must not activate. Right after a
+            # hotkey Windows lets this process take the foreground, and a
+            # plain show then took the keyboard from the game (Num1 back on,
+            # the veil after Num5) - the rule set_menu_input writes down.
+            user32.ShowWindow(hwnd, 8 if visible else 0)  # SW_SHOWNA=8, SW_HIDE=0
             self._visible = visible
         except Exception:
             pass
@@ -584,7 +600,7 @@ class Display:
         if self._reveal_pending:
             try:
                 hwnd = pygame.display.get_wm_info()["window"]
-                user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                user32.ShowWindow(hwnd, 8)  # SW_SHOWNA - see set_visible
                 self._visible = True
             finally:
                 self._reveal_pending = False
@@ -596,8 +612,10 @@ class Display:
         """HWND_TOPMOST - the window always sits above the rest (overlay)."""
         try:
             hwnd = pygame.display.get_wm_info()["window"]
+            # SWP_NOACTIVATE too: a z-order change is not a reason to take
+            # the keyboard (set_fullscreen_layer and the veil call this).
             ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
-                                              0x0001 | 0x0002)  # SWP_NOSIZE|NOMOVE
+                                              0x0001 | 0x0002 | 0x0010)  # NOSIZE|NOMOVE|NOACTIVATE
         except Exception:
             pass
 
@@ -722,8 +740,10 @@ class Display:
             user32.SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)
             # Drop the style cache - without SWP_FRAMECHANGED the
             # SetWindowLongW changes may not take effect
+            SWP_NOACTIVATE = 0x0010
             user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+                                | SWP_FRAMECHANGED | SWP_NOACTIVATE)
             self._click_through = True
             return True
         except Exception as exc:
@@ -796,8 +816,11 @@ class Display:
         # and the big overlay one).
         style |= WS_EX_TOOLWINDOW
         user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        # SWP_NOACTIVATE: the frame change on every open and close must not be
+        # the activation this method promises never to make (R2 below).
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+                            | 0x0010)
         # R2: no focus is taken here - ever. The old code attached our thread
         # to the foreground thread and called SetForegroundWindow, which
         # re-stole the keyboard focus within 0.5 s of every Alt+Tab, monitor
@@ -1075,24 +1098,25 @@ class Display:
                 hud = pygame.display.get_wm_info()["window"]
             except Exception:
                 hud = None
-            present = user32.FindWindowW("NeuralScreenPresent", "NeuralScreen")
-            moved = False
-            for hwnd in (hud, present):
-                if hwnd and vdesk.follow_window(hwnd, ref):
-                    moved = True
+            # The HUD only. MoveWindowToDesktop works on the calling
+            # process's own windows, and the picture belongs to the worker -
+            # it follows the panel itself (FollowPanelDesktop in the worker).
+            moved = bool(hud) and vdesk.follow_window(hud, ref)
             if moved:
                 self._last_overlay = 0.0  # force a redraw after the move
         except Exception:
             pass
 
     def raise_topmost(self) -> None:
-        """Raise the worker picture first and the HUD last.
+        """Keep the HUD above the worker's picture, and the pair above strangers.
 
-        Both windows are topmost, and inside that group the one raised last
-        ends up on top. The worker creates its window after ours, so after
-        every raise of its overlay the picture is raised first and the HUD is
-        brought back up last, otherwise it ends up under the frame and becomes
-        invisible.
+        Both windows are topmost. When a stranger takes the top, the HUD goes
+        up first and the picture is inserted directly BELOW it - one order,
+        with no moment in between where the picture is above the panel. It
+        used to raise the picture first and the HUD second, and a refresh that
+        landed between the two calls showed the picture over the panel: the
+        blink #96 describes. The worker's own reveal has always used this
+        insert-after order, measured working on the reporters' machines.
         """
         # SWP_NOACTIVATE: the 30-frame re-assert must not steal the keyboard
         # focus back from the user (audit 10.09 F2: with the menu open the
@@ -1112,20 +1136,34 @@ class Display:
         present = None
         top = None
         top_is_foreign = False
+        # Only a window over OUR layer covers it: one on the other monitor, or
+        # beside the panel in window mode, is none of the guard's business,
+        # and raising the pair over it was churn (#96).
+        area = None
+        if hud:
+            try:
+                rect = wintypes.RECT()
+                if user32.GetWindowRect(hud, ctypes.byref(rect)):
+                    area = (rect.left, rect.top, rect.right - rect.left,
+                            rect.bottom - rect.top)
+            except Exception:
+                area = None
         try:
             present = user32.FindWindowW("NeuralScreenPresent", "NeuralScreen")
+            self._hud_state_last += " | " + self._picture_state(present)
             top = self._top_real_window(
-                tuple(w for w in (hud, present) if w))
+                tuple(w for w in (hud, present) if w), area)
             # "Foreign" is decided by HWND, not by the window class: a game
             # or test helper built on SDL/pygame IS class "pygame" too, and
             # the old class check read it as our own HUD and skipped the
             # raise - the NR output stayed under a topmost foreign window
             # (the focus z-order test caught exactly this).
             top_is_foreign = top is not None and top != hud and top != present
-            # The picture goes first, and only when something ELSE took the
+            # Without a panel there is no order to keep: the picture alone
+            # goes back over the stranger. Only when something ELSE took the
             # top slot: an unconditional insert every 30 frames churns the
             # pair's z-order (flicker audit, finding 1).
-            if present and top_is_foreign:
+            if present and top_is_foreign and hud is None:
                 user32.SetWindowPos(present, -1, 0, 0, 0, 0,
                                     0x0001 | 0x0002 | 0x0010)
         except Exception:
@@ -1166,9 +1204,17 @@ class Display:
                                     0x0001 | 0x0002 | 0x0010)
                 self._zlog("picture-above-hud", f"top={describe_window(top)}")
             elif top_is_foreign:
-                # A foreign window took the topmost slot: re-assert the pair.
+                # A foreign window took the topmost slot: re-assert the pair,
+                # the panel first and the picture directly below it (see the
+                # docstring). hWndInsertAfter=hud means "just under the hud":
+                # the old note that insert-after "does not work" inside the
+                # topmost band measured SetWindowPos(hud, present), which puts
+                # the HUD under the picture by definition.
                 user32.SetWindowPos(hud, -1, 0, 0, 0, 0,
                                     0x0001 | 0x0002 | 0x0010)
+                if present:
+                    user32.SetWindowPos(present, hud, 0, 0, 0, 0,
+                                        0x0001 | 0x0002 | 0x0010)
                 self._zlog("foreign-above-hud", f"top={describe_window(top)}")
             else:
                 # top is None or the HUD is already above. "Nothing is above
@@ -1206,6 +1252,9 @@ class Display:
             if not user32.GetWindowRect(hud, ctypes.byref(rect)):
                 return "hud=?"
             visible = 1 if user32.IsWindowVisible(hud) else 0
+            # IsWindowVisible says yes for a window DWM has cloaked (another
+            # virtual desktop, a shell transition): it draws none of it.
+            cloaked = _cloaked(hud)
             ex = user32.GetWindowLongW(hud, -20)          # GWL_EXSTYLE
             topmost = 1 if (ex & 0x00000008) else 0       # WS_EX_TOPMOST
             key = wintypes.COLORREF()
@@ -1217,10 +1266,30 @@ class Display:
             attrs = (f"alpha={alpha.value} lwa=0x{flags.value:X}" if got
                      else "alpha=? lwa=?")
             return (f"hud=({rect.left},{rect.top},{rect.right},{rect.bottom}) "
-                    f"visible={visible} topmost={topmost} "
+                    f"visible={visible} cloaked={cloaked} topmost={topmost} "
                     f"layer={self._layer_state} {attrs}")
         except Exception:
             return "hud=?"
+
+    def _picture_state(self, present) -> str:
+        """The worker's picture window, as the same kind of field list.
+
+        With the panel's own state on every [z] line the log could say where
+        the panel was, but not where the picture that covers it was - and the
+        two rectangles side by side are what separates "under the picture"
+        from "on the other monitor".
+        """
+        if not present:
+            return "pic=none"
+        try:
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(present, ctypes.byref(rect)):
+                return "pic=?"
+            visible = 1 if user32.IsWindowVisible(present) else 0
+            return (f"pic=({rect.left},{rect.top},{rect.right},{rect.bottom}) "
+                    f"visible={visible} cloaked={_cloaked(present)}")
+        except Exception:
+            return "pic=?"
 
     def _zlog(self, decision: str, detail: str) -> None:
         """One throttled line per z-order decision.
@@ -1249,7 +1318,8 @@ class Display:
         except Exception:
             pass
 
-    def _top_real_window(self, ours: tuple = ()) -> int | None:
+    def _top_real_window(self, ours: tuple = (),
+                         area: tuple | None = None) -> int | None:
         """The first VISIBLE window in the z-order walk that can COVER us.
 
         The old guard took GetTopWindow() at face value - and on this
@@ -1290,6 +1360,12 @@ class Display:
         (#89 - visible in a screenshot, invisible on screen). The Narrator
         helper lives at -40000,-40000, so it still fails the intersection
         with the virtual bounds.
+
+        `area` narrows that to our own layer (x, y, w, h) when the caller
+        knows it: a window on the other monitor cannot cover the panel. And a
+        window DWM has cloaked (an immersive host on another virtual desktop,
+        the Start and Search hosts at rest) is visible to IsWindowVisible and
+        drawn by nobody - it does not count either.
         """
         HELPER_MIN_PX = 16
         self._walk_exhausted = False
@@ -1308,11 +1384,13 @@ class Display:
                 if visible and hwnd in ours:
                     return hwnd
                 ok = False
-                if visible:
+                if visible and not _cloaked(hwnd):
                     rect = wintypes.RECT()
                     if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
                         ok = window_can_cover(rect, self._virtual_screen(),
                                               HELPER_MIN_PX)
+                        if ok and area is not None:
+                            ok = window_can_cover(rect, area, HELPER_MIN_PX)
                         # Shell chrome and our own program's windows are not
                         # "something that covered us": raising the pair over
                         # them is the churn that reads as the panel blinking
@@ -1357,11 +1435,17 @@ class Display:
             user32.GetWindowThreadProcessId.argtypes = [
                 wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
             user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-            if self._shell_pid is None:
+            # Re-read when unknown, when it was 0 (autostart before the shell
+            # was up) and every few seconds (explorer restarted under us):
+            # a stale pid made the new taskbar read as a stranger again.
+            now = time.monotonic()
+            if (not self._shell_pid
+                    or now - getattr(self, "_shell_pid_t", 0.0) > 5.0):
                 shell = user32.GetShellWindow()
                 pid = wintypes.DWORD(0)
                 user32.GetWindowThreadProcessId(shell, ctypes.byref(pid))
                 self._shell_pid = int(pid.value) if shell else 0
+                self._shell_pid_t = now
             if self._own_pid is None:
                 self._own_pid = int(kernel32.GetCurrentProcessId())
             pid = wintypes.DWORD(0)

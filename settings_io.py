@@ -444,9 +444,20 @@ def load_presets(cfg: dict) -> dict:
 
 
 def _read_config_object(path: Path, label: str) -> dict:
-    """Read one JSON object without changing it."""
-    with open(path, "r", encoding="utf-8") as fh:
-        value = json.load(fh)
+    """Read one JSON object without changing it.
+
+    utf-8-sig: a file saved "with BOM" (Notepad's UTF-8 with BOM, PowerShell
+    5.1's Set-Content -Encoding utf8) is still UTF-8, and plain utf-8 refused
+    it outright - the error box said "Unexpected UTF-8 BOM" and never which
+    file. A real JSON mistake now names the file and where it is.
+    """
+    with open(path, "r", encoding="utf-8-sig") as fh:
+        try:
+            value = json.load(fh)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{label} is not valid JSON ({path}): {exc.msg} at line "
+                f"{exc.lineno}, column {exc.colno}") from exc
     if not isinstance(value, dict):
         raise ValueError(f"{label}: root must be an object")
     return value
@@ -727,7 +738,9 @@ def _validate_config(cfg: dict) -> dict:
     # evaluation, so two passes cost about half the frame rate.
     try:
         passes = int(cfg.get("nr_passes", 1))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError too: 1e999 in JSON is an infinite float, and int() of
+        # it raised past this handler and out of the launch.
         _fallback("nr_passes", cfg.get("nr_passes"), 1, "is not a whole number")
         passes = 1
     if passes < 1 or passes > 4:
@@ -788,7 +801,56 @@ def _validate_config(cfg: dict) -> dict:
             _fallback("hotkeys", hotkeys, {},
                       "is not a {command: combination} mapping - the default "
                       "bindings are used")
+
+    # The wipe position. Never validated before: startup reads it with
+    # float(), and a null or a word there took the launch down.
+    split = cfg.get("split", 0.0)
+    try:
+        split = float(split)
+    except (TypeError, ValueError, OverflowError):
+        _fallback("split", cfg.get("split"), 0.0, "is not a number")
+        split = 0.0
+    if split != split:
+        split = 0.0
+    cfg["split"] = min(1.0, max(0.0, split))
+
+    # The switches the program reads with bool(). The string "false" is
+    # truthy, so a hand-edited "hdr": "false" turned HDR ON. A string that
+    # spells a boolean is read as one; anything else that is not a boolean or
+    # a number goes back to the shipped default. (tray_on_* and
+    # menu_scale_auto are read with `is True` and need none of this.)
+    for key in _BOOL_KEYS:
+        value = cfg.get(key)
+        if value is None or isinstance(value, (bool, int, float)):
+            continue
+        if isinstance(value, str):
+            word = value.strip().lower()
+            if word in ("true", "1", "yes", "on"):
+                cfg[key] = True
+                continue
+            if word in ("false", "0", "no", "off", ""):
+                cfg[key] = False
+                continue
+        _fallback(key, value, _shipped_default(key, False), "is not true or false")
     return cfg
+
+
+#: The config switches read as booleans (config.default.json holds each one).
+_BOOL_KEYS = (
+    "fullscreen", "worker_present", "motion_on_gpu", "capture_in_worker",
+    "pixels_in_shm", "nr_small", "nr_direct", "frame_generation",
+    "record_audio", "rec_indicator", "gpu_record", "convert_audio", "spout",
+    "hdr", "skip_static", "open_menu_on_start",
+)
+
+
+def _shipped_default(key: str, fallback):
+    """One value of config.default.json, or `fallback` when it cannot be read."""
+    try:
+        return _read_config_object(DEFAULT_CONFIG_PATH,
+                                   "config.default.json").get(key, fallback)
+    except Exception:
+        return fallback
 
 
 def load_config(path: Path) -> dict:
@@ -874,21 +936,30 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 
 def _autostart_enabled() -> bool:
-    """Is autostart currently on? (HKCU Run, the NeuralScreen value)."""
+    """Is autostart on FOR THIS COPY? (HKCU Run, the NeuralScreen value).
+
+    The value names the folder it was switched on from. Asking only whether
+    it exists said "on" in a copy unpacked somewhere else, while the OLD copy
+    was the one that started at logon (and a second instance then just
+    exits) - or a Windows Script Host error came up once the old folder was
+    gone. A value that points at another folder reads as off here, and
+    switching it on points it at this one.
+    """
     import winreg
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                              r"Software\Microsoft\Windows\CurrentVersion\Run",
                              0, winreg.KEY_READ)
         try:
-            winreg.QueryValueEx(key, "NeuralScreen")
-            return True
+            value, _kind = winreg.QueryValueEx(key, "NeuralScreen")
         except FileNotFoundError:
             return False
         finally:
             winreg.CloseKey(key)
     except Exception:
         return False
+    ours = os.path.normcase(str(BASE_DIR / "NeuralScreen.vbs"))
+    return ours in os.path.normcase(str(value))
 
 
 def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
@@ -968,11 +1039,15 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # Which card runs the network and the capture. An index, as
         # DXGI enumerates adapters - the same number the worker takes
         # in NS_GPU and prints in its "[host] adapter N" lines.
-        "gpu": int(cfg.get("gpu", 0)),
+        # null is a value of its own - "let the worker choose" - and the
+        # validator also turns an unreadable value into it. int(None) made
+        # every save raise, so the layout, the theme and the presets were
+        # lost on each close (the error was swallowed below).
+        "gpu": _optional_index(cfg.get("gpu")),
         # Adapters whose worker could not bring the neural pass up. Kept so
         # the picker can mark them after a restart too; cleared per adapter
         # as soon as one of them works (issue #33).
-        "gpu_no_nr": [int(i) for i in (cfg.get("gpu_no_nr") or [])],
+        "gpu_no_nr": _index_list(cfg.get("gpu_no_nr")),
         # Skip static frames: no new frame from the capture - the network
         # idles instead of re-running on the same picture. A per-frame flag,
         # so it survives a restart through the config alone.
@@ -990,8 +1065,31 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # save really did succeed, and the preset was gone on the next
         # launch - the code's own "it will not survive a restart" branch
         # could never fire, because nothing had failed (audit F1).
-        "presets": dict(cfg.get("presets") or {}),
+        "presets": (dict(cfg["presets"]) if isinstance(cfg.get("presets"), dict)
+                    else {}),
     }
+
+
+def _optional_index(value) -> int | None:
+    """An adapter index, or None for "the worker chooses" (and for junk)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _index_list(value) -> list:
+    """The integer entries of a list; anything else is dropped, not fatal."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out = []
+    for item in value:
+        index = _optional_index(item)
+        if index is not None:
+            out.append(index)
+    return out
 
 
 
@@ -1544,7 +1642,7 @@ def save_menu_layout(st) -> bool:
     alert then.
     """
     try:
-        data = json.loads(st.cfg_path.read_text(encoding="utf-8"))
+        data = json.loads(st.cfg_path.read_text(encoding="utf-8-sig"))
         data.update(_menu_layout_payload(
             st.cfg, st.params, st.monitor, st.lang, st.work_scale, st.split_pos,
             st.startup_menu, st.nr_small, st.display.menu))
@@ -1563,7 +1661,7 @@ def save_hotkeys(st, mapping: dict) -> bool:
     False when the write failed - the caller shows an alert.
     """
     try:
-        data = json.loads(st.cfg_path.read_text(encoding="utf-8"))
+        data = json.loads(st.cfg_path.read_text(encoding="utf-8-sig"))
         data["hotkeys"] = dict(mapping)
         _atomic_write_json(st.cfg_path, data)
         return True

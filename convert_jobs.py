@@ -144,6 +144,8 @@ def friendly_error(exc: BaseException) -> str:
     cause = getattr(exc, "cause", exc)
     if isinstance(cause, PermissionError) or "Permission denied" in str(cause):
         return "denied"
+    if stage == "hdr":
+        return "hdr"
     if stage == "decode":
         return "unreadable"
     if stage in ("process", "worker"):

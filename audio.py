@@ -246,6 +246,10 @@ class LoopbackCapture:
 
     # -- capture thread ----------------------------------------------------
 
+    #: How often a lost endpoint is looked for again, and for how long.
+    REOPEN_WAIT_S = 0.5
+    REOPEN_TRIES = 20
+
     def _run(self) -> None:
         client = None
         try:
@@ -257,8 +261,28 @@ class LoopbackCapture:
             self.sample_rate = fmt["rate"]
             self.channels = 2
             self._started.set()
-            client.Start()
-            self._pump(capture, fmt)
+            while True:
+                client.Start()
+                lost = self._pump(capture, fmt)
+                try:
+                    client.Stop()
+                except Exception:
+                    pass
+                client = None
+                if lost is None or self._stop.is_set():
+                    break
+                # The endpoint went away under the recording - headphones
+                # plugged in, the default output changed - and WASAPI answers
+                # AUDCLNT_E_DEVICE_INVALIDATED from then on. The capture used
+                # to end there and the rest of the file was silence padding.
+                # The new default device is opened instead; the recorders pad
+                # the gap, so the sound after it stays in sync.
+                print(f"[audio] the playback device went away ({lost}) - "
+                      f"reopening the loopback", file=sys.stderr)
+                reopened = self._reopen()
+                if reopened is None:
+                    break
+                client, capture, fmt = reopened
         except Exception as exc:                      # noqa: BLE001
             self.error = str(exc)
             print(f"[audio] loopback unavailable: {exc}", file=sys.stderr)
@@ -273,6 +297,35 @@ class LoopbackCapture:
                 CoUninitialize()
             except Exception:
                 pass
+
+    def _reopen(self):
+        """The new default endpoint, or None (and `error` set) when there is none.
+
+        Only at the rate the recording started with: the audio track's rate
+        is fixed at its first sample, and a device that runs at another one
+        would need a resampler this capture does not have.
+        """
+        last = "no playback device"
+        for _ in range(self.REOPEN_TRIES):
+            if self._stop.wait(self.REOPEN_WAIT_S):
+                return None
+            try:
+                client, capture, fmt = self._open()
+            except Exception as exc:                  # noqa: BLE001
+                last = str(exc)
+                continue
+            if fmt["rate"] != self.sample_rate:
+                self.error = (f"the new playback device runs at {fmt['rate']} Hz, "
+                              f"the recording at {self.sample_rate} Hz")
+                print(f"[audio] {self.error} - the sound stops here",
+                      file=sys.stderr)
+                return None
+            print("[audio] loopback reopened on the new playback device",
+                  file=sys.stderr)
+            return client, capture, fmt
+        self.error = last
+        print(f"[audio] capture stopped: {last}", file=sys.stderr)
+        return None
 
     def _open(self):
         enumerator = CoCreateInstance(CLSID_MMDeviceEnumerator,
@@ -323,7 +376,8 @@ class LoopbackCapture:
         return {"rate": int(wfx.nSamplesPerSec), "src_channels": int(wfx.nChannels),
                 "dtype": dtype, "scale": scale, "block": int(wfx.nBlockAlign)}
 
-    def _pump(self, capture, fmt: dict) -> None:
+    def _pump(self, capture, fmt: dict) -> str | None:
+        """Read packets until stopped (None) or the endpoint fails (why)."""
         dtype = fmt["dtype"]
         scale = fmt["scale"]
         src_ch = fmt["src_channels"]
@@ -336,9 +390,7 @@ class LoopbackCapture:
                         break
                     data, frames, flags, _pos, _qpc = capture.GetBuffer()
                 except Exception as exc:              # noqa: BLE001
-                    self.error = str(exc)
-                    print(f"[audio] capture stopped: {exc}", file=sys.stderr)
-                    return
+                    return str(exc)
                 try:
                     if frames:
                         if flags & AUDCLNT_BUFFERFLAGS_SILENT:
@@ -357,6 +409,7 @@ class LoopbackCapture:
                     capture.ReleaseBuffer(frames)
             if not got_any:
                 time.sleep(self.POLL_S)
+        return None
 
     @staticmethod
     def _to_stereo(arr: np.ndarray, scale: float) -> np.ndarray:
@@ -391,13 +444,22 @@ class LoopbackCapture:
         Monotonic (louder in, louder out), sign-preserving, and a no-op
         below the threshold - the same array comes back, so quiet passages
         are bit-for-bit untouched.
+
+        Per SAMPLE, not per packet. The fold used to run over the whole 10 ms
+        packet as soon as any one sample in it passed the threshold, and for
+        a quiet sample the formula's argument is negative: tanh(-8.9) is -1,
+        so 0.01 came out as 0.80 - every packet with a single loud peak turned
+        into a square wave at 0.8 (a 0.3 sine with one 1.2 peak went from RMS
+        0.22 to 0.80). Only the samples above the threshold are folded now.
         """
         if x.size == 0:
             return x
-        if float(np.abs(x).max()) <= LoopbackCapture.LIMIT_THRESHOLD:
+        T = LoopbackCapture.LIMIT_THRESHOLD
+        mag = np.abs(x)
+        over = mag > T
+        if not over.any():
             return x
-        sign = np.sign(x)
-        a = (np.abs(x) - LoopbackCapture.LIMIT_THRESHOLD) / (
-            1.0 - LoopbackCapture.LIMIT_THRESHOLD)
-        return sign * (LoopbackCapture.LIMIT_THRESHOLD
-                       + (1.0 - LoopbackCapture.LIMIT_THRESHOLD) * np.tanh(a))
+        out = x.copy()
+        folded = T + (1.0 - T) * np.tanh((mag[over] - T) / (1.0 - T))
+        out[over] = (np.sign(x[over]) * folded).astype(x.dtype, copy=False)
+        return out
