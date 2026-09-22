@@ -115,6 +115,11 @@ DEV_ONLY = {
     "native/spout_adapter_check.cpp", "native/build-spout-test.bat",
     "native/build-spout-check.bat", "native/build-spout-adapter.bat",
     "native/SpoutDX.lib",
+    # The GPU recorder's own check: a stand-alone exercise of gpu_recorder.cpp
+    # with no worker and no NGX, built and run by tests/test_gpu_recorder.py.
+    # Same kind of thing as the spout checks above - a development harness,
+    # not something the release ships.
+    "native/gpu_recorder_check.cpp", "native/build-gpu-recorder-check.bat",
 }
 META_FILES = {RUNTIME_MANIFEST, THIRD_PARTY_NOTICES, CHECKSUMS, "VERSION.txt"}
 SOURCE_SUFFIXES = {
