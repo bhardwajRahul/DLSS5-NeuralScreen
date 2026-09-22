@@ -27,13 +27,14 @@ def _repo_root(start: Path) -> Path:
 
 BASE = _repo_root(Path(__file__).resolve().parent)
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 
 def main() -> int:
     failures = []
 
     main_src = (BASE / "main.py").read_text(encoding="utf-8")
-    settings_src = (BASE / "settings_io.py").read_text(encoding="utf-8")
+    settings_src = (BASE / "app" / "settings_io.py").read_text(encoding="utf-8")
 
     # Where refresh_gpu_ok is defined and what calls it.
     if "def refresh_gpu_ok" not in settings_src:

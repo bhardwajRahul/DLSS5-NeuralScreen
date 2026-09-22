@@ -37,6 +37,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
 
 import protocol  # noqa: E402
 
@@ -117,7 +118,7 @@ def main() -> int:
 
     # 3. Every live RNSZ carries the count. Two call sites, and a third added
     # later without the argument would quietly pin the worker at one pass.
-    pipe = io.open(ROOT / "pipeline.py", encoding="utf-8").read()
+    pipe = io.open(ROOT / "app" / "pipeline.py", encoding="utf-8").read()
     calls = [m for m in re.finditer(r"send_resize\((?:[^()]|\([^()]*\))*\)",
                                     pipe, re.S)]
     if not calls:

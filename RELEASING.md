@@ -3,7 +3,7 @@
 Everything below was read out of the code that performs it:
 `build_release_zip.py` (the builder), `verify_github.py` (the offline verifier),
 `tests/autocheck.py` (the local gate), `tests/run_tests.py` (the suite runner),
-`tests/test_release_contract.py` (the release contract tests), `settings_io.py`,
+`tests/test_release_contract.py` (the release contract tests), `app/settings_io.py`,
 `native/launcher.rc` and `_render_docs.py`. Where a step is a convention rather
 than something a program enforces, the text says so. English only, like the rest
 of the maintainer documentation.
@@ -66,7 +66,7 @@ rewritten when the output directory is somewhere else). It prints
 | File | Form | For 1.15.2 |
 |------|------|------------|
 | `build_release_zip.py` (line 35) | `VERSION = "X.Y.Z"` | `VERSION = "1.15.2"` |
-| `settings_io.py` (line 124) | `APP_VERSION = "X.Y.Z"` | `APP_VERSION = "1.15.2"` |
+| `app/settings_io.py` (line 192) | `APP_VERSION = "X.Y.Z"` | `APP_VERSION = "1.15.2"` |
 | `native/launcher.rc` | the numeric pair, comma-separated, **four** fields, `FILEVERSION 1,15,2,0` | `FILEVERSION 1,15,2,0` |
 | `native/launcher.rc` | the numeric pair, second field of the same pair | `PRODUCTVERSION 1,15,2,0` |
 | `native/launcher.rc` | the string pair, **four** fields, `VALUE "FileVersion", "1.15.2.0"` | `VALUE "FileVersion", "1.15.2.0"` |

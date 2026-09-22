@@ -40,6 +40,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import protocol  # noqa: E402
 import settings_io  # noqa: E402
@@ -156,7 +157,7 @@ def main() -> int:
     # 3. It survives every path that rebuilds the cascade. Read as source: the
     # send lives inside do_restart, and no unit test can watch a running worker
     # rebuild its features.
-    pipe = io.open(BASE / "pipeline.py", encoding="utf-8").read()
+    pipe = io.open(BASE / "app" / "pipeline.py", encoding="utf-8").read()
     if "_send_per_pass_if_any" not in pipe:
         failures.append("pipeline.py has no per-pass hand-off")
     calls = [m for m in re.finditer(
@@ -184,11 +185,11 @@ def main() -> int:
         if set(settings_io.PER_PASS_KEYS) != set(PARAMS):
             failures.append(f"PER_PASS_KEYS is {settings_io.PER_PASS_KEYS}, "
                             f"which is not the four strengths")
-    io_src = io.open(BASE / "settings_io.py", encoding="utf-8").read()
+    io_src = io.open(BASE / "app" / "settings_io.py", encoding="utf-8").read()
     if "nr_pass_params" not in io_src:
         failures.append("the config never carries nr_pass_params, so the set "
                         "is lost on the next launch")
-    cmds = io.open(BASE / "commands.py", encoding="utf-8").read()
+    cmds = io.open(BASE / "app" / "commands.py", encoding="utf-8").read()
     if '"pass_params"' not in cmds:
         failures.append("commands.py handles no pass_params toggle")
     if 'st.cfg.pop("nr_pass_params"' not in cmds:

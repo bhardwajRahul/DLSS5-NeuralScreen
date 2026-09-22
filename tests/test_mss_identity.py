@@ -33,6 +33,7 @@ def _repo_root(start: Path) -> Path:
 
 BASE = _repo_root(Path(__file__).resolve().parent)
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import capture  # noqa: E402
 
@@ -121,7 +122,7 @@ def main() -> int:
     # And the synthesis shape must not come back in the source, in ANY
     # spacing: that is the guard the old literal-string check could be
     # formatted around.
-    src = (BASE / "capture.py").read_text(encoding="utf-8")
+    src = (BASE / "app" / "capture.py").read_text(encoding="utf-8")
     if re.search(r"DISPLAY\s*\{\s*monitor_idx", src):
         failures.append(
             "capture.py builds a devicename from the positional index again - "

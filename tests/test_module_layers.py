@@ -28,17 +28,16 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 BUILTINS = set(dir(builtins)) | {"__file__", "__name__", "__doc__"}
 
-# The dev-only scripts at the root (_probe_*, _measure_*, the release
-# tooling) are not part of the program and are allowed to import main.
-SKIP = {"build_release_zip.py", "verify_github.py", "test_bake_menu.py"}
-
-
+# The program is main.py (the entry point, at the root) and the modules in
+# app/. The root's other scripts (_probe_*, _measure_*, the release tooling)
+# are not part of it and are allowed to import main.
 def app_modules() -> list:
-    return sorted(p for p in BASE.glob("*.py")
-                  if not p.name.startswith("_") and p.name not in SKIP)
+    return sorted([BASE / "main.py"] + [p for p in (BASE / "app").glob("*.py")
+                                        if not p.name.startswith("_")])
 
 
 def undefined_names(path: Path) -> list:
@@ -92,10 +91,10 @@ def main() -> int:
     #    One process for all of them: an import cycle would show up on the
     #    module that closes it whichever order they are tried in.
     names = [p.stem for p in modules]
-    code = ("import sys; sys.path.insert(0, r'%s')\n"
+    code = ("import sys; sys.path[:0] = [r'%s', r'%s']\n"
             "for m in %r:\n"
             "    __import__(m)\n"
-            "print('ok')\n" % (BASE, names))
+            "print('ok')\n" % (BASE / "app", BASE, names))
     r = subprocess.run([sys.executable, "-c", code], cwd=str(BASE),
                        capture_output=True, text=True, timeout=180,
                        encoding="utf-8", errors="replace")

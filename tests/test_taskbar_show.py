@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import commands  # noqa: E402

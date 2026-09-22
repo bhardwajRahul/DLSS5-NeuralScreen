@@ -33,6 +33,7 @@ from unittest import mock
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import channels  # noqa: E402
 import pipeline  # noqa: E402
@@ -137,7 +138,7 @@ def main() -> int:
         tail = body.find('"""', head + 3)
         return body[:head] + body[tail + 3:] if tail > 0 else body
 
-    pipe_src = (BASE / "pipeline.py").read_text(encoding="utf-8")
+    pipe_src = (BASE / "app" / "pipeline.py").read_text(encoding="utf-8")
     start = pipe_src.find("def sync_low_cost_off(")
     end = pipe_src.find("\ndef ", start + 1)
     off_body = _without_docstring(pipe_src[start:end if end > 0 else len(pipe_src)])

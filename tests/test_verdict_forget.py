@@ -32,6 +32,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "app"))  # the modules live in app/
 
 import numpy as np  # noqa: E402
 import channels  # noqa: E402
@@ -39,7 +40,11 @@ from guides import TemporalGuideGenerator  # noqa: E402
 
 
 def source(name: str) -> str:
-    with open(os.path.join(BASE, name), encoding="utf-8") as fh:
+    """A module's source: app/ for the modules, the root for main.py."""
+    path = os.path.join(BASE, "app", name)
+    if not os.path.exists(path):
+        path = os.path.join(BASE, name)
+    with open(path, encoding="utf-8") as fh:
         return fh.read()
 
 

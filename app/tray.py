@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import queue
 import threading
-from pathlib import Path
 
 import pystray
 from PIL import Image, ImageDraw
+
+from paths import BASE_DIR
 
 #: Fallback labels, used when the caller passes none.
 DEFAULT_LABELS = {"settings": "Settings", "quit": "Exit"}
@@ -36,7 +37,7 @@ def _make_icon(size: int = 64) -> Image.Image:
     requested size is taken and shrunk if it has to be - never blown up from
     a smaller one, which is what turns the rim into a grey halo.
     """
-    ico = Path(__file__).resolve().parent / "native" / "neuralscreen.ico"
+    ico = BASE_DIR / "native" / "neuralscreen.ico"
     if ico.is_file():
         try:
             img = Image.open(ico)

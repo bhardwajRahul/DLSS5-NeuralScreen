@@ -31,6 +31,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import capture  # noqa: E402
 import settings_io  # noqa: E402
@@ -49,7 +50,7 @@ def picker_labels(st, adapters):
     the key it builds, so the wording, the key name and the _no_nr() call all
     come from the product. A change there changes what this returns.
     """
-    tree = ast.parse((BASE / "settings_io.py").read_text(encoding="utf-8"))
+    tree = ast.parse((BASE / "app" / "settings_io.py").read_text(encoding="utf-8"))
     target = None
     for node in ast.walk(tree):
         if not isinstance(node, ast.Dict):

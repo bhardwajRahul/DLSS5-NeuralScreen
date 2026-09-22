@@ -24,6 +24,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402
@@ -93,7 +94,7 @@ def main() -> int:
     main_src = (BASE / "main.py").read_text(encoding="utf-8")
     if '"nr_not_evaluating": st.nr_not_evaluating,' not in main_src:
         failures.append("the main loop does not send nr_not_evaluating to the HUD")
-    ui_src = (BASE / "overlay_ui.py").read_text(encoding="utf-8")
+    ui_src = (BASE / "app" / "overlay_ui.py").read_text(encoding="utf-8")
     if 'self.state.get("nr_not_evaluating")' not in ui_src:
         failures.append("the menu does not read nr_not_evaluating")
 

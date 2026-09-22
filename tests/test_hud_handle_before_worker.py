@@ -51,7 +51,7 @@ def bring_up_body(source: str) -> str:
 
 def main() -> int:
     failures: list[str] = []
-    startup = (BASE / "startup.py").read_text(encoding="utf-8")
+    startup = (BASE / "app" / "startup.py").read_text(encoding="utf-8")
     body = bring_up_body(startup)
 
     # ---- 1. the order -----------------------------------------------------
@@ -86,7 +86,7 @@ def main() -> int:
             "compatibility gate has to stay between the display and the start")
 
     # ---- 3. the publish still happens where the handle is fresh -----------
-    display = (BASE / "display.py").read_text(encoding="utf-8")
+    display = (BASE / "app" / "display.py").read_text(encoding="utf-8")
     if "NS_HUD_HWND" not in display:
         failures.append("display.py no longer publishes NS_HUD_HWND")
     mover = re.search(r"def _move_to_origin\(self\).*?(?=\n    def )", display, re.S)

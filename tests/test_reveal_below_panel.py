@@ -45,6 +45,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402
@@ -94,7 +95,7 @@ def main() -> int:
                         "and this test is checking nothing")
 
     # ---- 2. the worker inherits the environment -------------------------
-    pipe = io.open(BASE / "pipeline.py", encoding="utf-8").read()
+    pipe = io.open(BASE / "app" / "pipeline.py", encoding="utf-8").read()
     m = re.search(r"subprocess\.Popen\((?:[^()]|\([^()]*\))*\)", pipe, re.S)
     if m is None:
         failures.append("no subprocess.Popen found in pipeline.py")

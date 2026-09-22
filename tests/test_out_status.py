@@ -25,6 +25,7 @@ import numpy as np
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "app"))  # the modules live in app/
 from main import (CREATE_ACK_FMT, CREATE_ACK_MAGIC,
                   CREATE_CATEGORY_UNSUPPORTED, OUT_FMT, OUT_MAGIC,
                   OUT_STATUS_OK, OUT_STATUS_SKIPPED, WorkerReader)  # noqa: E402

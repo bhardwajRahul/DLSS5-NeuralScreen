@@ -12,6 +12,7 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import commands  # noqa: E402
 from recorder import RecordingError, RecordingResult, RecordingStatus  # noqa: E402

@@ -147,8 +147,9 @@ def personal_config_keys():
     # autocheck is run both through run_tests.py (which puts the project
     # root on the path) and on its own, where it is not there.
     import sys
-    if str(ROOT) not in sys.path:
+    if str(ROOT / "app") not in sys.path:
         sys.path.insert(0, str(ROOT))
+        sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
     import settings_io
     payload = settings_io._menu_layout_payload(
         {"profile": "Natural", "gpu": 0, "spout": False, "skip_static": True,
@@ -172,8 +173,9 @@ def shipped_config_defaults():
     is checked against the profile-derived defaults directly.
     """
     import sys as _sys
-    if str(ROOT) not in _sys.path:
+    if str(ROOT / "app") not in _sys.path:
         _sys.path.insert(0, str(ROOT))
+        _sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
     import settings_io
     head = json.loads(subprocess.check_output(
         ["git", "show", "HEAD:config.default.json"], cwd=ROOT))
@@ -230,8 +232,9 @@ def zip_integrity():
     set, tagged blobs, checksums and deterministic metadata).
     """
     import sys as _sys
-    if str(ROOT) not in _sys.path:
+    if str(ROOT / "app") not in _sys.path:
         _sys.path.insert(0, str(ROOT))
+        _sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
     import build_release_zip as release
     import settings_io
     version = settings_io.APP_VERSION
@@ -297,9 +300,10 @@ def gpuinfo_works():
     if not py.exists():
         return False, "no runtime/python.exe"
     code = (
-        "import sys; sys.path.insert(0, r'%s'); "
+        "import sys; sys.path[:0] = [r'%s', r'%s']; "
         "import gpuinfo; i = gpuinfo.probe(); "
-        "print(gpuinfo.describe(i)); print('official:', i['official'])" % ROOT
+        "print(gpuinfo.describe(i)); print('official:', i['official'])"
+        % (ROOT / "app", ROOT)
     )
     # PYTHONIOENCODING: without it the child prints in the console codepage
     # and an em-dash in the GPU name decodes into garbage (or throws).
@@ -439,6 +443,7 @@ def binding_keys(command):
     key tests nothing.
     """
     sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
     from hotkeys import DEFAULT_BINDINGS
     for mods, vk, cmd, _name in DEFAULT_BINDINGS.values():
         if cmd == command:

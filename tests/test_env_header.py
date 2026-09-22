@@ -15,6 +15,7 @@ import sys
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "app"))  # the modules live in app/
 # main.py is a script with an entry point - import it under an explicit
 # module name, otherwise `import main` binds the function main().
 _spec = importlib.util.spec_from_file_location("ns_main", os.path.join(BASE, "main.py"))

@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))  # the modules live in app/
 from resolution_limits import safe_processing_size
 from settings_io import _work_size
 

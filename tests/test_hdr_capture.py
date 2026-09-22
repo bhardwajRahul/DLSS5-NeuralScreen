@@ -17,6 +17,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 import numpy as np

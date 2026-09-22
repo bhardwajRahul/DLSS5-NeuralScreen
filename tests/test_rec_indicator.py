@@ -17,6 +17,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "app"))  # the modules live in app/
 
 import pygame  # noqa: E402
 import display as display_mod  # noqa: E402

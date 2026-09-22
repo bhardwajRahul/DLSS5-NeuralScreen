@@ -16,6 +16,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 spec = importlib.util.spec_from_file_location("ns_main", str(BASE / "main.py"))
 ns_main = importlib.util.module_from_spec(spec)
@@ -84,7 +85,7 @@ def main() -> int:
     #    The flow lives in commands.py now - opening the dialog is an answer
     #    to what the user asked for, and dialogs.py stayed a leaf.
     import ast
-    src = (BASE / "commands.py").read_text(encoding="utf-8")
+    src = (BASE / "app" / "commands.py").read_text(encoding="utf-8")
     passes_initial_dir = False
     for node in ast.walk(ast.parse(src)):
         if not isinstance(node, ast.Call):

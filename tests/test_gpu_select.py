@@ -20,6 +20,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import capture  # noqa: E402
 import compatibility_runtime  # noqa: E402

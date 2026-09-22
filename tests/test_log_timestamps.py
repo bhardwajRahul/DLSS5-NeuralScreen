@@ -38,8 +38,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-STARTUP = ROOT / "startup.py"
-COMMANDS = ROOT / "commands.py"
+STARTUP = ROOT / "app" / "startup.py"
+COMMANDS = ROOT / "app" / "commands.py"
 
 
 def load_stamped_log():

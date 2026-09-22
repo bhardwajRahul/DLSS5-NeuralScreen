@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # the project root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))  # the modules live in app/
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
 from hotkeys import (DEFAULT_BINDINGS, _KEY_NAMES, _NUMPAD_VKS,  # noqa: E402

@@ -28,6 +28,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import autocheck  # noqa: E402
@@ -35,6 +36,7 @@ import autocheck  # noqa: E402
 ORIGIN = (220, 160)
 SHIM = '''import sys
 sys.path.insert(0, r"{root}")
+sys.path.insert(0, r"{root}/app")
 sys.argv = [sys.argv[0], "--config", r"{config}"]
 import capture
 capture.monitor_origin = lambda name: {origin}

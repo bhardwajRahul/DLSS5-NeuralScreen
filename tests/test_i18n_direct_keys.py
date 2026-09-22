@@ -26,6 +26,7 @@ def _repo_root(start: Path) -> Path:
 
 BASE = _repo_root(Path(__file__).resolve().parent)
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 from i18n import STRINGS  # noqa: E402
 
@@ -35,7 +36,7 @@ PATTERN = re.compile(r"""\bs\[\s*["']([a-z0-9_]+)["']\s*\]""")
 
 def main() -> int:
     failures = []
-    src = (BASE / "overlay_ui.py").read_text(encoding="utf-8")
+    src = (BASE / "app" / "overlay_ui.py").read_text(encoding="utf-8")
     keys = sorted(set(PATTERN.findall(src)))
     if not keys:
         failures.append("no direct s[...] lookups found - wrong regex?")

@@ -32,6 +32,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import gpuinfo  # noqa: E402
 import startup  # noqa: E402
@@ -87,7 +88,7 @@ def main() -> int:
 
     # 4. bring_up passes the hint too (textual: the call needs the whole
     #    hardware bring-up to run).
-    src = (BASE / "startup.py").read_text(encoding="utf-8")
+    src = (BASE / "app" / "startup.py").read_text(encoding="utf-8")
     if "gpu_probe(_working_card_name(st.cfg))" not in src:
         failures.append("bring_up does not pass the hint to gpu_probe")
 

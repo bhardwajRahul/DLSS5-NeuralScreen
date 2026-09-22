@@ -36,6 +36,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import display  # noqa: E402
@@ -114,7 +115,7 @@ def main() -> int:
         if vw < prim_w or vh < prim_h:
             failures.append(f"the virtual desktop {vs} is smaller than the "
                             f"primary screen {prim_w}x{prim_h}")
-    src = (BASE / "display.py").read_text(encoding="utf-8", errors="replace")
+    src = (BASE / "app" / "display.py").read_text(encoding="utf-8", errors="replace")
     if "SM_CXSCREEN" in src:
         failures.append("display.py still mentions SM_CXSCREEN - the guard is "
                         "back on the primary screen")

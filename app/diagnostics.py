@@ -38,7 +38,9 @@ from typing import Any, Mapping, Sequence
 import zipfile
 
 
-BASE_DIR = Path(__file__).resolve().parent
+# The install folder (this module lives in app/, one level down). No import of
+# paths.py on purpose: this module must still work when the rest cannot load.
+BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_LOG_BYTES = 64 * 1024
 MAX_LOG_BYTES = 256 * 1024
 SCHEMA = "neuralscreen.diagnostics/v1"
@@ -336,8 +338,13 @@ def _read_manifest(base_dir: Path) -> tuple[str | None, str | None]:
 
 
 def _version_from_source(base_dir: Path) -> str | None:
+    # app/ holds the modules; the root is where an install from before the
+    # move kept them.
+    source = base_dir / "app" / "settings_io.py"
+    if not source.is_file():
+        source = base_dir / "settings_io.py"
     try:
-        tree = ast.parse((base_dir / "settings_io.py").read_text(encoding="utf-8"))
+        tree = ast.parse(source.read_text(encoding="utf-8"))
     except (OSError, SyntaxError, UnicodeError):
         return None
     for node in tree.body:

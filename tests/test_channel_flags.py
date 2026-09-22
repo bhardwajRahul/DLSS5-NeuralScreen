@@ -31,6 +31,7 @@ def _repo_root(start: Path) -> Path:
 
 BASE = _repo_root(Path(__file__).resolve().parent)
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 # The flags the main loop negotiates/reads every frame (main.py).
 LOOP_FLAGS = ("present_mode", "present_attempted", "dda_mode", "dda_attempted",
@@ -40,7 +41,7 @@ LOOP_FLAGS = ("present_mode", "present_attempted", "dda_mode", "dda_attempted",
 
 def main() -> int:
     failures = []
-    rebuild_src = (BASE / "pipeline.py").read_text(encoding="utf-8")
+    rebuild_src = (BASE / "app" / "pipeline.py").read_text(encoding="utf-8")
     m = re.search(r"def rebuild_pipeline\(st[^)]*\).*?(?=\ndef |\Z)",
                   rebuild_src, re.S)
     body = m.group(0) if m else ""

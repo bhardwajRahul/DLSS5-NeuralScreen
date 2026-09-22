@@ -28,12 +28,13 @@ def _repo_root(start: Path) -> Path:
 
 BASE = _repo_root(Path(__file__).resolve().parent)
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 
 def main() -> int:
     failures = []
 
-    src = (BASE / "startup.py").read_text(encoding="utf-8")
+    src = (BASE / "app" / "startup.py").read_text(encoding="utf-8")
     # The st.X = / st.X: Type = assignments bring_up performs.
     m = re.search(r"def bring_up\(st\).*?(?=\ndef |\Z)", src, re.S)
     if not m:

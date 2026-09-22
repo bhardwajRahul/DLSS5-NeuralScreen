@@ -27,6 +27,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import channels  # noqa: E402
 import commands  # noqa: E402
@@ -36,7 +37,9 @@ import pipeline  # noqa: E402
 
 
 def _src(name: str) -> str:
-    return (BASE / name).read_text(encoding="utf-8")
+    """A module's source: app/ for the modules, the root for main.py."""
+    path = BASE / "app" / name
+    return (path if path.exists() else BASE / name).read_text(encoding="utf-8")
 
 
 def _function(src: str, name: str) -> str:

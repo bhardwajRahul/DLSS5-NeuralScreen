@@ -24,7 +24,8 @@ import ctypes.wintypes as wt
 import queue
 import threading
 import time
-from pathlib import Path
+
+from paths import BASE_DIR
 
 # Private library instances, not ctypes.windll.*. The function objects of
 # windll.user32 are shared by every module in the process, and pystray declares
@@ -459,7 +460,7 @@ class TaskbarWindow:
 
     def _set_icon(self, hinst) -> None:
         """The launcher's icon, so the taskbar button looks like the app."""
-        ico = Path(__file__).resolve().parent / "native" / "neuralscreen.ico"
+        ico = BASE_DIR / "native" / "neuralscreen.ico"
         if not ico.is_file():
             return
         # No module handle with LR_LOADFROMFILE: the image is a file, and

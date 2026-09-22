@@ -20,6 +20,7 @@ import sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app"))  # the modules live in app/
 import hotkeys  # noqa: E402
 
 VK_NUMPAD2 = 0x62

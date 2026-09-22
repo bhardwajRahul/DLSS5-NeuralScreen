@@ -74,22 +74,26 @@ def _drop_stale_bytecode(base: Path) -> None:
     when it differs from the one the cache was built under, the cache goes,
     before any module of ours is imported. A development tree has no
     VERSION.txt, and nothing happens there.
+
+    Both caches: the modules' own in app/, and the root's (an install from
+    before the modules moved to app/ left its compiled copies there).
     """
     try:
         stamp = (base / "VERSION.txt").read_bytes()
     except OSError:
         return
-    cache = base / "__pycache__"
-    marker = cache / "release.stamp"
+    caches = (base / "app" / "__pycache__", base / "__pycache__")
+    marker = caches[0] / "release.stamp"
     try:
         if marker.read_bytes() == stamp:
             return
     except OSError:
         pass
     import shutil
-    shutil.rmtree(cache, ignore_errors=True)
+    for cache in caches:
+        shutil.rmtree(cache, ignore_errors=True)
     try:
-        cache.mkdir(exist_ok=True)
+        caches[0].mkdir(parents=True, exist_ok=True)
         marker.write_bytes(stamp)
     except OSError:
         pass
@@ -118,8 +122,10 @@ except Exception:
             pass
 
 # Embedded Python (python313._pth) does not add cwd to sys.path - we add the
-# script folder by hand so the local modules work (capture, display, guides).
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# program's folders by hand: app/ holds the modules (capture, display,
+# guides...), the root holds this entry point and the release tools.
+_BASE = Path(__file__).resolve().parent
+sys.path[:0] = [str(_BASE / "app"), str(_BASE)]
 
 import cv2
 import numpy as np

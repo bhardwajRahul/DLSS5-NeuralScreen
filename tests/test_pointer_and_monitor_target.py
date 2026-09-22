@@ -27,8 +27,8 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-COMMANDS = BASE / "commands.py"
-PIPELINE = BASE / "pipeline.py"
+COMMANDS = BASE / "app" / "commands.py"
+PIPELINE = BASE / "app" / "pipeline.py"
 
 
 def _function_body(path: Path, name: str) -> str:

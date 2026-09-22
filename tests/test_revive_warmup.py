@@ -28,6 +28,7 @@ def _repo_root(start: Path) -> Path:
 
 BASE = _repo_root(Path(__file__).resolve().parent)
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 
 def _restart_worker_warmups(path: Path) -> list:
@@ -59,7 +60,7 @@ def main() -> int:
     failures = []
 
     # Where the launch warmup is decided.
-    startup = (BASE / "startup.py").read_text(encoding="utf-8")
+    startup = (BASE / "app" / "startup.py").read_text(encoding="utf-8")
     computes = "effective_warmup" in startup
     if not computes:
         failures.append("startup.py no longer computes an effective warmup - "
@@ -67,8 +68,8 @@ def main() -> int:
 
     # Where the revives happen.
     main_calls = _restart_worker_warmups(BASE / "main.py")
-    cmd_calls = _restart_worker_warmups(BASE / "commands.py")
-    pipeline_calls = _restart_worker_warmups(BASE / "pipeline.py")
+    cmd_calls = _restart_worker_warmups(BASE / "app" / "commands.py")
+    pipeline_calls = _restart_worker_warmups(BASE / "app" / "pipeline.py")
 
     print("    main.py restart_worker warmups:    ", main_calls)
     print("    commands.py restart_worker warmups:", cmd_calls)
@@ -89,7 +90,8 @@ def main() -> int:
     # The stored-on-state check: once fixed, the revive should read a stored
     # value (e.g. st.effective_warmup or st.warmup itself updated).
     if bad and "st.effective_warmup" not in (startup + "".join(
-            (BASE / n).read_text(encoding="utf-8")
+            (BASE / n if n == "main.py" else BASE / "app" / n).read_text(
+                encoding="utf-8")
             for n in ("main.py", "commands.py", "pipeline.py"))):
         failures.append("no st.effective_warmup anywhere - the fix is not in "
                         "place (expected while the finding is open)")

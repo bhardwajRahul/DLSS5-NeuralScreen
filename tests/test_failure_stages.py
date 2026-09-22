@@ -185,6 +185,7 @@ def check_runtime_injection() -> None:
 
 def check_ngx_stage_injection() -> None:
     sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
     from main import (  # noqa: PLC0415
         FRAME_FLAG_WANT_PIXELS,
         FRAME_FMT,

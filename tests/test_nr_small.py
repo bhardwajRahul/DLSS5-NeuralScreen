@@ -23,6 +23,7 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
 from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402

@@ -29,6 +29,7 @@ from ctypes import wintypes
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "app"))  # the modules live in app/
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 PY = sys.executable
@@ -39,6 +40,7 @@ HELPER = r"""
 import os, sys, subprocess
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 sys.path.insert(0, r"{base}")
+sys.path.insert(0, r"{base}\app")
 import pipeline
 sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
 ok = pipeline.bind_worker_to_job(sleeper)

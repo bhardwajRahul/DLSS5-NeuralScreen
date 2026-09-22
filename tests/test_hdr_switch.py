@@ -31,6 +31,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import commands  # noqa: E402
@@ -94,7 +95,7 @@ def main() -> int:
         if os.environ.get("NS_HDR") != want:
             failures.append(f"hdr={flag!r} put NS_HDR="
                             f"{os.environ.get('NS_HDR')!r}, expected {want!r}")
-    if "_apply_hdr_env(st.cfg)" not in (BASE / "startup.py").read_text(encoding="utf-8"):
+    if "_apply_hdr_env(st.cfg)" not in (BASE / "app" / "startup.py").read_text(encoding="utf-8"):
         failures.append("bring_up never applies the HDR flag - the first "
                         "worker of the session would inherit a stale NS_HDR")
 

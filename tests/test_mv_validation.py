@@ -18,6 +18,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "app"))  # the modules live in app/
 
 import numpy as np  # noqa: E402
 from guides import TemporalGuideGenerator  # noqa: E402
@@ -78,7 +79,7 @@ def main() -> int:
     # (0.0) the feature is gone, and the case below would otherwise still
     # pass because it sets its own value (audit: WEAK - the old version could
     # not fail on any mutation of the rule it names).
-    src = (Path(BASE) / "guides.py").read_text(encoding="utf-8")
+    src = (Path(BASE) / "app" / "guides.py").read_text(encoding="utf-8")
     mfloor = re.search(r"self\._flow_noise_floor\s*=\s*([0-9.]+)", src)
     if not mfloor:
         failures.append("guides.py no longer sets _flow_noise_floor - the "

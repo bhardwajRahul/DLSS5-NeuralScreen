@@ -13,6 +13,7 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import compatibility_runtime as runtime  # noqa: E402
 from compatibility import (  # noqa: E402
@@ -207,7 +208,7 @@ class RuntimeAdapterTests(unittest.TestCase):
             source.index("startup.bring_up(st)"),
         ]
         self.assertEqual(order, sorted(order))
-        startup_source = (BASE / "startup.py").read_text(encoding="utf-8")
+        startup_source = (BASE / "app" / "startup.py").read_text(encoding="utf-8")
         configure = startup_source.split("def configure(st)", 1)[1].split(
             "\ndef open_capture(st)", 1)[0]
         self.assertNotIn("ScreenCapture(", configure)
@@ -216,7 +217,9 @@ class RuntimeAdapterTests(unittest.TestCase):
 
     def test_every_production_worker_start_has_a_pass_guard(self):
         for name in ("startup.py", "pipeline.py", "commands.py", "main.py"):
-            source = (BASE / name).read_text(encoding="utf-8").splitlines()
+            # main.py is the entry point at the root; the rest live in app/.
+            where = BASE / name if name == "main.py" else BASE / "app" / name
+            source = where.read_text(encoding="utf-8").splitlines()
             for index, line in enumerate(source):
                 # A comment that mentions the call is not a call site: adding
                 # an explanatory comment introduced a phantom site here and

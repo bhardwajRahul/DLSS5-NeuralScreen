@@ -44,6 +44,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import build_release_zip as builder  # noqa: E402
 
@@ -53,7 +54,7 @@ EXPECTED_MANDATORY = {
     "config.default.json",
     "native/libraries/README.md",
     "native/nvngx_dlssg.dll",
-    "resolution_limits.py",
+    "app/resolution_limits.py",
     "NeuralScreen.exe",
     "NeuralScreen.vbs",
     "NeuralScreen-diag.vbs",

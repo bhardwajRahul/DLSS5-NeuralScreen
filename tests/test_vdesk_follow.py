@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import vdesk  # noqa: E402
 
@@ -173,7 +174,7 @@ def main() -> int:
     if 'cls = "NeuralScreenTaskbar"' not in src:
         failures.append("the taskbar window class changed - display.py looks "
                         "it up by the old name")
-    disp = (BASE / "display.py").read_text(encoding="utf-8")
+    disp = (BASE / "app" / "display.py").read_text(encoding="utf-8")
     if 'FindWindowW("NeuralScreenTaskbar"' not in disp:
         failures.append("display.follow_taskbar_desktop does not look up the "
                         "taskbar window by class")

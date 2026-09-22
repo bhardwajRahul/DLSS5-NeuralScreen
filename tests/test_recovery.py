@@ -16,6 +16,7 @@ import sys
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "app"))  # the modules live in app/
 from main import (CAPTURE_RETRY_BACKOFF,  # noqa: E402
                   MAX_CONSECUTIVE_CAPTURE_FAILURES, _hard_failure,
                   _next_capture_failure)

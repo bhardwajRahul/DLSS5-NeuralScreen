@@ -21,6 +21,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 spec = importlib.util.spec_from_file_location("ns_main", str(BASE / "main.py"))
 ns_main = importlib.util.module_from_spec(spec)

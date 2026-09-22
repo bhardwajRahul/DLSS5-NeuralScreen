@@ -23,6 +23,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import settings_io  # noqa: E402
 import startup  # noqa: E402
@@ -128,19 +129,25 @@ def main() -> int:
 
     # 5. a release over another drops the compiled cache once
     import main as ns_main
-    app = root / "app"
-    cache = app / "__pycache__"
+    install = root / "install"
+    cache = install / "app" / "__pycache__"      # the modules' own cache
+    legacy = install / "__pycache__"             # an install from before app/
     cache.mkdir(parents=True)
+    legacy.mkdir()
     (cache / "settings_io.cpython-313.pyc").write_bytes(b"old code")
-    ns_main._drop_stale_bytecode(app)            # no VERSION.txt: a dev tree
+    (legacy / "settings_io.cpython-313.pyc").write_bytes(b"older code")
+    ns_main._drop_stale_bytecode(install)        # no VERSION.txt: a dev tree
     if not (cache / "settings_io.cpython-313.pyc").exists():
         failures.append("a development tree lost its compiled cache")
-    (app / "VERSION.txt").write_text("NeuralScreen 2.1.2\ncommit: abc\n")
-    ns_main._drop_stale_bytecode(app)
+    (install / "VERSION.txt").write_text("NeuralScreen 2.1.2\ncommit: abc\n")
+    ns_main._drop_stale_bytecode(install)
     if (cache / "settings_io.cpython-313.pyc").exists():
         failures.append("a new release kept the previous release's .pyc")
+    if (legacy / "settings_io.cpython-313.pyc").exists():
+        failures.append("the cache an install from before app/ left at the "
+                        "root survived the update")
     (cache / "fresh.cpython-313.pyc").write_bytes(b"compiled by this release")
-    ns_main._drop_stale_bytecode(app)            # same release, second launch
+    ns_main._drop_stale_bytecode(install)        # same release, second launch
     if not (cache / "fresh.cpython-313.pyc").exists():
         failures.append("the cache is thrown away on every launch, not once")
 

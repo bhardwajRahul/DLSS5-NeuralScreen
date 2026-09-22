@@ -15,6 +15,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 import protocol as wire

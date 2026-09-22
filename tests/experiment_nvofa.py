@@ -5,6 +5,7 @@ import ctypes, json, os, struct, subprocess, sys, threading, time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
+sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
 import cv2, numpy as np
 import pygame
 import protocol as wire

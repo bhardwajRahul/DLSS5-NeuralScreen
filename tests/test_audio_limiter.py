@@ -19,6 +19,7 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 from audio import LoopbackCapture  # noqa: E402
 
 TH = LoopbackCapture.LIMIT_THRESHOLD

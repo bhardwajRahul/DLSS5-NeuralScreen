@@ -19,6 +19,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "app"))  # the modules live in app/
 
 # main.py is a script with a `main()` entry point - import it under an
 # explicit name so `import main` cannot pick up a different module.

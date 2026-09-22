@@ -25,6 +25,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import protocol  # noqa: E402
 from protocol import (DDA_ACK_FMT, DDA_ACK_MAGIC, MOTION_ACK_FMT,  # noqa: E402

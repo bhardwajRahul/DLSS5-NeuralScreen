@@ -57,7 +57,7 @@ def strip_prose(text: str) -> str:
 
 def main() -> int:
     failures: list[str] = []
-    display = (BASE / "display.py").read_text(encoding="utf-8")
+    display = (BASE / "app" / "display.py").read_text(encoding="utf-8")
     cpp = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(
         encoding="utf-8", errors="surrogateescape")
 

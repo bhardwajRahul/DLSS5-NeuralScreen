@@ -21,6 +21,7 @@ from unittest.mock import Mock
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))  # the modules live in app/
 from guides import TemporalGuideGenerator
 
 

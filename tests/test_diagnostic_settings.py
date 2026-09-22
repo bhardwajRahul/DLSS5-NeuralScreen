@@ -42,6 +42,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
 
 import diagnostics  # noqa: E402
 
@@ -109,7 +110,7 @@ def main() -> int:
         failures.append("a 500-character string was copied unbounded")
 
     # --- 5. the log header has the date and the switches ------------------
-    startup = (ROOT / "startup.py").read_text(encoding="utf-8", errors="replace")
+    startup = (ROOT / "app" / "startup.py").read_text(encoding="utf-8", errors="replace")
     if not re.search(r"time\.strftime\('%Y-%m-%d %H:%M:%S'\)", startup):
         failures.append("the environment header carries no date: a bundle can "
                         "only be placed in time by reading a file name")
@@ -122,7 +123,7 @@ def main() -> int:
             failures.append(f"the switches line does not name {switch}")
 
     # --- 6. the caller passes the live config -----------------------------
-    runtime = (ROOT / "compatibility_runtime.py").read_text(encoding="utf-8",
+    runtime = (ROOT / "app" / "compatibility_runtime.py").read_text(encoding="utf-8",
                                                             errors="replace")
     if "settings=settings_snapshot(st)" not in runtime:
         failures.append("the bundle is not built from the live config: a "

@@ -30,6 +30,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import settings_io  # noqa: E402
 
@@ -61,9 +62,9 @@ def _body(path: Path, func_name: str) -> str:
 def main() -> int:
     failures = []
 
-    bodies = {"settings_io.refresh_gpu_ok": _body(BASE / "settings_io.py",
+    bodies = {"settings_io.refresh_gpu_ok": _body(BASE / "app" / "settings_io.py",
                                                   "refresh_gpu_ok"),
-              "pipeline.gpu_came_up": _body(BASE / "pipeline.py",
+              "pipeline.gpu_came_up": _body(BASE / "app" / "pipeline.py",
                                             "gpu_came_up")}
     for name, body in bodies.items():
         if not body:

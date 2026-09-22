@@ -19,6 +19,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 from settings_io import (  # noqa: E402
     PROFILES, load_config, load_presets, resolve_params, _next_preset_name,

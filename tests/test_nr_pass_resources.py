@@ -118,6 +118,7 @@ def check_gpu():
     import numpy as np
 
     sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
     sys.path.insert(0, str(ROOT / "tests"))
     from worker_reply import read_exact, read_reply
     import protocol as wire

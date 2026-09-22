@@ -29,6 +29,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "app"))  # the modules live in app/
 
 import numpy as np  # noqa: E402
 from protocol import OUT_RING_SLOTS, SharedFrameBuffer  # noqa: E402

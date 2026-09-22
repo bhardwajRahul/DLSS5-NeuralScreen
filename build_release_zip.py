@@ -54,7 +54,7 @@ MANDATORY_FILES = (
     "config.default.json",
     "native/libraries/README.md",
     "native/nvngx_dlssg.dll",
-    "resolution_limits.py",
+    "app/resolution_limits.py",
     "NeuralScreen.exe",
     "NeuralScreen.vbs",
     "NeuralScreen-diag.vbs",
@@ -129,7 +129,7 @@ SOURCE_SUFFIXES = {
 }
 VERSION_SOURCE_PATHS = (
     "build_release_zip.py",
-    "settings_io.py",
+    "app/settings_io.py",
     "native/launcher.rc",
 )
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -406,7 +406,7 @@ def _version_values(path: str, data: bytes) -> dict[str, str]:
                 text, path, "VERSION",
             )
         }
-    if path == "settings_io.py":
+    if path == "app/settings_io.py":
         return {
             "APP_VERSION": _single_match(
                 r'^APP_VERSION\s*=\s*["\']([^"\']+)["\']\s*$',
@@ -457,7 +457,7 @@ def assert_version_coherence(version: str, records: Sequence[dict]) -> None:
     rc_version = ".".join([*parts, "0"])
     expected = {
         "build_release_zip.py": {"VERSION": version},
-        "settings_io.py": {"APP_VERSION": version},
+        "app/settings_io.py": {"APP_VERSION": version},
         "native/launcher.rc": {
             "FILEVERSION": rc_version,
             "PRODUCTVERSION": rc_version,

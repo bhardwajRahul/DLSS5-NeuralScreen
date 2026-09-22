@@ -36,6 +36,7 @@ from types import SimpleNamespace
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 from media_convert import processing_size  # noqa: E402
 from settings_io import _work_size, cascade_passes  # noqa: E402
@@ -84,7 +85,7 @@ def main() -> int:
     # 4-5. Every caller passes the count, and the live ones the count Boost
     # allows.
     for name in CALLERS:
-        tree = ast.parse((BASE / name).read_text(encoding="utf-8"))
+        tree = ast.parse((BASE / "app" / name).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                     and node.func.id == "_work_size"):

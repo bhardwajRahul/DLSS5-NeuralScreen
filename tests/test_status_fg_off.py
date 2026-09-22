@@ -30,6 +30,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
 
 import pygame                           # noqa: E402
 pygame.init()

@@ -25,6 +25,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import commands  # noqa: E402
 import pipeline  # noqa: E402
@@ -159,7 +160,7 @@ def main() -> int:
     # 5. The restore must stay in the product, not only in this test: if the
     #    three lines leave pipeline.py, parts 2-3 are the only guard left and
     #    they run through the same file - spell the requirement out.
-    src = (BASE / "pipeline.py").read_text(encoding="utf-8")
+    src = (BASE / "app" / "pipeline.py").read_text(encoding="utf-8")
     if "saved_theme = st.cfg.get(\"theme\")" not in src:
         failures.append("pipeline.py no longer reads st.cfg's theme for the "
                         "restore - the menu comes back light after a rebuild")

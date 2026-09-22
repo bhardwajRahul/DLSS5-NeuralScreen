@@ -9,7 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 
 
-BASE_DIR = Path(__file__).resolve().parent
+#: The install folder: config.json, native/, fonts/, the log and the media
+#: folders live here. The modules themselves are one level down, in app/.
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 DEFAULT_CONFIG_PATH = BASE_DIR / "config.default.json"

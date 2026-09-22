@@ -34,6 +34,7 @@ def _repo_root(start: Path) -> Path:
 
 BASE = _repo_root(Path(__file__).resolve().parent)
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 
 def _handler_after_try(tree):
@@ -70,7 +71,7 @@ def main() -> int:
     failures = []
 
     # 1. Source-level pin: the toggle's revive path must touch next_auto_revive.
-    src = (BASE / "commands.py").read_text(encoding="utf-8")
+    src = (BASE / "app" / "commands.py").read_text(encoding="utf-8")
     start = src.find('elif cmd == "toggle":')
     end = src.find('elif cmd ==', start + 1)
     block = src[start:end if end > 0 else start + 4000]

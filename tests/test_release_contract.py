@@ -19,6 +19,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "app"))  # the modules live in app/
 
 import build_release_zip as builder
 import verify_github as verifier
@@ -88,6 +89,7 @@ class ReleaseFixture:
         self.dist = root / "dist"
         (root / "native" / "libraries").mkdir(parents=True)
         (root / "runtime").mkdir()
+        (root / "app").mkdir()   # the modules' folder, as in the real tree
         (root / ".gitignore").write_text(
             "runtime/\ndist*/\nignored.local\n", encoding="utf-8"
         )
@@ -96,7 +98,7 @@ class ReleaseFixture:
             f'VERSION = "{self.version}"\n', encoding="utf-8"
         )
         (root / "pacing.py").write_text("TARGET_FPS = 60\n", encoding="utf-8")
-        (root / "settings_io.py").write_text(
+        (root / "app" / "settings_io.py").write_text(
             f'APP_VERSION = "{self.version}"\n', encoding="utf-8"
         )
         self.write_launcher_version(self.version)
@@ -428,10 +430,10 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertNotIn("built:", archive.read("VERSION.txt").decode("utf-8"))
 
     def test_version_sources_must_match_builder_version(self) -> None:
-        (self.repo / "settings_io.py").write_text(
+        (self.repo / "app" / "settings_io.py").write_text(
             'APP_VERSION = "9.8.0"\n', encoding="utf-8"
         )
-        run_git(self.repo, "add", "settings_io.py")
+        run_git(self.repo, "add", "app/settings_io.py")
         run_git(self.repo, "commit", "-qm", "introduce app version drift")
         run_git(self.repo, "tag", "-f", self.fixture.tag)
         with self.assertRaisesRegex(builder.ReleaseContractError, "version drift"):
@@ -534,7 +536,7 @@ class ReleaseContractTests(unittest.TestCase):
         )
         settings = next(
             item for item in manifest["version_sources"]
-            if item["path"] == "settings_io.py"
+            if item["path"] == "app/settings_io.py"
         )
         settings["values"]["APP_VERSION"] = "0.0.0"
         failures = verifier._validate_version_sources(
