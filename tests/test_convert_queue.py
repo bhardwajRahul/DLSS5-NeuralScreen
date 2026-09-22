@@ -283,6 +283,35 @@ def main() -> int:
             failures.append(f"format_eta({seconds}) = "
                             f"{convert_jobs.format_eta(seconds)!r}, not {want!r}")
 
+    # 8. A failed row names the right thing. The stage alone is not enough for
+    #    "process": a muxer that refuses the write and a worker that dies are
+    #    both that stage, and sending the user to restart a healthy worker for
+    #    a file it could not write is the same class of lie as a silent
+    #    "unknown". libav (av.error.*) is the file's fault, anything else at
+    #    that stage is the worker's.
+    import av  # noqa: E402
+
+    cases = [
+        (media_convert.ConversionError(
+            "process", av.error.ArgumentError(22, "Invalid argument",
+                                              "clip-nr.mp4.partial")), "encode"),
+        (media_convert.ConversionError("process", RuntimeError("pipe closed")),
+         "worker"),
+        (media_convert.ConversionError("encode", OSError("disk full")), "encode"),
+        (media_convert.ConversionError("decode", ValueError("bad header")),
+         "unreadable"),
+        (media_convert.ConversionError(
+            "encode", PermissionError(13, "Permission denied")), "denied"),
+    ]
+    for exc, want in cases:
+        got = convert_jobs.friendly_error(exc)
+        if got != want:
+            failures.append(f"friendly_error({exc.stage}/"
+                            f"{type(exc.cause).__name__}) = {got!r}, not {want!r}")
+        if f"convert_err_{want}" not in s:
+            failures.append(f"the queue names {want!r} but the strings have no "
+                            f"convert_err_{want}")
+
     for f in failures:
         print("FAIL:", f)
     if failures:

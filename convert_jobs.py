@@ -132,6 +132,13 @@ def friendly_error(exc: BaseException) -> str:
     The panel has one line under a file name, and "encode: [Errno 13]
     Permission denied: 'D:\\...\\clip-nr.mp4.partial'" does not fit it - nor
     does it say what to do. The stage decides the sentence.
+
+    The stage alone is not enough for "process": a frame that fails while the
+    worker is running and a write the muxer refuses are the same stage, and
+    they need different sentences - the first sends the user to restart the
+    worker, the second would have them chase a problem that is in the file.
+    The cause is asked: libav errors (this project's bundled ffmpeg) are the
+    file's, and anything else at that stage is the worker's.
     """
     stage = getattr(exc, "stage", "")
     cause = getattr(exc, "cause", exc)
@@ -140,6 +147,9 @@ def friendly_error(exc: BaseException) -> str:
     if stage == "decode":
         return "unreadable"
     if stage in ("process", "worker"):
+        module = type(cause).__module__ or ""
+        if module.split(".")[0] == "av":       # av.error.* - libav refused the write
+            return "encode"
         return "worker"
     if stage == "encode":
         return "encode"
