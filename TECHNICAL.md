@@ -449,8 +449,10 @@ that its freshly reconstructed key still matches a PASS.
 
 The Program tab creates a deterministic support ZIP containing a bounded,
 scrubbed log tail and structured version/GPU/driver/display/runtime-signature,
-stage and HRESULT/SEH/DRED markers. It deliberately excludes config and the
-environment dump; usernames, secrets and absolute user paths are redacted.
+stage and HRESULT/SEH/DRED markers, plus an allow-list of product settings
+(each value bounded; no paths, presets or hotkeys). It excludes the environment
+dump; usernames, secrets, absolute user paths, other programs' window titles
+and the names of files the conversion queue refused are redacted.
 
 ## Performance
 

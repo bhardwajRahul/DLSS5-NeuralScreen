@@ -30,7 +30,7 @@ Scope and honesty notes:
 
 ---
 
-## v2.1.1 - 2026-09-23 - cheaper and smarter
+## v2.1.1 - 2026-09-22 - cheaper and smarter
 
 Patch release on the v2.1.0 line: the file-conversion defect reported against
 the published build, and three items from a contributor on top of it.
