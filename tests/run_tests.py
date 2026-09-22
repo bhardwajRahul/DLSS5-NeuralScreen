@@ -68,6 +68,8 @@ CANONICAL_SKIP_RE = re.compile(
 # What each test is for, in one line - a failing name should not send anyone
 # digging through the file to find out what broke.
 ABOUT = {
+    "test_apply_debounce.py": "the settings apply is debounced: one rebuild at the end of a drag (#115)",
+    "test_pointer_and_monitor_target.py": "the pointer stays put and a monitor change drops the window target (#96)",
     "test_frame_pacing.py": "30/60/custom/unlimited pacing and real-work NR rate accounting",
     "test_media_output_flow.py": "nonblocking recording publication and dialog-free frozen screenshots",
     "test_compatibility_preflight.py": "CompatibilityKey cache, fail-closed N/N verdicts and quarantine policy",
@@ -233,6 +235,7 @@ TEST_GROUPS = {
         "test_adaptive_exposure.py",
         "test_alert_font_size.py",
         "test_alert_position.py",
+        "test_apply_debounce.py",
         "test_audio_limiter.py",
         "test_audio_pack.py",
         "test_bake_menu.py",
@@ -349,6 +352,7 @@ TEST_GROUPS = {
         "test_out_status.py",
         "test_preset_roundtrip.py",
         "test_presets.py",
+        "test_pointer_and_monitor_target.py",
         "test_protocol_sizes.py",
         "test_rebuild_warmup.py",
         "test_rec_indicator.py",

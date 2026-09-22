@@ -356,6 +356,12 @@ def sync_low_cost_off(st) -> bool:
 # process, not through a restart with an NGX init/shutdown plus sleep(2) -
 # the expensive path is only a fallback now.
 RESTART_COOLDOWN = 0.5  # seconds
+# How long the settings wait for the user to stop moving a control before
+# they are applied (issue #115). The apply itself blocks the frame loop
+# while the worker rebuilds, so applying on the first step of a drag
+# freezes the panel under the hand that is still dragging; one rebuild at
+# the end of the movement is both cheaper and smoother.
+APPLY_DEBOUNCE = 0.3  # seconds
 RESTART_WARMUP = 10     # warmup after a resolution change (do not freeze the screen)
 RACK_TIMEOUT = 20.0     # seconds to wait for RACK after RNSZ
 
@@ -583,6 +589,26 @@ def switch_monitor(st, new_monitor: int | str) -> None:
         st.display.alert(UI_STRINGS[st.lang]["mon_fail"])
     st.width, st.height = st.capture.resolution
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
+    # A monitor change IS a capture-source change, so the window target
+    # goes with it. It used to survive: only leaving window mode cleared
+    # it, so after a switch the program still held the handle of the old
+    # window, the main loop's next negotiation found it alive, and the
+    # worker was told to capture that window on top of a pipeline built
+    # for the whole monitor - the window AND the monitor's desktop in one
+    # frame (reported in #96, Codemned: "will capture the window and the
+    # entire desktop of the capture monitor"). Clearing it is the same
+    # thing leaving window mode does; pointing at a window again is Num5
+    # or the window list, which is how it was set the first time.
+    if st.window_hwnd is not None:
+        print("[main] monitor change clears the window target "
+              f"(was hwnd=0x{st.window_hwnd:X})")
+        st.window_hwnd = None
+        # The follow state describes a window that is no longer the
+        # source: a stale follow_size makes follow_window skip the size
+        # check for a window nobody is capturing.
+        st.follow_size = None
+        st.follow_pos = None
+        st.follow_resize = None
     # The worker reads NS_OUTPUT / NS_WINDOW_POS at every OpenDda/OpenPresent,
     # and the overlay is rebuilt below - so the new monitor's identity goes
     # out before the rebuild (issues #28, #33).
@@ -1264,16 +1290,34 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
 
 def request_apply(st, new_scale: float, new_profile: str, new_params: dict,
                   new_small: bool | None = None) -> None:
-    """Apply the settings with coalescing over RESTART_COOLDOWN.
+    """Ask for the settings to be applied once the user stops changing them.
+
+    The apply is not instantaneous and cannot be: it sends RNSZ to the
+    worker and waits for the ack (about 0.3 s), and while it waits the
+    frame loop is not pumping the panel's events - the menu freezes under
+    the hand that is still moving a control. That is what the reporter of
+    #115 described ("it hangs a bit while changing") about the Boost
+    switch and the resolution slider next to it.
+
+    So every request goes into ONE deferred slot and is applied
+    APPLY_DEBOUNCE seconds after the LAST change, with the cooldown
+    between two applies still enforced by the main loop. Dragging a
+    slider therefore rebuilds the feature once, at the value the user
+    let go on, instead of once per step - and the first step no longer
+    freezes the panel mid-drag.
 
     The single entry point for the settings window, the tray and the
     hotkeys: the cooldown check used to live only on the settings
     path, while the tray and the arrows called _do_restart directly -
     key repeat on an arrow produced a flood of RNSZ.
     """
-    if time.monotonic() - st.last_restart < RESTART_COOLDOWN:
-        st.pending_apply = (new_scale, new_profile, new_params, new_small)
-        print(f"[main] apply deferred (cooldown {RESTART_COOLDOWN:.1f} s), "
-              f"the last value will be applied")
-    else:
-        do_restart(st, new_scale, new_profile, new_params, new_small=new_small)
+    # new_small is the only optional field: None means "this request did
+    # not touch the Boost switch", so a switch already waiting in the slot
+    # keeps its value instead of being dropped by the next request.
+    waiting = getattr(st, "pending_apply", None)
+    if new_small is None and waiting is not None:
+        new_small = waiting[3]
+    st.pending_apply = (new_scale, new_profile, new_params, new_small)
+    st.pending_apply_due = time.monotonic() + APPLY_DEBOUNCE
+    print(f"[main] apply queued ({APPLY_DEBOUNCE:.1f} s after the last "
+          f"change), scale {new_scale:.2f}, boost {new_small}")

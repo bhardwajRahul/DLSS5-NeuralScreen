@@ -743,6 +743,11 @@ def bring_up(st) -> None:
     # sleep(2) - the expensive path is only a fallback now.
     st.last_restart = 0.0
     st.pending_apply: tuple | None = None  # the deferred (scale, profile, params)
+    # When that deferred apply is due. A monotonic deadline rather than a
+    # flag: every request pushes it forward, so a drag ends with one rebuild
+    # (issue #115 - the panel used to freeze under a hand that was still
+    # moving a control).
+    st.pending_apply_due = 0.0
     st.next_auto_revive = 0.0      # monotonic deadline; 0 = no revive pending
     st.consecutive_restarts = 0
     st.guide_fails = 0

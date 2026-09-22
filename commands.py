@@ -998,18 +998,19 @@ def drain_commands(st) -> bool:
                         # 10.09: fixed position until the user drags it).
                         if st.window_hwnd is not None:
                             st.display.set_fullscreen_layer(st.mon_w, st.mon_h)
-                        # The mouse lands on the title bar, so the user
-                        # does not have to hunt for the pointer (user
-                        # request). The layout must be current for the
-                        # title rect to be valid.
-                        try:
-                            st.display.menu.layout(
-                                st.display.screen.get_width(),
-                                st.display.screen.get_height())
-                            cx, cy = st.display.menu.title_center()
-                            ctypes.windll.user32.SetCursorPos(cx, cy)
-                        except Exception:
-                            pass
+                        # The pointer is NOT moved to the panel any more.
+                        # It used to be: opening from the tray or the
+                        # taskbar put the cursor in the middle of the title
+                        # bar, on the reasoning that the pointer was already
+                        # down there and the panel might be on another
+                        # monitor. That reasoning has a cost that was not
+                        # weighed - a pointer that moves itself is worse
+                        # than a pointer you have to move, and it behaved
+                        # differently depending on how the panel was opened,
+                        # while the hotkey moved nothing at all (issue #96,
+                        # Seedmanc). The reveal above is what makes the
+                        # opening visible; the cursor stays where the user
+                        # left it.
                     # Logical visibility is not physical visibility. After a
                     # monitor/GPU rebuild or a shell/compositor disturbance the
                     # log could say "opened" while the HWND stayed hidden or

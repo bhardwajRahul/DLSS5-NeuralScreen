@@ -329,6 +329,9 @@ class _Pipeline:
         "params",
         "paused",
         "pending_apply",
+        #: When the queued apply is due: set on every request, so a drag ends
+        #: with ONE rebuild instead of one per step (#115).
+        "pending_apply_due",
         "pending_shot",
         "shot_rgba",
         # The screenshot timing marks. Declared here because __slots__ turns an
@@ -617,12 +620,19 @@ def main() -> int:
                 time.sleep(0.05)
                 continue
 
-            # Deferred apply (coalescing): if a restart happened recently, we
-            # apply the last value once the pause is over
-            if st.pending_apply is not None and time.monotonic() - st.last_restart >= RESTART_COOLDOWN:
+            # Deferred apply (debounce + coalescing): the request lands once
+            # the user has stopped moving the control for APPLY_DEBOUNCE and
+            # the cooldown between two applies has passed. Deliberately after
+            # the NR OFF branch, exactly as the old cooldown check was: while
+            # the pipeline is asleep there is nothing to rebuild against, and
+            # the queued change is applied when NR comes back.
+            if (st.pending_apply is not None
+                    and time.monotonic() >= st.pending_apply_due
+                    and time.monotonic() - st.last_restart >= RESTART_COOLDOWN):
                 p_scale, p_profile, p_params, p_small = st.pending_apply
                 st.pending_apply = None
-                print("[main] applying the deferred settings")
+                st.pending_apply_due = 0.0
+                print("[main] applying the queued settings")
                 pipeline.do_restart(st, p_scale, p_profile, p_params, new_small=p_small)
 
             if not st.running:
