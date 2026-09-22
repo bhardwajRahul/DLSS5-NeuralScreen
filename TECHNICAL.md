@@ -243,6 +243,18 @@ the queue in `convert_jobs.py`):
 - Output goes to a `.partial` name first and is published when complete, as a
   recording is; the format is named explicitly because neither Pillow nor PyAV
   can guess it from that suffix.
+- **A frame does not travel through a pipe, and the stages overlap.** The
+  conversion worker takes the same three channels the live pipeline does: the
+  frame through shared memory (`SHMI`), the result back through a second
+  section (`OUTS`), and the motion field at flow size for the GPU to upscale
+  (`MOTS`) - so a converted frame takes the same vectors into the network as
+  the desktop does, where it used to build them on the CPU. Decode with the
+  guides, the network and the encoder then run on three threads, handing
+  frames over in the source's own order (`NS_CONVERT_PIPELINE=0` puts them
+  back on one thread). Measured on an RTX 5080 over 150 frames with Boost at
+  0.65, one pass, AV1: **22.35 -> 8.08 ms a frame at 720p** and **36.47 ->
+  12.15 ms at 1080p**; the whole call, which carries the worker's ~1.2 s
+  start either way, 5.11 -> 2.98 s and 7.40 -> 3.79 s.
 
 ## config.json
 
