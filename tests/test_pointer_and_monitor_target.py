@@ -77,8 +77,6 @@ def main() -> int:
                         "monitor change in window mode the old window is "
                         "still captured on top of the new desktop pipeline "
                         "(#96)")
-    if "window_hwnd" in switch and "= None" not in switch.split("window_hwnd", 1)[1][:60]:
-        pass  # the check above is the real one
     # The follow state describes that window and has to go with it.
     for field in ("follow_size", "follow_pos"):
         if f"{field} = None" not in switch:
