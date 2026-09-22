@@ -13,11 +13,14 @@
 //   3. The signer is NVIDIA Corporation and the version resource's product
 //      name starts with "NVIDIA".
 //
-// Plus the anti-swap hold: after verification the file is kept OPEN
-// (FILE_SHARE_READ only) for the session. Verify-then-load has a race - a
-// second process can swap the file between the trust check and LoadLibrary;
-// the open handle wins it, because Windows denies the write while the
-// handle exists.
+// Plus the anti-swap hold: BEFORE verification the file is opened
+// (FILE_SHARE_READ only) and kept open for the session. Verify-then-load has
+// a race - a second process can swap the file between the trust check and
+// LoadLibrary; the open handle wins it, because Windows denies a write, a
+// delete or a rename while the handle exists. Taken first, so the bytes that
+// are verified are already the bytes that will be mapped: taken after the
+// checks (as it once was), a swap in between left the hold locking the
+// swapped file. No hold, no load - the gate fails closed.
 //
 // The verification only ever REFUSES a DLL; the NVIDIA runtimes themselves
 // are never modified (they ship unmodified and stay droppable).
@@ -138,12 +141,33 @@ static PCCERT_CONTEXT NsLeafCertificate(const wchar_t *path,
 
 // Verify a DLL's Authenticode signature end to end: valid chain to a
 // machine root, NVIDIA signer, NVIDIA product name. True = loadable.
+static bool NsTrustedDllHeld(const wchar_t *path, HANDLE hold);
+
 static bool NsTrustedDll(const wchar_t *path)
+{
+    // ---- the anti-swap hold, first -------------------------------------
+    if (g_trusted_file_count >= (int)(sizeof(g_trusted_file_handles)
+                                      / sizeof(g_trusted_file_handles[0])))
+        return false;
+    HANDLE hold = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ,
+                              nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hold == INVALID_HANDLE_VALUE) return false;
+    if (!NsTrustedDllHeld(path, hold)) { CloseHandle(hold); return false; }
+    g_trusted_file_handles[g_trusted_file_count++] = hold;
+    return true;
+}
+
+// The checks, with the file already held open. The signature is verified
+// through that very handle; the other reads go by path, which the hold keeps
+// pointing at the same bytes.
+static bool NsTrustedDllHeld(const wchar_t *path, HANDLE hold)
 {
     // ---- Authenticode -------------------------------------------------
     WINTRUST_FILE_INFO file = {};
     file.cbStruct = sizeof(file);
     file.pcwszFilePath = path;
+    file.hFile = hold;
 
     WINTRUST_DATA wd = {};
     wd.cbStruct = sizeof(wd);
@@ -224,17 +248,7 @@ static bool NsTrustedDll(const wchar_t *path)
         }
     }
     HeapFree(GetProcessHeap(), 0, block);
-    if (!product_ok) return false;
-
-    // ---- the anti-swap hold --------------------------------------------
-    HANDLE hold = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ,
-                              nullptr, OPEN_EXISTING,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hold != INVALID_HANDLE_VALUE
-        && g_trusted_file_count < (int)(sizeof(g_trusted_file_handles)
-                                        / sizeof(g_trusted_file_handles[0])))
-        g_trusted_file_handles[g_trusted_file_count++] = hold;
-    return true;
+    return product_ok;
 }
 
 // The one call a loader makes: verify a user-writable path before

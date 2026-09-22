@@ -1,0 +1,153 @@
+"""The worker's z-order rules and the safety fixes of the 22.09 audit, as source.
+
+Read from the C++ rather than run, because each of these only shows itself on
+a machine in a particular state (a busy desktop, a card that refuses 3x, a
+swapped DLL). Each check names the behaviour it protects:
+
+* the retry after a failed FG present on the HDR path never re-enters FG
+  (it recursed until the stack ran out on a card that refuses the multiplier);
+* a follow step of a captured window moves the picture, never raises it
+  (it re-inserted it over the open panel on every step - #96);
+* the periodic re-assert walks past helper, cloaked and off-picture windows,
+  and raises the panel first so the picture lands directly below it (#96);
+* a stale panel handle is looked up again by its owner;
+* the FG presenter's stop flag is stored under its mutex (a lost wake-up);
+* the split-view UAV cache is dropped with the textures it pointed at;
+* the DLL gate holds the file BEFORE it verifies it, fails closed, and the
+  configured NS_NR_DLL goes through it;
+* the GPU recorder frees its device on a failed start, detaches late sample
+  returns, and bounds the audio ring by its mapping;
+* an HDR10 recording that loses its HDR picture is closed, not frozen.
+
+Run:  runtime\\python.exe tests\\test_worker_zorder_and_safety.py
+"""
+import re
+import sys
+from pathlib import Path
+
+BASE = Path(__file__).resolve().parent.parent
+NATIVE = BASE / "native"
+
+
+def _read(name: str) -> str:
+    return (NATIVE / name).read_text(encoding="utf-8", errors="surrogateescape")
+
+
+def _body(src: str, signature: str) -> str:
+    """The function whose definition starts with `signature`, to its closing brace."""
+    # `{` right after the signature: a forward declaration is not the body.
+    m = re.search(re.escape(signature) + r"\s*\{.*?\n\}", src, re.S)
+    return m.group(0) if m else ""
+
+
+def _code(text: str) -> str:
+    """Comments stripped: a check a comment can satisfy is not a check."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def main() -> int:
+    failures = []
+    cpp = _read("dlss5-feed-host64.cpp")
+    hdr = _read("hdr_present.inl")
+    fg = _read("frame_generation.inl")
+    trust = _read("dll_trust.h")
+    grec = _read("gpu_recorder.cpp")
+
+    # 1. HDR + FG retry
+    present_hdr = _code(_body(hdr, "static bool PresentHdr(VideoState &v, bool bypass, bool allow_fg)"))
+    if not present_hdr:
+        failures.append("PresentHdr no longer takes allow_fg")
+    elif "allow_fg && FgRequested()" not in present_hdr:
+        failures.append("PresentHdr decides FG without allow_fg")
+    if re.search(r"return\s+PresentHdr\(v,\s*bypass\)\s*;", hdr):
+        failures.append("the FG-failure retry re-enters PresentHdr with FG allowed "
+                        "- it recurses at a refused multiplier")
+    if "return PresentHdr(v, bypass, false);" not in hdr:
+        failures.append("the FG-failure retry is not an ordinary (no FG) present")
+
+    # 2. follow step: a move, never a raise
+    follow = _code(_body(cpp, "static void FollowCapturedWindow()"))
+    if not follow:
+        failures.append("FollowCapturedWindow is gone")
+    else:
+        if "HWND_TOPMOST" in follow:
+            failures.append("a follow step can still re-insert the picture at "
+                            "HWND_TOPMOST - over the open panel (#96)")
+        if "SWP_NOZORDER" not in follow:
+            failures.append("the follow SetWindowPos does not keep the z-order")
+        if "ShowPresentBelowPanel()" not in follow:
+            failures.append("the window-back re-show does not go below the panel")
+
+    # 3. the re-assert walk
+    reassert = _code(_body(cpp, "static void ReassertPresentTopmost()"))
+    for token, why in (
+            ("GW_HWNDNEXT", "it reads only the top window again"),
+            ("DWMWA_CLOAKED", "cloaked Start/Search hosts count as covering"),
+            ("< 16", "1x1 and 20x20 helpers count as covering"),
+            ("IntersectRect", "windows on another monitor count as covering"),
+            ("PanelTopmost(hud)", "the raise does not put the panel first"),
+            ("SetWindowPos(g_present_hwnd, hud", "the picture is not inserted below the panel")):
+        if token not in reassert:
+            failures.append(f"ReassertPresentTopmost lost {token!r}: {why}")
+
+    # 4. stale panel handle
+    hud = _code(_body(cpp, "static HWND HudWindow()"))
+    if "FindClientPanel(ParentProcessId())" not in hud:
+        failures.append("HudWindow never looks the panel up again once the "
+                        "published handle is stale")
+
+    # 5. FG stop under the mutex
+    stop = _code(_body(fg, "static void StopFgPresentation()"))
+    if not re.search(r"lock_guard<std::mutex>\s+\w+\(g_fg\.mutex\);\s*g_fg\.stop\s*=\s*true",
+                     stop):
+        failures.append("StopFgPresentation stores `stop` outside the mutex - "
+                        "the presenter can miss it and join() blocks for good")
+    if re.search(r"~FgState\(\)\s*\{\s*stop\s*=\s*true", fg):
+        failures.append("~FgState stores `stop` outside the mutex")
+
+    # 6. split UAV cache
+    release = _code(_body(cpp, "static void ReleaseVideoTextures(VideoState &v)"))
+    if "g_split_uav_for = nullptr" not in release:
+        failures.append("ReleaseVideoTextures keeps the split-view UAV cache - "
+                        "a new output at the old address uses a freed descriptor")
+
+    # 7. DLL trust
+    gate = _code(_body(trust, "static bool NsTrustedDll(const wchar_t *path)"))
+    if "CreateFileW" not in gate or "NsTrustedDllHeld(path, hold)" not in gate:
+        failures.append("NsTrustedDll does not take the hold before verifying")
+    if re.search(r"return\s+true;\s*\}\s*$", gate) and "INVALID_HANDLE_VALUE) return false" not in gate:
+        failures.append("the DLL gate may still pass without a hold")
+    held = _code(_body(trust, "static bool NsTrustedDllHeld(const wchar_t *path, HANDLE hold)"))
+    if "file.hFile = hold" not in held:
+        failures.append("the signature is not verified through the held handle")
+    nr = cpp.split('GetEnvironmentVariableW(L"NS_NR_DLL"', 1)[-1][:2000]
+    if "NsGateByoDll(full" not in nr:
+        failures.append("the configured NS_NR_DLL is loaded without the signature gate")
+
+    # 8. GPU recorder
+    start_fail = grec.split("if (FAILED(hr))\n    {\n        r->thread.join();", 1)[-1][:600]
+    if "SafeRelease(r->d11)" not in start_fail or "SafeRelease(r->ctx)" not in start_fail:
+        failures.append("a failed GPU recording start still leaks its D3D11 device")
+    if "Detach()" not in _code(_body(grec, "void Teardown(Recorder *r)")):
+        failures.append("Teardown frees the Recorder with late sample returns attached")
+    if "r->audio_capacity = r->ring->capacity" not in grec or "VirtualQuery" not in grec:
+        failures.append("the audio ring's capacity is not checked against its mapping")
+    if "const int64_t capacity = r->ring->capacity;" in grec:
+        failures.append("PumpAudio re-reads the client's capacity on every pump")
+
+    # 9. HDR10 recording without its HDR picture
+    if "hdr_feed_lost_at" not in cpp or "the HDR10 recording lost its HDR picture" not in cpp:
+        failures.append("an HDR10 recording that leaves the HDR path is not closed")
+
+    for f in failures:
+        print("FAIL:", f)
+    if failures:
+        return 1
+    print("OK: the worker's z-order keeps the panel on top, and the HDR/FG, "
+          "presenter, descriptor, DLL-gate and recorder fixes are in place")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

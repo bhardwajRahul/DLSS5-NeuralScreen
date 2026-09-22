@@ -109,10 +109,22 @@ def main() -> int:
                   encoding="utf-8", errors="surrogateescape").read()
     body = re.search(r"static void RevealOnFirstPresent\(\)\s*\{.*?\n\}",
                      cpp, re.S)
+    # The one-step show lives in two helpers now, because the re-show paths
+    # (the target back from minimised, the switch back to the desktop) use it
+    # too: ShowPresentBelowPanel does the SetWindowPos, PanelTopmost decides
+    # whether the panel is usable. The reveal is read together with them.
+    helpers = "".join(
+        m.group(0) for m in re.finditer(
+            r"static bool (?:ShowPresentBelowPanel|PanelTopmost)\((?:HWND hud)?\)"
+            r"\s*\{.*?\n\}", cpp, re.S))
     if body is None:
         failures.append("RevealOnFirstPresent is gone from the worker")
     else:
-        b = body.group(0)
+        if "ShowPresentBelowPanel()" not in body.group(0):
+            failures.append(
+                "the reveal no longer goes through ShowPresentBelowPanel - the "
+                "one-step show below the panel")
+        b = body.group(0) + helpers
         if "SetWindowPos" not in b or "SWP_SHOWWINDOW" not in b:
             failures.append(
                 "the reveal no longer shows and orders the window in one "

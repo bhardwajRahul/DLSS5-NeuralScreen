@@ -104,13 +104,14 @@ static bool EnsureHdrPipeline(UINT w, UINT height, bool pq)
     return g_hdr_output != nullptr;
 }
 
-static bool PresentHdr(VideoState &v, bool bypass)
+static bool PresentHdr(VideoState &v, bool bypass, bool allow_fg)
 {
     // NR OFF is not a reason for ordinary presentation either: FG owns the
     // present loop on both paths. `bypass` still selects WHICH frame is
     // composed (the raw capture, below) - it just no longer decides whether
-    // the presenter runs.
-    const bool framegen = FgRequested();
+    // the presenter runs. `allow_fg` is false only for the one ordinary
+    // present that follows a failed FG attempt on this same frame.
+    const bool framegen = allow_fg && FgRequested();
     if (!framegen) StopFgPresentation();
     const UINT w = v.upscale ? v.full_w : v.w;
     const UINT height = v.upscale ? v.full_h : v.hgt;
@@ -266,7 +267,14 @@ static bool PresentHdr(VideoState &v, bool bypass)
     {
         // The export follows the same source this path composed and showed.
         if (FgPresent(v, g_hdr_output, D3D12_RESOURCE_STATE_COMMON, bypass)) return true;
-        return PresentHdr(v, bypass); // failed FG has disabled itself; ordinary output
+        // Ordinary output for this frame, and never FG again inside it. A
+        // refused multiplier (FgStepDown) lowers only the ceiling and leaves
+        // g_fg.failed clear: the lower count takes effect at the next frame
+        // header (ConfigureFgFrame). Re-entering with FG allowed rebuilt the
+        // feature at the SAME refused count and recursed until the stack ran
+        // out - HDR with 3x/4x on a card that refuses it. The SDR paths
+        // already fall through to a plain present here.
+        return PresentHdr(v, bypass, false);
     }
     const bool ok = PresentStatus(g_present_swap->Present(0, 0), "hdr present");
     if (ok) { RevealOnFirstPresent(); SpoutBridgeSend(); }

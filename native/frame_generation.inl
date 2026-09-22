@@ -35,7 +35,13 @@ static struct FgState {
     UINT64 sequence = 0;
     std::chrono::steady_clock::time_point last;
     bool history = false;
-    ~FgState() { stop = true; wake.notify_all(); if (thread.joinable()) thread.join(); }
+    // The store goes under the mutex (see StopFgPresentation).
+    ~FgState()
+    {
+        { std::lock_guard<std::mutex> lock(mutex); stop = true; }
+        wake.notify_all();
+        if (thread.joinable()) thread.join();
+    }
 } g_fg;
 // g_fg_present_fence lives in dlss5-feed-host64.cpp near the FgPresent
 // forward declaration: PresentFrame consumes it for the defer-tail token,
@@ -86,15 +92,21 @@ static bool FgRequested()
 
 static void StopFgPresentation()
 {
-    g_fg.stop = true;
+    // Stored under the mutex. The presenter checks `stop` in its wait
+    // predicate and then sleeps with no timeout; a store and notify that land
+    // between the check and the sleep were lost, and the join below blocked
+    // the worker for good (a stop on every FG toggle, resize, format change
+    // and ClosePresent - rare, but a hang the client could only time out).
+    { std::lock_guard<std::mutex> lock(g_fg.mutex); g_fg.stop = true; }
     g_fg.wake.notify_all();
     if (g_fg.thread.joinable()) g_fg.thread.join();
+    // The presenter has stopped: nothing waits on the handle any more.
+    CloseFgWaitable();
     // A failed fence means the queue may still own every resource below.
     // Keep them alive until process teardown instead of releasing them from
     // the recovery path.
     if (g_submission_failed) { g_fg.history = false; return; }
-    // Hand the swapchain back to the ordinary present path: default latency,
-    // the waitable handle dies with the swapchain, not with us.
+    // Hand the swapchain back to the ordinary present path: default latency.
     if (g_present_swap != nullptr)
     {
         IDXGISwapChain2 *sc2 = nullptr;
@@ -106,7 +118,6 @@ static void StopFgPresentation()
             sc2->Release();
         }
     }
-    g_fg_waitable = nullptr;
     for (auto &slot : g_fg.slots) { slot.real = nullptr; for (auto &image : slot.interpolated) image = nullptr; slot.state = 0; }
     g_fg.history = false;
 }
@@ -449,10 +460,20 @@ static bool EnsureFg(VideoState &v, DXGI_FORMAT format)
                 __uuidof(IDXGISwapChain2), reinterpret_cast<void **>(&sc2)))
             && sc2 != nullptr)
         {
-            sc2->SetMaximumFrameLatency(1);
-            g_fg_waitable = sc2->GetFrameLatencyWaitableObject();
+            // Both calls need a swap chain created with
+            // DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT; without it
+            // they refuse and there is no handle. The log used to say "paced
+            // by the compositor" either way, and the chain is created without
+            // the flag - so it now says which pacing actually runs.
+            CloseFgWaitable();
+            const HRESULT latency = sc2->SetMaximumFrameLatency(1);
+            if (SUCCEEDED(latency)) g_fg_waitable = sc2->GetFrameLatencyWaitableObject();
             sc2->Release();
-            Log("[fg] the presenter is paced by the compositor (latency 1)");
+            if (g_fg_waitable != nullptr)
+                Log("[fg] the presenter is paced by the compositor (latency 1)");
+            else
+                Log("[fg] the presenter is paced by the clock: the swap chain has no "
+                    "latency waitable (0x%08X)", static_cast<unsigned>(latency));
         }
     }
     g_fg.thread = std::thread(FgPresenter);

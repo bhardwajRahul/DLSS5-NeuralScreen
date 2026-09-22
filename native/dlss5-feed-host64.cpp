@@ -46,6 +46,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdlib>   // strtoull: the panel's handle out of the environment
+#include <tlhelp32.h>   // the parent process: whose panel to look for
 #include <cstring>
 #include <algorithm>
 #include <emmintrin.h>   // _mm_sad_epu8: the scene score
@@ -315,7 +316,10 @@ static bool ArchSpoofRequested()
 static int SetupArchSpoof()
 {
     if (!ArchSpoofRequested()) return 0;
-    HMODULE nvapi = LoadLibraryW(L"nvapi64.dll");
+    // System32 only, like nvofapi64.dll: a bare name searches the worker's
+    // own (user-writable) directory first. d3d12/dxgi are imported, so they
+    // are already mapped by the time anything asks for them by name.
+    HMODULE nvapi = LoadLibraryExW(L"nvapi64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (nvapi == nullptr)
     { Log("[arch] nvapi64.dll did not load, err=%lu", GetLastError()); return -1; }
     auto qi = reinterpret_cast<PFN_NvQueryInterface>(
@@ -492,8 +496,31 @@ static bool InitDirectNr(const wchar_t *data_path)
     const wchar_t *dll_name = L"nvngx_dlssnr.dll";
     if (GetEnvironmentVariableW(L"NS_NR_DLL", dll_path, MAX_PATH) > 0)
     {
-        dll_name = dll_path;
-        Log("[pure] NS_NR_DLL=%ls", dll_name);
+        // Through the same gate as the BYO folder. The value comes from the
+        // `nr_dll` config key, which sits in a folder as writable as
+        // native\libraries\ - so it used to be a way around the signature
+        // check, and one that survived every update. A relative path is the
+        // worker's directory's, as documented, not the process's current one.
+        wchar_t full[MAX_PATH] = {};
+        const bool absolute = (dll_path[0] != L'\0' && dll_path[1] == L':')
+                              || (dll_path[0] == L'\\' && dll_path[1] == L'\\');
+        if (absolute)
+            wcscpy_s(full, dll_path);
+        else
+        {
+            GetModuleFileNameW(nullptr, full, MAX_PATH);
+            if (auto slash = wcsrchr(full, L'\\')) *(slash + 1) = 0;
+            wcscat_s(full, dll_path);
+        }
+        if (NsGateByoDll(full, "NS_NR_DLL"))
+        {
+            wcscpy_s(dll_path, full);
+            dll_name = dll_path;
+            Log("[pure] NS_NR_DLL=%ls (verified)", dll_name);
+        }
+        else
+            Log("[pure] NS_NR_DLL refused: %ls is missing or not a NVIDIA-signed "
+                "runtime - using the bundled copy", full);
     }
     else
     {
@@ -1211,6 +1238,10 @@ static bool InitDisguise()
     h.dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void **>(&h.fence));
     h.fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (h.list == nullptr || h.fence == nullptr) { Log("[host] list/fence creation failed"); return false; }
+    // All of the ring, not just the first: BeginCommands resets whichever
+    // allocator comes round, and a null one there is a crash two frames in.
+    for (int i = 0; i < Host::kFrames; ++i)
+        if (h.alloc[i] == nullptr) { Log("[host] command allocator %d creation failed", i); return false; }
 
     return true;
 }
@@ -2115,7 +2146,7 @@ static HMONITOR g_capture_monitor = nullptr;
 static HdrDisplayInfo g_capture_display;
 static float g_hdr_frame_white = 1.0f;
 static UINT g_hdr_split = UINT_MAX;
-static bool PresentHdr(VideoState &v, bool bypass);
+static bool PresentHdr(VideoState &v, bool bypass, bool allow_fg = true);
 static bool FgRequested();
 // `bypass` tells the presenter that the frame it is handing over is the raw
 // capture (NR off), not the neural result: the export must follow the same
@@ -2218,6 +2249,12 @@ static IDXGISwapChain3           *g_present_swap;
 // R11: DWM releases the FG presenter on this handle, one vblank before the
 // previous frame reaches the screen. Null = the wall-clock fallback path.
 static HANDLE                     g_fg_waitable = nullptr;
+// GetFrameLatencyWaitableObject hands out a handle the caller must close.
+static void CloseFgWaitable()
+{
+    if (g_fg_waitable != nullptr) CloseHandle(g_fg_waitable);
+    g_fg_waitable = nullptr;
+}
 // What the swap chain has already been told its colours mean. Asking DXGI
 // every frame is both a waste and a way to fail on the SDR path, which has
 // never made the call at all - see EnsurePresentFormat.
@@ -2337,7 +2374,7 @@ static void ClosePresent()
 {
     CloseFgResources();
     if (g_present_swap != nullptr) { g_present_swap->Release(); g_present_swap = nullptr; }
-    g_fg_waitable = nullptr;  // the handle dies with the swapchain
+    CloseFgWaitable();
     // Only the thread that created the window can destroy it. This used to
     // post WM_QUIT to the thread FIRST, which ended the message loop before
     // the WM_CLOSE behind it could be dispatched, and then called
@@ -2440,7 +2477,7 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     hr = sc1->QueryInterface(__uuidof(IDXGISwapChain2), reinterpret_cast<void **>(&sc2));
     if (SUCCEEDED(hr) && sc2 != nullptr)
         sc2->Release();
-    g_fg_waitable = nullptr;
+    CloseFgWaitable();
     hr = sc1->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&g_present_swap));
     sc1->Release();
     if (FAILED(hr) || g_present_swap == nullptr)
@@ -2501,6 +2538,7 @@ static bool PresentModeActive(const VideoState &v)
 // shared memory are all built for one frame size, so a resize means rebuilding
 // the pipeline, which only the client can do. Until it does, the picture keeps
 // the old size in the corner of the window.
+static bool ShowPresentBelowPanel();   // defined next to RevealOnFirstPresent
 static void FollowCapturedWindow()
 {
     if (!g_wgc_active || g_present_hwnd == nullptr || g_wgc_hwnd == nullptr) return;
@@ -2528,9 +2566,11 @@ static void FollowCapturedWindow()
         return;
     if (!g_present_shown && g_present_revealed)
     {
-        ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
+        const bool below = ShowPresentBelowPanel();
+        if (!below) ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
         g_present_shown = true;
-        Log("[wgc] the window is back - the overlay is shown");
+        Log("[wgc] the window is back - the overlay is shown (%s)",
+            below ? "below the panel" : "on top - no usable panel handle");
     }
     if (r.left != g_present_follow.left || r.top != g_present_follow.top ||
         r.right != g_present_follow.right || r.bottom != g_present_follow.bottom)
@@ -2566,16 +2606,17 @@ static void FollowCapturedWindow()
             if (left < r.left) left = r.left;
             if (top < r.top) top = r.top;
         }
-        // The raise is the client HUD raise's business (P3 ownership): a
-        // bare move keeps the window in place inside the topmost band
-        // (SWP_NOZORDER) instead of re-inserting it above the HUD on every
-        // follow step - the picture-over-HUD ping-pong read as hard
-        // flicker with the menu open.
-        const bool picture_on_top = GetTopWindow(nullptr) == g_present_hwnd;
-        SetWindowPos(g_present_hwnd,
-                     picture_on_top ? nullptr : HWND_TOPMOST,
-                     left, top, w, hgt,
-                     SWP_NOACTIVATE | (picture_on_top ? SWP_NOZORDER : 0));
+        // A move, never a raise: the window keeps its place inside the
+        // topmost band (SWP_NOZORDER), and the raise stays the client HUD
+        // raise's business (P3 ownership). The previous shape had this
+        // inverted - it kept the z-order only when the picture was ALREADY on
+        // top and re-inserted it at HWND_TOPMOST exactly when something (the
+        // panel, normally) was above it, so every follow step of a moving or
+        // resizing window put the picture over the open panel (#96: "in
+        // window mode the processed window is always on top of everything,
+        // even the NR UI").
+        SetWindowPos(g_present_hwnd, nullptr, left, top, w, hgt,
+                     SWP_NOACTIVATE | SWP_NOZORDER);
     }
 }
 
@@ -2609,15 +2650,15 @@ static void FollowCapturedWindow()
 // exists for. A hidden window cannot cover anything, so it is skipped too.
 static HWND HudWindow();   // defined below; the pid of the panel is its owner
 
-// The process that owns the shell's desktop window (explorer), read once.
+// The process that owns the shell's desktop window (explorer). Read on every
+// call - this runs once per 300 frames: explorer can restart under a running
+// session, and a pid cached before that (or a 0 cached before the shell was
+// up, at autostart) made the new taskbar read as a stranger that took the top.
 static DWORD ShellProcessId()
 {
-    static DWORD cached = 0;
-    if (cached != 0) return cached;
     const HWND shell = GetShellWindow();
     DWORD pid = 0;
     if (shell != nullptr) GetWindowThreadProcessId(shell, &pid);
-    cached = pid;
     return pid;
 }
 
@@ -2632,54 +2673,148 @@ static DWORD HudProcessId()
     return pid;
 }
 
+static bool PanelTopmost(HWND hud);   // defined next to RevealOnFirstPresent
+
 static void ReassertPresentTopmost()
 {
     if (g_present_hwnd == nullptr) return;
     static uint32_t tick = 0;
     if ((++tick % 300) != 0) return;
-    HWND top = GetTopWindow(0);
-    if (top == nullptr || top == g_present_hwnd) return;
-    wchar_t cls[64];
-    // Both our windows count as "the pair is fine": the HUD class is pygame,
-    // and our own picture class must not be re-raised above - the client's
-    // HUD raise owns the HUD-over-picture order now (v1.10-review P3), and
-    // the old single-class check re-inserted the picture over the HUD every
-    // 300 frames while the client inserted the HUD back over the picture -
-    // the ping-pong read as hard flicker.
-    if (GetClassNameW(top, cls, 64) > 0
-        && (wcscmp(cls, L"pygame") == 0 || wcscmp(cls, L"NeuralScreenPresent") == 0))
-        return;  // ours on top - leave it there
-    RECT r;
-    if (GetWindowRect(top, &r) && r.right == r.left && r.bottom == r.top)
-        return;  // zero-sized (IME, helpers) cannot cover the picture
-    if (!IsWindowVisible(top))
-        return;  // a hidden window cannot cover anything either
-    // Whose window is this? The shell's and the client's own are the desktop
-    // and the program we draw over, not a window that took our place.
-    DWORD pid = 0;
-    GetWindowThreadProcessId(top, &pid);
+    RECT picture = {};
+    if (!IsWindowVisible(g_present_hwnd) || !GetWindowRect(g_present_hwnd, &picture))
+        return;  // hidden (a minimised target): nothing to keep on top
     const DWORD shell = ShellProcessId();
     const DWORD client = HudProcessId();
     const uint32_t self = static_cast<uint32_t>(GetCurrentProcessId());
-    if (pid != 0 && ((shell != 0 && pid == shell) || pid == self ||
-                     (client != 0 && pid == client)))
+    // Walk DOWN from the top of the stack to the picture, and let the first
+    // window that could really cover it decide. Only the top window used to
+    // be read, and the top of a busy desktop is DWM's and the shell's helpers:
+    // a visible 1x1 ThumbnailDeviceHelperWnd, Narrator's 20x20 at -40000, a
+    // cloaked Start or Search host (not explorer's pid). Every one of them
+    // read as "something took the top" and raised the picture over the open
+    // panel every 300 frames - #96, the panel blinking away in fullscreen on
+    // a desktop whose first sixteen entries were fifteen helpers. The bound
+    // is the client walk's (display.py).
+    HWND w = GetTopWindow(nullptr);
+    for (int step = 0; w != nullptr && w != g_present_hwnd && step < 512;
+         ++step, w = GetWindow(w, GW_HWNDNEXT))
     {
-        // Said ONCE per reason, not every 300 frames: a user's log is read by
-        // a person, and this state persists for as long as the taskbar is
-        // being used or a dialog is open.
-        static DWORD last_skip_pid = 0;
-        if (pid != last_skip_pid)
+        wchar_t cls[64] = {};
+        // Our windows never decide: the panel (pygame) sits above the picture
+        // by design, and the client's HUD raise owns that order (v1.10-review
+        // P3). A window between the panel and the picture still covers the
+        // picture, so the walk goes on past the panel instead of stopping.
+        if (GetClassNameW(w, cls, 64) > 0
+            && (wcscmp(cls, L"pygame") == 0 || wcscmp(cls, L"NeuralScreenPresent") == 0))
+            continue;
+        if (!IsWindowVisible(w))
+            continue;  // a hidden window cannot cover anything
+        DWORD cloaked = 0;
+        if (SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked)))
+            && cloaked != 0)
+            continue;  // DWM draws none of it: an immersive host on another desktop, or asleep
+        RECT r = {}, both = {};
+        if (!GetWindowRect(w, &r) || r.right - r.left < 16 || r.bottom - r.top < 16)
+            continue;  // IME entries and helpers: too small to cover the picture
+        if (!IntersectRect(&both, &r, &picture))
+            continue;  // on another monitor, or beside the picture: covers nothing
+        // Whose window is this? The shell's and the client's own are the
+        // desktop and the program we draw over, not a window that took our
+        // place - and their flyouts and dialogs must stay above the picture.
+        DWORD pid = 0;
+        GetWindowThreadProcessId(w, &pid);
+        if (pid != 0 && ((shell != 0 && pid == shell) || pid == self ||
+                         (client != 0 && pid == client)))
         {
-            last_skip_pid = pid;
-            Log("[z] present left as is: the top window belongs to %s (pid=%lu) - "
-                "the picture is not raised over the shell or our own program",
-                pid == self ? "this process" : (pid == shell ? "the shell" : "the client"),
-                static_cast<unsigned long>(pid));
+            // Said ONCE per reason, not every 300 frames: a user's log is read
+            // by a person, and this state persists for as long as the taskbar
+            // is being used or a dialog is open.
+            static DWORD last_skip_pid = 0;
+            if (pid != last_skip_pid)
+            {
+                last_skip_pid = pid;
+                Log("[z] present left as is: the top window belongs to %s (pid=%lu) - "
+                    "the picture is not raised over the shell or our own program",
+                    pid == self ? "this process" : (pid == shell ? "the shell" : "the client"),
+                    static_cast<unsigned long>(pid));
+            }
+            return;
         }
+        // A real application window over the picture: the borderless-game case
+        // this function exists for. Named once per window - the raise used to
+        // be the one z-order decision the log never recorded.
+        static HWND last_raised = nullptr;
+        if (w != last_raised)
+        {
+            last_raised = w;
+            Log("[z] picture raised: covered by hwnd=0x%p pid=%lu class='%ls' "
+                "rect=(%ld,%ld,%ld,%ld)", static_cast<void *>(w),
+                static_cast<unsigned long>(pid), cls, r.left, r.top, r.right, r.bottom);
+        }
+        // The panel goes up first and the picture is inserted directly below
+        // it: the same one-step order as the reveal, so there is no moment with
+        // the picture over the panel for a refresh to catch. No usable panel:
+        // the plain raise, as before.
+        const HWND hud = HudWindow();
+        if (PanelTopmost(hud))
+        {
+            SetWindowPos(hud, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            SetWindowPos(g_present_hwnd, hud, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        else
+            SetWindowPos(g_present_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         return;
     }
-    SetWindowPos(g_present_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+// Keep the picture on the panel's virtual desktop. The client moves its own
+// windows after the taskbar button (display.follow_taskbar_desktop, #93), but
+// MoveWindowToDesktop only works on the calling process's windows - it refused
+// the picture, and after "Move to desktop 2" in Task View the panel went and
+// the picture stayed behind. So the worker moves its own window, once per 300
+// frames, and only when the two disagree.
+// The public IVirtualDesktopManager, declared here rather than taken from
+// shobjidl_core.h: that header's PS_* enumerators collide with this file's
+// profiler stages. Same IID, CLSID and vtable order as the SDK's.
+struct __declspec(uuid("a5cd92ff-29be-454c-8d04-d82879fb3f1b")) INsVirtualDesktopManager
+    : public IUnknown
+{
+    virtual HRESULT STDMETHODCALLTYPE IsWindowOnCurrentVirtualDesktop(HWND, BOOL *) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetWindowDesktopId(HWND, GUID *) = 0;
+    virtual HRESULT STDMETHODCALLTYPE MoveWindowToDesktop(HWND, REFGUID) = 0;
+};
+static const CLSID kVirtualDesktopManagerClsid =
+    {0xaa509086, 0x5ca9, 0x4c25, {0x8f, 0x95, 0x58, 0x9d, 0x3c, 0x07, 0xb4, 0x8a}};
+
+static void FollowPanelDesktop()
+{
+    if (g_present_hwnd == nullptr) return;
+    static uint32_t tick = 0;
+    if ((++tick % 300) != 0) return;
+    static INsVirtualDesktopManager *manager = nullptr;
+    static bool tried = false;
+    if (!tried)
+    {
+        tried = true;
+        // MTA like the WinRT capture; S_FALSE when this thread already is.
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        if (FAILED(CoCreateInstance(kVirtualDesktopManagerClsid, nullptr,
+                                    CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&manager))))
+            manager = nullptr;
+    }
+    if (manager == nullptr) return;
+    const HWND hud = HudWindow();
+    if (hud == nullptr || !IsWindow(hud)) return;
+    GUID want = {}, have = {};
+    if (FAILED(manager->GetWindowDesktopId(hud, &want)) || IsEqualGUID(want, GUID{}) ||
+        FAILED(manager->GetWindowDesktopId(g_present_hwnd, &have)) || IsEqualGUID(want, have))
+        return;
+    const HRESULT hr = manager->MoveWindowToDesktop(g_present_hwnd, want);
+    Log("[z] the picture follows the panel to its virtual desktop (0x%08X)",
+        static_cast<unsigned>(hr));
 }
 
 // Show the present window on its first successful Present.
@@ -2689,23 +2824,101 @@ static void ReassertPresentTopmost()
 // frame that actually presents is the moment the window becomes visible -
 // it appears with a picture already on it (user: screen flashes black on
 // startup and on one-window mode switches).
+// The process that started this worker - the client. Looked up once.
+static DWORD ParentProcessId()
+{
+    static DWORD cached = 0;
+    static bool looked = false;
+    if (looked) return cached;
+    looked = true;
+    const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    const DWORD self = GetCurrentProcessId();
+    for (BOOL ok = Process32FirstW(snap, &entry); ok; ok = Process32NextW(snap, &entry))
+        if (entry.th32ProcessID == self) { cached = entry.th32ParentProcessID; break; }
+    CloseHandle(snap);
+    return cached;
+}
+
+// The client's panel found by its owner: the pygame window of the parent.
+static HWND FindClientPanel(DWORD client)
+{
+    if (client == 0) return nullptr;
+    struct Search { DWORD pid; HWND found; } search = {client, nullptr};
+    EnumWindows([](HWND w, LPARAM p) -> BOOL {
+        auto *search = reinterpret_cast<Search *>(p);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(w, &pid);
+        wchar_t cls[16] = {};
+        if (pid == search->pid && GetClassNameW(w, cls, 16) > 0 &&
+            wcscmp(cls, L"pygame") == 0)
+        { search->found = w; return FALSE; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&search));
+    return search.found;
+}
+
 // The parent's panel, published by it in NS_HUD_HWND and read once. The
 // picture goes directly below this window when it is revealed.
+//
+// When the published handle stops naming a window - the client rebuilt its
+// display without restarting this worker - the panel is looked up again by
+// its owner instead of being "no panel" for the rest of the worker's life:
+// that fallback showed the picture over the panel on every re-show and let
+// the client's own Save As dialog read as a stranger (HudProcessId() == 0).
 static HWND HudWindow()
 {
     static HWND cached = reinterpret_cast<HWND>(-1);
-    if (cached != reinterpret_cast<HWND>(-1)) return cached;
-    char buf[32] = {0};
-    const DWORD got = GetEnvironmentVariableA("NS_HUD_HWND", buf,
-                                              static_cast<DWORD>(sizeof(buf)));
-    cached = nullptr;
-    if (got > 0 && got < sizeof(buf))
+    static bool published = false;
+    if (cached == reinterpret_cast<HWND>(-1))
     {
-        const unsigned long long v = strtoull(buf, nullptr, 10);
-        if (v != 0ull) cached = reinterpret_cast<HWND>(
-            static_cast<uintptr_t>(v));
+        char buf[32] = {0};
+        const DWORD got = GetEnvironmentVariableA("NS_HUD_HWND", buf,
+                                                  static_cast<DWORD>(sizeof(buf)));
+        cached = nullptr;
+        if (got > 0 && got < sizeof(buf))
+        {
+            const unsigned long long v = strtoull(buf, nullptr, 10);
+            if (v != 0ull) cached = reinterpret_cast<HWND>(
+                static_cast<uintptr_t>(v));
+        }
+        published = cached != nullptr;
     }
+    // Nothing published (a worker started on its own) stays "no panel", as
+    // it always did; only a handle that WAS published and went stale is
+    // looked up again, on every call until the new panel exists.
+    if (!published || (cached != nullptr && IsWindow(cached))) return cached;
+    const HWND found = FindClientPanel(ParentProcessId());
+    if (found != cached)
+        Log("[z] the published panel handle is gone; %s",
+            found != nullptr ? "found the client's panel again by its owner"
+                             : "the client has no panel window now");
+    cached = found;
     return cached;
+}
+
+// A panel the picture can be inserted after: it exists and it is topmost.
+// SetWindowPos placed after a NON-topmost window drops the picture out of the
+// topmost band, and it would go behind other applications - much worse than a
+// flash. A stale handle (a set_mode can hand the parent a different window)
+// is not usable either.
+static bool PanelTopmost(HWND hud)
+{
+    return hud != nullptr && IsWindow(hud) &&
+        (GetWindowLongPtrW(hud, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+}
+
+// Show (or re-show) the picture directly BELOW the panel, in one operation.
+// False when there is no usable panel; the caller falls back to a plain show.
+static bool ShowPresentBelowPanel()
+{
+    const HWND hud = HudWindow();
+    if (!PanelTopmost(hud)) return false;
+    SetWindowPos(g_present_hwnd, hud, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    return true;
 }
 
 static void RevealOnFirstPresent()
@@ -2723,19 +2936,11 @@ static void RevealOnFirstPresent()
     // his own video (#107).
     //
     // Inserting after the panel shows and orders the window in ONE operation,
-    // so there is no moment in between to be caught. The panel must be
-    // topmost for this: SetWindowPos placed after a NON-topmost window drops
-    // this one out of the topmost band, and the picture would go behind other
-    // applications - much worse than the flash. If it is not topmost, or the
-    // handle is stale (a set_mode can hand the parent a different window),
-    // fall back to what we did before and let the guard do its work.
-    const HWND hud = HudWindow();
-    const bool usable = hud != nullptr && IsWindow(hud) &&
-        (GetWindowLongPtrW(hud, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
-    if (usable)
-        SetWindowPos(g_present_hwnd, hud, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    else
+    // so there is no moment in between to be caught (ShowPresentBelowPanel;
+    // PanelTopmost says why the panel must be topmost). Without a usable
+    // panel, fall back to what we did before and let the guard do its work.
+    const bool usable = ShowPresentBelowPanel();
+    if (!usable)
         ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
     g_present_shown = true;
     g_present_revealed = true;
@@ -3393,9 +3598,15 @@ static void CloseMotionScaler()
 // Shader and root signature compilation - once per process lifetime.
 static bool EnsureScalePipeline()
 {
-    if (g_scale_pso != nullptr) return g_scale4_pso && g_sharpen_pso && g_residual_pso;
+    // Every object the build makes, heaps included: a build that failed at its
+    // last step (the residual heap) left the pipelines but not the heap, and
+    // the next call answered "ready" to a dispatch through a null heap.
+    if (g_scale_pso != nullptr)
+        return g_scale_heap && g_scale4_pso && g_sharpen_pso && g_scale4_heap &&
+               g_residual_pso && g_residual_heap;
 
-    HMODULE compiler = LoadLibraryW(L"d3dcompiler_47.dll");
+    HMODULE compiler = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr,
+                                      LOAD_LIBRARY_SEARCH_SYSTEM32);   // see nvapi64.dll
     auto compile = compiler ? reinterpret_cast<PFN_D3DCompile_>(
                                   GetProcAddress(compiler, "D3DCompile")) : nullptr;
     HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
@@ -4165,7 +4376,9 @@ static bool OpenGray(const VideoGrayCmd &gc)
                                               reinterpret_cast<void **>(&g_gray_readback))))
     { Log("[gray] readback failed"); return false; }
     g_gray_mapped = true;
-    Log("[gray] mapping '%s' %ux%u (%zu B, pitch %u) active", gc.name, gc.width, gc.height, need, g_gray_pitch);
+    // `name`, the terminated copy: gc.name is the client's 64 bytes, and
+    // nothing says the client left a NUL in them.
+    Log("[gray] mapping '%s' %ux%u (%zu B, pitch %u) active", name, gc.width, gc.height, need, g_gray_pitch);
     return true;
 }
 
@@ -4506,6 +4719,10 @@ static IDXGIOutput *EnumCaptureOutput(IDXGIAdapter1 *adapter)
 static bool OpenDda(UINT w, UINT hgt)
 {
     CloseWgc();              // one source at a time; this also frees the bridge
+    // The desktop is the source now, so the window target is forgotten with
+    // it: the NO_COLOR recovery reopens "the capture" and preferred a stale
+    // window handle over this desktop one (a WGCW 0 then DDA1 sequence).
+    g_wgc_hwnd = nullptr;
     CloseDda();
     if (w == 0 || hgt == 0) { Log("[dda] capture off"); return true; }
     if (!EnsureDdaSwizzle()) return false;
@@ -5094,7 +5311,9 @@ static void CloseWgc()
         // not inherit an invisible overlay. Only after the first Present:
         // before that the window has no picture yet and must stay hidden
         // until RevealOnFirstPresent (user: blank flash on mode switches).
-        ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
+        // Below the panel, like the reveal: a plain show puts a topmost
+        // window above every other topmost one, the panel included.
+        if (!ShowPresentBelowPanel()) ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
         g_present_shown = true;
     }
     if (g_wgc != nullptr)
@@ -6251,6 +6470,10 @@ static void ReleaseVideoTextures(VideoState &v)
     // dispatch against freed GPU memory (audit C++ H1).
     g_res_native_bound = g_res_in_bound = nullptr;
     g_res_out_bound = g_res_dst_bound = nullptr;
+    // And the split-view wipe: its UAV is cached by v.output's address, so a
+    // new output landing at the freed one would have the wipe's clear write
+    // through a descriptor of the released texture.
+    g_split_uav_for = nullptr;
     if (v.nr_in != nullptr) { v.nr_in->Release(); v.nr_in = nullptr; }
     if (v.nr_out != nullptr) { v.nr_out->Release(); v.nr_out = nullptr; }
     if (v.nr_alt != nullptr) { v.nr_alt->Release(); v.nr_alt = nullptr; }
@@ -6703,19 +6926,22 @@ static int RunVideo()
                 // v.upload unconditionally - the next frame was an access
                 // violation with no [failure] line, which is why this crash
                 // was invisible in user logs.
+                //
+                // The old size is gone too - its textures were released in
+                // step 2 - so this worker has nothing left to draw with. It
+                // used to log "keeping the previous size" and carry on, and
+                // the next FRM1 dereferenced the null upload (pipe mode) or
+                // colour texture (capture mode). Refuse, then end: every
+                // client path answers a refused RNSZ with a rebuild, which
+                // starts a fresh worker anyway.
                 Log("[video] RNSZ aborted: resource creation failed at %ux%u "
-                    "- keeping the previous size", rc.width, rc.height);
+                    "- the worker ends so the client rebuilds", rc.width, rc.height);
                 VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0x7FFFFFFFu, 0u, fh.pts };
                 if (!WriteExact(g_wire, &bad, sizeof(bad))) return 3;
-                // The half-built state must not survive into the next frame:
-                // release whatever the failed attempt left behind and stop
-                // using the feature whose textures no longer match.
                 ReleaseVideoTextures(v);
                 SafeReleaseFeature(h.feature);
                 h.feature = nullptr;
-                warmup_done = true;          // nothing to warm: no feature
-                g_force_next_frame = true;
-                continue;
+                return 6;
             }
             NVSDK_NGX_Result rr = NVSDK_NGX_Result_Fail;
             if (!CreateFeature(rc.width, rc.height, flags, &rr,
@@ -6867,6 +7093,14 @@ static int RunVideo()
                 CloseDda();
                 ok = 1;
             }
+            else if (dc.width > 7680 || dc.height > 4320)
+            {
+                // The same ceiling as every other size on the wire: the
+                // swizzle dispatches one thread group per 8x8 block, and a
+                // size past it is a desync, not a monitor.
+                Log("[video] DDA1 refused: %ux%u is outside 7680x4320", dc.width, dc.height);
+                ok = 0;
+            }
             else
                 ok = OpenDda(dc.width, dc.height) ? 1u : 0u;
             Log("[video] DDA1 %s (%ux%u)", ok ? "OK" : "FAIL", dc.width, dc.height);
@@ -6955,7 +7189,11 @@ static int RunVideo()
                 // composite then feeds the file (PresentHdr). The mastering
                 // peak stays the nominal 1000 nits - the display query does
                 // not read the panel's own.
-                p.hdr = (g_rec_cmd.reserved0 & GPUREC_FLAG_HDR) != 0 && g_hdr_capture;
+                // Only while the frames really go through that composite: HDR
+                // capture with the overlay off (pixels to the client) would
+                // start an HDR10 file nothing ever feeds.
+                p.hdr = (g_rec_cmd.reserved0 & GPUREC_FLAG_HDR) != 0 && g_hdr_capture
+                        && PresentModeActive(v);
                 p.hdr_max_nits = 0;
                 GpuRecStarted started = {};
                 g_rec_slot = -1;
@@ -6996,6 +7234,32 @@ static int RunVideo()
             Log("[grec] the recording stopped itself after an encoder error");
             if (!FinishRecording(v, 0, false)) return 10;
         }
+        // An HDR10 recording is fed by the HDR composite alone (PresentHdr);
+        // every other export site hands over the SDR picture, which is not
+        // what that file holds (RecordCopy). When the session leaves that path
+        // - the bridge rebuilt as SDR (Windows HDR off, a game switching the
+        // display, the window moved to an SDR monitor) or the overlay no longer
+        // matching the output - the file got no frames at all: the last one
+        // held to the stop time while the sound ran on, published as a
+        // success. A moment without it is a resize in flight; a second of it
+        // is a session that left HDR, and the file is closed there with what
+        // it holds and reported the way an encoder failure is.
+        static ULONGLONG hdr_feed_lost_at = 0;
+        if (g_rec_hdr && GpuRecActive() && !(g_hdr_capture && PresentModeActive(v)))
+        {
+            const ULONGLONG now = GetTickCount64();
+            if (hdr_feed_lost_at == 0) hdr_feed_lost_at = now;
+            else if (now - hdr_feed_lost_at > 1000)
+            {
+                Log("[grec] the HDR10 recording lost its HDR picture (capture %s, overlay %s) "
+                    "- closed with what it holds", g_hdr_capture ? "HDR" : "SDR",
+                    g_present_swap != nullptr ? "on" : "off");
+                hdr_feed_lost_at = 0;
+                if (!FinishRecording(v, 0, false)) return 10;
+            }
+        }
+        else
+            hdr_feed_lost_at = 0;
         ++g_frame_serial;
         g_frame_status = 0u;
         ConfigureFgFrame(fh.reserved);
@@ -7167,6 +7431,7 @@ static int RunVideo()
                     // the frame it sits in can still move - keep the overlay on it.
                     FollowCapturedWindow();
                     ReassertPresentTopmost();
+                    FollowPanelDesktop();
                     VideoResultHeader idle = { OUT_MAGIC, fh.index,
                         OUT_STATUS_OK | OUT_STATUS_SKIPPED, 0u,
                         g_last_eval_result, fh.pts };
@@ -7293,6 +7558,7 @@ static int RunVideo()
             // NGX evaluate is skipped but the pipeline is alive (window, HUD).
             FollowCapturedWindow();
             ReassertPresentTopmost();
+            FollowPanelDesktop();
             g_early_reply = {};
             if (defer_tail && !bypass && (fh.reserved & FRAME_FLAG_EARLY_REPLY) != 0)
             {
@@ -7434,7 +7700,12 @@ static int Serve(DWORD game_pid)
 {
     char name[128];
     sprintf_s(name, FEED_PIPE_FMT, static_cast<unsigned long>(game_pid));
-    HANDLE pipe = CreateNamedPipeA(name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+    // The first instance of the name, local clients only: the name is
+    // predictable (the game's pid), so a process that got there first must not
+    // be the server a game talks to, and nothing off this machine may connect.
+    HANDLE pipe = CreateNamedPipeA(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
+                                   PIPE_REJECT_REMOTE_CLIENTS,
                                    1, 1024, 1024, 0, nullptr);
     if (pipe == INVALID_HANDLE_VALUE) { Log("[host] CreateNamedPipe failed %lu", GetLastError()); return 1; }
     Log("[host] serving on %s", name);
@@ -7444,6 +7715,17 @@ static int Serve(DWORD game_pid)
     FeedHello hello = {};
     if (!ReadFull(pipe, &hello, sizeof(hello)) || hello.magic != FEED_IPC_MAGIC)
     { Log("[host] bad hello"); return 1; }
+    // The pid in the hello is the client's word; the pipe knows who is really
+    // on the other end, and the command line says who it should be. Handles
+    // are duplicated INTO that process below, so all three must agree.
+    ULONG client_pid = 0;
+    if (!GetNamedPipeClientProcessId(pipe, &client_pid) || client_pid != hello.pid ||
+        hello.pid != game_pid)
+    {
+        Log("[host] hello from pid %u, pipe client %lu, expected %lu - refused",
+            hello.pid, client_pid, static_cast<unsigned long>(game_pid));
+        return 1;
+    }
     FeedHelloAck ack = { FEED_IPC_MAGIC, FEED_IPC_VERSION };
     DWORD put = 0;
     WriteFile(pipe, &ack, sizeof(ack), &put, nullptr);
@@ -7523,6 +7805,22 @@ static int Serve(DWORD game_pid)
                                                      reinterpret_cast<void **>(&h.tex[i]));
                 CloseHandle(local);
                 if (FAILED(hr)) { Log("[host] OpenSharedHandle(tex %d) failed 0x%08X", i, hr); ok = false; }
+            }
+            // The build's size is the client's word too, and the copy box and
+            // the NGX subrects are sized from it: every full-size slot must be
+            // at least that large (the motion vectors are low-res by design).
+            if (ok && (b.width < 64 || b.height < 64 || b.width > 7680 || b.height > 4320))
+            { Log("[host] build refused: %ux%u is outside 64..7680x4320", b.width, b.height); ok = false; }
+            for (int i = 0; i < FEED_SLOTS && ok; ++i)
+            {
+                if (i == FEED_MV) continue;
+                const D3D12_RESOURCE_DESC d = h.tex[i]->GetDesc();
+                if (d.Width < b.width || d.Height < b.height)
+                {
+                    Log("[host] build refused: slot %d is %llux%u, smaller than %ux%u", i,
+                        static_cast<unsigned long long>(d.Width), d.Height, b.width, b.height);
+                    ok = false;
+                }
             }
 
             NVSDK_NGX_Result rf = NVSDK_NGX_Result_Fail;

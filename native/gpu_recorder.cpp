@@ -68,6 +68,11 @@ struct Slot
 
 struct Recorder;
 
+// Guards SampleReturn::r_ against Teardown detaching it: a sample the encoder
+// still held after Teardown's wait comes back later, possibly from one of
+// Media Foundation's threads, after the Recorder has been deleted.
+std::mutex g_return_mu;
+
 // Hands an NV12 surface back when the encoder has let go of its sample. A
 // tracked sample does not destroy itself when its last outside reference
 // goes: it calls this, with itself as the result's object.
@@ -75,6 +80,9 @@ class SampleReturn : public IMFAsyncCallback
 {
 public:
     SampleReturn(Recorder *r, int index) : r_(r), index_(index) {}
+    // The recorder is going away: a late return only releases its sample.
+    // Called with g_return_mu held.
+    void Detach() { r_ = nullptr; }
     STDMETHODIMP QueryInterface(REFIID riid, void **ppv) override
     {
         if (ppv == nullptr) return E_POINTER;
@@ -149,6 +157,10 @@ struct Recorder
     const int16_t *ring_data = nullptr;
     int64_t audio_read = 0;
     int64_t audio_base = 0;          // the ring frame that is time 0 in the file
+    // The ring's size in frames, taken once at open and checked against the
+    // mapping: the header is the client's to write, and a capacity read anew
+    // on every pump could turn 0 (a division by zero) or outgrow the view.
+    int64_t audio_capacity = 0;
     uint32_t audio_rate = 0, audio_channels = 0;
     bool audio_overrun_logged = false;
 
@@ -214,13 +226,21 @@ STDMETHODIMP SampleReturn::Invoke(IMFAsyncResult *result)
         object->QueryInterface(IID_PPV_ARGS(&sample));
         object->Release();
     }
-    Surface &s = r_->surfaces[index_];
+    std::lock_guard<std::mutex> guard(g_return_mu);
+    Recorder *r = r_;
+    if (r == nullptr)
     {
-        std::lock_guard<std::mutex> lock(r_->mu);
+        // Returned after Teardown gave up waiting: the Recorder may be gone.
+        if (sample != nullptr) sample->Release();
+        return S_OK;
+    }
+    Surface &s = r->surfaces[index_];
+    {
+        std::lock_guard<std::mutex> lock(r->mu);
         s.sample = sample;       // the reference GetObject handed us is ours again
         s.busy.store(false);
     }
-    r_->cv.notify_all();
+    r->cv.notify_all();
     return S_OK;
 }
 
@@ -316,10 +336,27 @@ bool OpenAudioRing(Recorder *r, const char *name)
         r->ring = nullptr;
         return false;
     }
+    // The samples have to fit in what is actually mapped: capacity * channels
+    // int16 after the header. The view is as large as the section (size 0
+    // above), and VirtualQuery says how large that is.
+    MEMORY_BASIC_INFORMATION mbi = {};
+    const unsigned long long need = sizeof(GpuRecAudioRing) +
+        static_cast<unsigned long long>(r->ring->capacity) * r->ring->channels * 2ull;
+    if (VirtualQuery(view, &mbi, sizeof(mbi)) == 0 || need > mbi.RegionSize)
+    {
+        Log("[grec] audio ring claims %u frames, larger than its mapping - "
+            "recording without sound", r->ring->capacity);
+        UnmapViewOfFile(view);
+        CloseHandle(r->audio_map);
+        r->audio_map = nullptr;
+        r->ring = nullptr;
+        return false;
+    }
     r->ring_data = reinterpret_cast<const int16_t *>(
         reinterpret_cast<const BYTE *>(view) + sizeof(GpuRecAudioRing));
     r->audio_rate = r->ring->rate;
     r->audio_channels = r->ring->channels;
+    r->audio_capacity = r->ring->capacity;
     return true;
 }
 
@@ -926,20 +963,24 @@ void PumpAudio(Recorder *r, bool drain)
     const int64_t written = ReadAcquire64(
         const_cast<volatile LONG64 *>(&r->ring->written));
     int64_t avail = written - r->audio_read;
-    const int64_t capacity = r->ring->capacity;
+    const int64_t capacity = r->audio_capacity;
     if (avail > capacity)
     {
         // The client ran a whole ring ahead of us. The lost stretch is gone;
         // the timestamps still follow the sample count, so the sound after
-        // it stays in sync with the picture.
+        // it stays in sync with the picture. The read resumes a quarter of
+        // the ring behind the newest sample rather than a whole ring: the
+        // oldest stretch (written - capacity) is exactly where the client
+        // writes next, and reading it would copy torn audio.
+        const int64_t keep = capacity - capacity / 4;
         if (!r->audio_overrun_logged)
         {
             r->audio_overrun_logged = true;
             Log("[grec] audio ring overrun: %lld frames skipped",
-                static_cast<long long>(avail - capacity));
+                static_cast<long long>(avail - keep));
         }
-        r->audio_read = written - capacity;
-        avail = capacity;
+        r->audio_read = written - keep;
+        avail = keep;
     }
     const UINT ch = r->audio_channels;
     while (avail > 0)
@@ -1117,6 +1158,14 @@ void Teardown(Recorder *r)
                 if (s.tex != nullptr && s.sample == nullptr) return false;
             return true;
         });
+    }
+    // A surface still out is detached first: its callback outlives the
+    // Recorder (the encoder holds a reference), and a return that arrives
+    // after the delete used to write into freed memory.
+    {
+        std::lock_guard<std::mutex> guard(g_return_mu);
+        for (Surface &s : r->surfaces)
+            if (s.callback != nullptr) s.callback->Detach();
     }
     for (Surface &s : r->surfaces)
     {
@@ -1297,6 +1346,11 @@ bool GpuRecStart(ID3D12Device *dev, const GpuRecParams &p, GpuRecStarted *out)
     {
         r->thread.join();
         if (r->fence_event != nullptr) CloseHandle(r->fence_event);
+        // Teardown leaves the device to GpuRecStop, which never runs for a
+        // start that failed: every refused start (NVENC sessions all taken,
+        // a path that cannot be written) leaked a video-capable device.
+        SafeRelease(r->ctx);
+        SafeRelease(r->d11);
         delete r;
         Log("[grec] GPU recording could not start: 0x%08X", static_cast<unsigned>(hr));
         return false;
