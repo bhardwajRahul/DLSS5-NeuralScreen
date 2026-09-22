@@ -668,7 +668,14 @@ def gui_check():
     import av
     c = av.open(str(rec))
     s = c.streams.video[0]
-    frames, dur = s.frames, float(s.duration * s.time_base)
+    dur = float(s.duration * s.time_base)
+    # Count the frames by demuxing, not by reading s.frames. The GPU recorder
+    # writes a fragmented MP4 (the worker encodes while it runs, so there is
+    # no index to write at the end), and PyAV reports s.frames = 0 for that
+    # container even though every packet is there - a healthy 292-frame file
+    # read as "0 frames / 4.9 s" and failed the check. Demuxing is what the
+    # file actually holds.
+    frames = sum(1 for _ in c.demux(s))
     c.close()
     if frames < 100 or dur < 4:
         quit_app()
