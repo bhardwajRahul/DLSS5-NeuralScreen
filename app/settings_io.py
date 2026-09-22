@@ -776,10 +776,10 @@ def _validate_config(cfg: dict) -> dict:
         cfg["menu_height"] = _as_int("menu_height", menu_height, None,
                                      minimum=1)
 
-    # theme: light | dark, anything else is the default.
+    # theme: light | dark | contrast, anything else is the default.
     theme = cfg.get("theme")
-    if theme is not None and theme not in ("light", "dark"):
-        _fallback("theme", theme, None, "is not light or dark")
+    if theme is not None and theme not in ("light", "dark", "contrast"):
+        _fallback("theme", theme, None, "is not light, dark or contrast")
 
     # hotkeys: a {command: "Ctrl+Alt+Q"} mapping, read by build_bindings with
     # .get() per value and .strip() on each. A list or a bare string used to

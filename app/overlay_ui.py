@@ -56,6 +56,26 @@ THEMES = {
         # not a state, and the accent is reserved for state on this panel.
         "slider_fill": "#A3A099",
     },
+    # A third theme, and the only one that is not a taste: an instrument
+    # panel. Neon phosphor on near-black is the highest local contrast this
+    # panel can carry over an arbitrary picture, which is what a see-through
+    # panel needs and what light cannot give. It is opt-in for a reason -
+    # green on black is one of the harder combinations for low vision, and
+    # over foliage or daylight it loses local contrast like any other hue.
+    "contrast": {
+        "bg": "#020603",
+        "surface": "#07120A",
+        "border": "#164A2A",
+        "text": "#3DFF9A",       # 15.9:1 on bg
+        "muted": "#2CD685",      # 10.2:1 on bg, still clearly secondary
+        "accent": "#00FFA3",
+        "ok": "#3DFF9A",
+        # Recording stays red on every theme: it is the one colour a person
+        # reads without looking at the label.
+        "danger": "#FF5A5A",
+        "focus": "#00FFA3",
+        "slider_fill": "#2CD685",
+    },
 }
 
 
@@ -662,7 +682,12 @@ class OverlayMenu:
             elif k == "params" and isinstance(v, dict):
                 self.state["params"] = dict(v)
             elif k in self.state:
+                was = self.state.get(k)
                 self.state[k] = v
+                # The contrast theme draws in another face, so a theme change
+                # is a font change too - and the faces are cached per size.
+                if k == "theme" and (was == "contrast") != (v == "contrast"):
+                    self._build_fonts()
 
     def _load(self, size: int, mono: bool = False):
         """One face, through the loader the caller handed us.
@@ -688,10 +713,18 @@ class OverlayMenu:
         language - titles, labels, hints, buttons - and the monospaced one
         carries readings, where a fixed advance keeps digits from dancing
         sideways as they change.
+
+        The contrast theme is the exception, and only that one: it draws
+        EVERY role in the monospaced face. fonts.py records why the program
+        stopped doing that in 1.6.0 - "one monospaced face for a whole
+        interface is why the menu read as a debug console rather than as a
+        program" - which is an objection to the look, and the look is what
+        this theme is for. Light and dark keep the split.
         """
-        self._font = self._load(self._u(FONT_SIZE))
-        self._title_font = self._load(self._u(TITLE_SIZE))
-        self._small_font = self._load(self._u(SMALL_SIZE))
+        ui_mono = self.state.get("theme") == "contrast"
+        self._font = self._load(self._u(FONT_SIZE), mono=ui_mono)
+        self._title_font = self._load(self._u(TITLE_SIZE), mono=ui_mono)
+        self._small_font = self._load(self._u(SMALL_SIZE), mono=ui_mono)
         self._mono = self._load(self._u(FONT_SIZE), mono=True)
         self._mono_small = self._load(self._u(SMALL_SIZE), mono=True)
 
@@ -1742,7 +1775,8 @@ class OverlayMenu:
             choice("lang", s["language"], self.lang, langs,
                    labels=[STRINGS[L].get(f"lang_{L}", L) for L in langs])
             segmented("theme", s["theme"], self.state.get("theme", "light"),
-                      ["light", "dark"], [s["theme_light"], s["theme_dark"]])
+                      ["light", "dark", "contrast"],
+                      [s["theme_light"], s["theme_dark"], s["theme_contrast"]])
             # No extra gap here: segmented() already ends with one, and
             # section() opens with its own - three stacked was a hole
             # (user, 13.09: the padding below is excessive).
