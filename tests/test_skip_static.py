@@ -13,7 +13,8 @@ even when it did not change.
 
 Driven through the real worker, with one window we own as the capture
 source: the window redraws only when THIS test flips it, so "no new frame"
-is deterministic, not desktop weather.
+is deterministic, not desktop weather. The window is the invisible ghost of
+tests/offscreen_target.py (1/255 opacity, click-through), so nothing shows.
 
 Checked:
 * protocol: the flag packs into the frame header, and only when asked;
@@ -57,6 +58,7 @@ from main import (FRAME_FLAG_NO_COLOR, FRAME_FLAG_SKIP_STATIC,  # noqa: E402
                   FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC, HEADER_FMT,
                   OUT_FMT, OUT_MAGIC, OUT_STATUS_SKIPPED, PROFILES,
                   VIDEO_MAGIC, WORKER_EXE)
+from offscreen_target import Target  # noqa: E402
 from worker_reply import read_exact, read_reply  # noqa: E402
 
 W, H = 960, 540
@@ -68,7 +70,6 @@ WGC_ACK_MAGIC = 0x4B414757  # 'WGAK'
 WGC_FMT = "<4IqQ"           # magic, width, height, flags, pts, hwnd
 WGC_ACK_FMT = "<4Iq"        # magic, ok, width, height, pts
 
-TARGET = (31, 97, 211)
 
 
 def send_wgc(worker, hwnd: int) -> tuple:
@@ -118,20 +119,9 @@ def main() -> int:
         print(f"FAIL: worker not found: {WORKER_EXE}")
         return 1
 
-    import pygame
-    pygame.init()
-    screen = pygame.display.set_mode((W, H), pygame.NOFRAME)
-    pygame.display.set_caption("NeuralScreen skip-static test target")
-    hwnd = pygame.display.get_wm_info()["window"]
-
-    tick = [0]
-
-    def repaint() -> None:
-        tick[0] += 1
-        wob = tick[0] % 7
-        screen.fill((TARGET[0] + wob, TARGET[1], TARGET[2] - wob))
-        pygame.display.flip()
-        pygame.event.pump()
+    target = Target(W, H, name="NsSkipStatic", ghost=True)
+    hwnd = target.hwnd
+    repaint = target.repaint      # every paint changes a shade: a new frame
 
     for _ in range(10):
         repaint()
@@ -225,7 +215,7 @@ def main() -> int:
         except Exception:
             pass
         worker.wait(timeout=10)
-        pygame.quit()
+        target.close()
         err_file.seek(0)
         err = err_file.read().decode("utf-8", "replace")
         err_file.close()

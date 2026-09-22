@@ -3920,7 +3920,11 @@ static bool EnsureDdaSwizzle()
     code->Release();
     D3D12_DESCRIPTOR_HEAP_DESC hd = {};
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    hd.NumDescriptors = 2; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    // Two pairs: the swizzle's SRV/UAV in 0-1, the gray's in 2-3. They are
+    // recorded into one command list (SwizzleCaptureIntoColor), and a list
+    // reads its descriptors when it runs, not when it is recorded - sharing
+    // one pair, the swizzle would run with the gray's.
+    hd.NumDescriptors = 4; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(h.dev->CreateDescriptorHeap(&hd, __uuidof(ID3D12DescriptorHeap),
                                            reinterpret_cast<void **>(&g_dda_heap))))
     { Log("[dda] heap create failed"); return false; }
@@ -4151,19 +4155,22 @@ static bool OpenGray(const VideoGrayCmd &gc)
 // Called from DdaGrab after the swizzle (it cannot be in the same Begin/End
 // block - a separate fence is needed), hence its own Begin/End here.
 static bool g_capture_gray_ok = true;
-static bool AreaToGray()
+// Records the gray into the command list the capture has open: it used to
+// be a submission of its own, with its own wait, right after the capture's -
+// ~0.3 ms a frame of submit, wait and idle GPU between the two (NS_PHASE).
+// CopyGrayOut hands it to the client once the capture's fence is done.
+static bool RecordGray()
 {
     if (!g_gray_mapped || !g_dda_dst) return false;
-    if (!BeginCommands()) return false;
-    ProfileGpuBegin(PS_GRAY);
     // Is g_dda_dst in COPY_SOURCE after the copy into v.color? No - after the
     // swizzle it goes back to UNORDERED_ACCESS (see DdaGrab). We read it as an SRV.
     D3D12_RESOURCE_BARRIER to_srv = Transition(g_dda_dst, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     h.list->ResourceBarrier(1, &to_srv);
-    // descriptors: 0 = SRV g_dda_dst, 1 = UAV g_gray_uav
+    // descriptors: 2 = SRV g_dda_dst, 3 = UAV g_gray_uav (0-1 are the swizzle's)
     const UINT stride = h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_dda_heap->GetCPUDescriptorHandleForHeapStart();
+    cpu.ptr += 2 * static_cast<SIZE_T>(stride);
     D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
     sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -4180,6 +4187,7 @@ static bool AreaToGray()
     const UINT sizes[4] = { g_dda_w, g_dda_h, g_gray_w, g_gray_h };
     h.list->SetComputeRoot32BitConstants(0, 4, sizes, 0);
     D3D12_GPU_DESCRIPTOR_HANDLE g0 = g_dda_heap->GetGPUDescriptorHandleForHeapStart();
+    g0.ptr += 2 * static_cast<UINT64>(stride);
     D3D12_GPU_DESCRIPTOR_HANDLE g1 = g0; g1.ptr += stride;
     h.list->SetComputeRootDescriptorTable(1, g0);
     h.list->SetComputeRootDescriptorTable(2, g1);
@@ -4207,9 +4215,12 @@ static bool AreaToGray()
                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     D3D12_RESOURCE_BARRIER backs[2] = { back_uav, back_uav2 };
     h.list->ResourceBarrier(2, backs);
-    ProfileGpuEnd(PS_GRAY);
-    const UINT64 fence = EndCommands();
-    if (!ProfileWait(PS_GRAY, fence, 10000)) { Log("[gray] fence timeout"); return false; }
+    return true;
+}
+
+// After the fence of the list RecordGray went into.
+static bool CopyGrayOut()
+{
     // map the readback -> memcpy into the client mapping. The readback
     // rows are pitch-aligned; the client mapping is packed w*h, so the
     // copy is row by row (code review finding).
@@ -4301,7 +4312,7 @@ static float g_pw_exposure = 1.0f;   // current smoothed value
 static double g_pw_last = 0.0;       // last update time (GetTickCount64 ms)
 static bool   g_pw_logged = false;
 
-// Called once per captured frame, after AreaToGray filled g_gray_map.
+// Called once per captured frame, after CopyGrayOut filled g_gray_map.
 static void UpdateAdaptiveExposure()
 {
     if (!PwEnabled() || !g_gray_mapped || g_gray_w == 0 || g_gray_h == 0)
@@ -4937,11 +4948,13 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
                                                   D3D12_RESOURCE_STATE_COMMON);
     D3D12_RESOURCE_BARRIER post_c[3] = { to_uav, to_nps, to_common };
     h.list->ResourceBarrier(3, post_c);
+    // The luminance frame (320x180) for the optical flow and the scene score,
+    // in the same list.
+    const bool gray = RecordGray();
     ProfileGpuEnd(PS_SWIZZLE);
     const UINT64 fence = EndCommands();
     if (!ProfileWait(PS_SWIZZLE, fence, 10000)) { Log("[cap] swizzle fence timeout"); return false; }
-    // Hand the client the luminance frame (320x180) for the optical flow
-    if (AreaToGray()) UpdateSceneScore();
+    if (gray && CopyGrayOut()) UpdateSceneScore();
     // else best effort: guides go without a fresh frame
     g_capture_gray_ok = g_gray_mapped;
     if (g_submission_failed) return false;
