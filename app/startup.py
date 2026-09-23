@@ -647,6 +647,13 @@ def bring_up(st) -> None:
     saved_theme = st.cfg.get("theme")
     if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
         st.display.menu.set_state({"theme": saved_theme})
+    # Mini mode, and what it keeps. A missing list is not an empty one:
+    # it means nobody has chosen yet, so the default set stands.
+    st.display.menu.mini = bool(st.cfg.get("menu_mini", False))
+    saved_rows = st.cfg.get("menu_mini_rows")
+    if isinstance(saved_rows, list):
+        st.display.menu.mini_rows = {str(r) for r in saved_rows}
+
     saved_offset = st.cfg.get("menu_offset")
     if isinstance(saved_offset, (list, tuple)) and len(saved_offset) == 2:
         st.display.menu.offset = [int(saved_offset[0]), int(saved_offset[1])]

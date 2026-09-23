@@ -58,6 +58,8 @@
   ],
   "open_menu_on_start": true,
   "split": 0.0,
+  "menu_mini": false,
+  "menu_mini_rows": null,
   "theme": "light",
   "hotkeys": {},
   "presets": {}

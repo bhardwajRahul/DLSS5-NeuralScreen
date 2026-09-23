@@ -1039,9 +1039,24 @@ def apply_menu_action(st, action: tuple) -> None:
         # menu and restores the theme from st.cfg. With the value still
         # missing there, a monitor switch threw the user back to light
         # (issue #33).
-        if action[1] in ("light", "dark"):
+        if action[1] in ("light", "dark", "contrast"):
             st.cfg["theme"] = action[1]
         print(f"[main] menu theme -> {action[1]}")
+    elif kind == "mini":
+        # Same reason as the theme above: the menu has applied it to
+        # itself, and st.cfg is what a rebuilt menu is restored from.
+        st.cfg["menu_mini"] = bool(action[1])
+        print(f"[main] mini mode -> {'on' if action[1] else 'off'}")
+    elif kind == "mini_pick":
+        # Choosing is a state of this session, not a setting: nobody wants
+        # to find the panel in its choosing mode after a restart.
+        print(f"[main] choosing mini rows -> "
+              f"{'on' if action[1] else 'off'}")
+    elif kind == "mini_rows":
+        rows = [str(r) for r in (action[1] or [])]
+        st.cfg["menu_mini_rows"] = rows
+        print(f"[main] mini mode keeps {len(rows)} row(s): "
+              f"{', '.join(rows) or '(none)'}")
     elif kind == "nr_passes":
         try:
             passes = int(action[1])
