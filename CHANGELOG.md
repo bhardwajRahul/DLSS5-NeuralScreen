@@ -8,7 +8,7 @@ in UTC, not the tag timestamps.
 
 Scope and honesty notes:
 
-* The list starts at `v1.0.0` and ends at `v2.1.2`; every tag in that range has a
+* The list starts at `v1.0.0` and ends at `v2.1.3`; every tag in that range has a
   published GitHub release. GitHub returns more releases than the tag count
   because the count includes the tags listed as out of scope below.
   The tag `v0.1.0-alpha` (2026-09-06) is **not** part of this history: it is a tag
@@ -29,6 +29,43 @@ Scope and honesty notes:
   (the early releases carried a different set - see the individual entries).
 
 ---
+
+## v2.1.3 - 2026-09-23 - conversion speed, a contrast theme, and mini mode
+
+Patch release on the v2.1 line, built from a contribution (PR #122): the
+converter stops copying every frame through a pipe, the panel gets a third theme
+and a shortened mode, and the theme list gets one home after it was found split
+across three.
+
+* **Conversion is faster.** A frame used to be written into the worker's pipe and
+  read back out of it - the same 8 MB at 1080p, twice per frame. Both directions
+  use the shared mapping the live pipeline already uses, and the motion field
+  travels at ~320x180 and is upscaled on the GPU instead of being built at the
+  working size on the CPU. Measured here on a real recording (1478 frames of
+  640x360, the product's own converter): 13.2 s serial against 9.0 s overlapped at
+  the default work scale, 14.3 s against 10.0 s at 1:1 - 1.4x, identical output
+  bytes. Per-stage CPU costs at 1080p from the contribution: 13.7 ms of guides to
+  6.0, 2.7 ms of `tobytes` and 6.2 ms of pipe to 0.9 ms of copy, returned pixels
+  0.4 ms instead of about 3.
+* **The three conversion stages overlap** (decode / network / encode on their own
+  threads, exact order and interleaving preserved). Each channel is asked for
+  separately and each can be refused - a worker that does not take one keeps the
+  old path for it and says so. `NS_CONVERT_PIPELINE=0` restores the serial loop.
+* **A contrast theme**: near-black background, phosphor-green text, one
+  monospaced face for every role.
+* **Fixed: the contrast theme reverted to light after a restart or monitor
+  switch.** The theme list existed in three places and only two were updated, so
+  the third theme was accepted, applied, and then silently dropped by both restore
+  paths. The list now lives once (`settings_io.THEME_NAMES`) and the validator,
+  both restores, the control and the action handler read it;
+  `test_theme_rebuild` checks every offered theme against the real rebuild and
+  fails if a whitelist is duplicated again.
+* **Mini mode**: an icon in the panel header cuts it down to the rows you use,
+  and a second icon chooses which rows those are. The choice is saved; the
+  choosing state is not. 1213 px of panel becomes 372 at the default scale.
+* The converter's colour tags land on the frame as well as the stream. New tests
+  cover the overlapped pipeline (same frames, order and timestamps as the serial
+  loop; a cancel stops all three stages) and the mini-mode header.
 
 ## v2.1.2 - 2026-09-22 - fixes from a code audit, and a tidier root
 
