@@ -41,7 +41,7 @@ from paths import BASE_DIR
 from pipeline import restart_worker
 from recorder import (GpuRecorder, RecordingError, RecordingStatus,
                       VideoRecorder)
-from settings_io import (CHANNEL_URL, PROFILES, REPO_URL,
+from settings_io import (CHANNEL_URL, PROFILES, REPO_URL, THEME_NAMES,
                          WORK_SCALE_MIN, WORK_SCALE_STEP,
                          _autostart_enabled, _next_preset_name,
                          _set_autostart, _work_size, hotkey_labels)
@@ -1039,7 +1039,7 @@ def apply_menu_action(st, action: tuple) -> None:
         # menu and restores the theme from st.cfg. With the value still
         # missing there, a monitor switch threw the user back to light
         # (issue #33).
-        if action[1] in ("light", "dark", "contrast"):
+        if action[1] in THEME_NAMES:
             st.cfg["theme"] = action[1]
         print(f"[main] menu theme -> {action[1]}")
     elif kind == "mini":

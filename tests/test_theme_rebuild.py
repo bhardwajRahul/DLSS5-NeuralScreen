@@ -19,6 +19,7 @@ already drives the real rebuild for the warm-up contract.
 
 Run:  runtime\\python.exe tests\\test_theme_rebuild.py
 """
+import re
 import sys
 import types
 from pathlib import Path
@@ -29,6 +30,7 @@ sys.path.insert(0, str(BASE / "app"))  # the modules live in app/
 
 import commands  # noqa: E402
 import pipeline  # noqa: E402
+import settings_io  # noqa: E402
 
 
 class _Menu:
@@ -164,6 +166,46 @@ def main() -> int:
     if "saved_theme = st.cfg.get(\"theme\")" not in src:
         failures.append("pipeline.py no longer reads st.cfg's theme for the "
                         "restore - the menu comes back light after a rebuild")
+
+    # 6. EVERY theme the menu offers must survive the restore, not just the
+    #    two that came first. A third theme added to the control and left out
+    #    of the restore whitelists looks applied until the first restart,
+    #    then quietly reverts - and the user has no reason to connect the
+    #    two events. This is the assertion that fails on a stale whitelist.
+    theme_names = getattr(settings_io, "THEME_NAMES", ())
+    if not theme_names:
+        failures.append("settings_io has no THEME_NAMES - the theme list "
+                        "must have one home")
+    for name in theme_names:
+        st = _state(menu)
+        commands.apply_menu_action(st, ("theme", name))
+        menu.applied.clear()
+        _rebuild(st)
+        applied = [p.get("theme") for p in menu.applied if "theme" in p]
+        if st.cfg.get("theme") != name or name not in applied:
+            failures.append(
+                f"the {name!r} theme does not survive a rebuild: cfg="
+                f"{st.cfg.get('theme')!r}, applied={applied} - a restore "
+                f"whitelist is stale")
+    print(f"    every offered theme survives: {list(theme_names)}")
+
+    # 7. And no module may keep its own copy of the theme list. The copies
+    #    are what made part 6 fail in the first place, and another one will
+    #    do it again: scan the sources for a two-name theme whitelist
+    #    (`in ("light", "dark")` and its list spelling) instead of trusting
+    #    the reader to notice. The canonical three-name tuple in settings_io
+    #    is the one this test wants, so it is not matched here.
+    stale = []
+    pair = re.compile(r"""[([]\s*["']light["']\s*,\s*["']dark["']\s*[)\]]""")
+    for path in sorted((BASE / "app").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if pair.search(code):
+                stale.append(f"{path.name}:{lineno}: {line.strip()[:70]}")
+    if stale:
+        failures.append("a theme whitelist is duplicated again (use "
+                        "settings_io.THEME_NAMES): " + "; ".join(stale))
 
     for f in failures:
         print("FAIL:", f)

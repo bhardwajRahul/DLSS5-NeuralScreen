@@ -144,6 +144,19 @@ CHANNEL_URL = "https://www.youtube.com/@perseval_BLR/videos"
 PRESET_NAME_PREFIX = "Preset"
 
 
+#: The themes the program offers, in the order the control shows them. One
+#: list, because there were three copies of it (this validator, the startup
+#: restore, the rebuild restore) and adding a theme to the menu left two of
+#: them refusing it: a user who picked the new theme got the old one back
+#: after every restart and every monitor switch. The menu control and the
+#: action handler read THIS list too, so adding a theme is one edit.
+#:
+#: Named THEME_NAMES, not THEMES: overlay_ui.THEMES is the palette dict, and
+#: two meanings of one name in the same import graph is how this class of
+#: bug starts.
+THEME_NAMES = ("light", "dark", "contrast")
+
+
 # The global hotkeys live in hotkeys.py (RegisterHotKey). The layout and the
 # reasons behind the combinations are in that module's docstring.
 WORK_SCALE_STEP = 0.05
@@ -788,10 +801,10 @@ def _validate_config(cfg: dict) -> dict:
                                                  for r in rows):
             _fallback("menu_mini_rows", rows, None, "is not a list of names")
 
-    # theme: light | dark | contrast, anything else is the default.
+    # theme: one of THEME_NAMES, anything else is the default.
     theme = cfg.get("theme")
-    if theme is not None and theme not in ("light", "dark", "contrast"):
-        _fallback("theme", theme, None, "is not light, dark or contrast")
+    if theme is not None and theme not in THEME_NAMES:
+        _fallback("theme", theme, None, "is not a known theme")
 
     # hotkeys: a {command: "Ctrl+Alt+Q"} mapping, read by build_bindings with
     # .get() per value and .strip() on each. A list or a bare string used to

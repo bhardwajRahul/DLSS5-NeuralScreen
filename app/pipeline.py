@@ -42,7 +42,8 @@ from paths import NATIVE_DIR, WORKER_EXE
 from protocol import (HEADER_FMT, VIDEO_MAGIC, SharedFrameBuffer,
                       WorkerReader, _negotiate_shm, send_dda, send_per_pass,
                       send_resize)
-from settings_io import (_work_size, cascade_passes, hotkey_labels, nr_verdict)
+from settings_io import (THEME_NAMES, _work_size, cascade_passes, hotkey_labels,
+                         nr_verdict)
 from winapi import window_frame_rect
 
 
@@ -628,7 +629,7 @@ def rebuild_pipeline(st, note: str) -> None:
     st.display.set_lang(st.lang)
     st.display.menu.set_hotkeys(hotkey_labels(st.hotkey_bindings))
     saved_theme = st.cfg.get("theme")
-    if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
+    if isinstance(saved_theme, str) and saved_theme in THEME_NAMES:
         st.display.menu.set_state({"theme": saved_theme})
     st.display.menu.set_state({"lang": st.lang})
     # The position/scale/height restore applies ONLY to a recreated

@@ -25,6 +25,7 @@ import pygame
 
 from i18n import STRINGS
 from resolution_limits import safe_processing_size
+from settings_io import THEME_NAMES
 
 # --- Themes. The accent is shared; background and text change ------------
 THEMES = {
@@ -1823,8 +1824,8 @@ class OverlayMenu:
             choice("lang", s["language"], self.lang, langs,
                    labels=[STRINGS[L].get(f"lang_{L}", L) for L in langs])
             segmented("theme", s["theme"], self.state.get("theme", "light"),
-                      ["light", "dark", "contrast"],
-                      [s["theme_light"], s["theme_dark"], s["theme_contrast"]])
+                      list(THEME_NAMES),
+                      [s[f"theme_{t}"] for t in THEME_NAMES])
             # No extra gap here: segmented() already ends with one, and
             # section() opens with its own - three stacked was a hole
             # (user, 13.09: the padding below is excessive).

@@ -47,8 +47,8 @@ from paths import BASE_DIR
 from pipeline import require_compatibility, start_worker
 from protocol import SharedFrameBuffer, WorkerReader
 from recorder import VideoRecorder
-from settings_io import (APP_VERSION, _work_size, cascade_passes, clean_per_pass,
-                         hotkey_labels,
+from settings_io import (APP_VERSION, THEME_NAMES, _work_size, cascade_passes,
+                         clean_per_pass, hotkey_labels,
                          load_config, load_presets, resolve_params)
 from taskbar import TaskbarWindow
 from tray import TrayController
@@ -645,7 +645,7 @@ def bring_up(st) -> None:
             st.display.menu.set_user_scale(step)
             st.cfg["menu_scale"] = round(step, 2)
     saved_theme = st.cfg.get("theme")
-    if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
+    if isinstance(saved_theme, str) and saved_theme in THEME_NAMES:
         st.display.menu.set_state({"theme": saved_theme})
     # Mini mode, and what it keeps. A missing list is not an empty one:
     # it means nobody has chosen yet, so the default set stands.
