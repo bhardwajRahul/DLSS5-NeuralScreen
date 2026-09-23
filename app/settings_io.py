@@ -776,10 +776,22 @@ def _validate_config(cfg: dict) -> dict:
         cfg["menu_height"] = _as_int("menu_height", menu_height, None,
                                      minimum=1)
 
-    # theme: light | dark, anything else is the default.
+    # menu_mini: a plain switch. menu_mini_rows: the keys mini mode keeps,
+    # and an empty list is a real answer (a panel of nothing but the action
+    # strip), so only a non-list is refused.
+    mini = cfg.get("menu_mini")
+    if mini is not None and not isinstance(mini, bool):
+        _fallback("menu_mini", mini, None, "is not true or false")
+    rows = cfg.get("menu_mini_rows")
+    if rows is not None:
+        if not isinstance(rows, list) or not all(isinstance(r, str)
+                                                 for r in rows):
+            _fallback("menu_mini_rows", rows, None, "is not a list of names")
+
+    # theme: light | dark | contrast, anything else is the default.
     theme = cfg.get("theme")
-    if theme is not None and theme not in ("light", "dark"):
-        _fallback("theme", theme, None, "is not light or dark")
+    if theme is not None and theme not in ("light", "dark", "contrast"):
+        _fallback("theme", theme, None, "is not light, dark or contrast")
 
     # hotkeys: a {command: "Ctrl+Alt+Q"} mapping, read by build_bindings with
     # .get() per value and .strip() on each. A list or a bare string used to
@@ -989,6 +1001,10 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "nr_small": bool(nr_small),
         "work_scale": round(work_scale, 2),
         "theme": menu.state.get("theme", "light"),
+        # Mini mode and the rows it keeps. The CHOOSING state is not saved:
+        # it is a thing you are doing, not a thing you have set.
+        "menu_mini": bool(getattr(menu, "mini", False)),
+        "menu_mini_rows": sorted(getattr(menu, "mini_rows", ()) or ()),
         "lang": lang,
         "menu_offset": [int(menu.offset[0]), int(menu.offset[1])],
         "profile": cfg["profile"],

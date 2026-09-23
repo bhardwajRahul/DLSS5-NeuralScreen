@@ -56,6 +56,26 @@ THEMES = {
         # not a state, and the accent is reserved for state on this panel.
         "slider_fill": "#A3A099",
     },
+    # A third theme, and the only one that is not a taste: an instrument
+    # panel. Neon phosphor on near-black is the highest local contrast this
+    # panel can carry over an arbitrary picture, which is what a see-through
+    # panel needs and what light cannot give. It is opt-in for a reason -
+    # green on black is one of the harder combinations for low vision, and
+    # over foliage or daylight it loses local contrast like any other hue.
+    "contrast": {
+        "bg": "#020603",
+        "surface": "#07120A",
+        "border": "#164A2A",
+        "text": "#3DFF9A",       # 15.9:1 on bg
+        "muted": "#2CD685",      # 10.2:1 on bg, still clearly secondary
+        "accent": "#00FFA3",
+        "ok": "#3DFF9A",
+        # Recording stays red on every theme: it is the one colour a person
+        # reads without looking at the label.
+        "danger": "#FF5A5A",
+        "focus": "#00FFA3",
+        "slider_fill": "#2CD685",
+    },
 }
 
 
@@ -139,6 +159,11 @@ def key_text(event) -> str | None:
 def palette(theme: str) -> dict:
     """The theme palette. The alerts in display.py need it too - same look."""
     return THEMES.get(theme, THEMES["light"])
+
+#: What mini mode keeps until someone chooses otherwise: the switches a
+#: person reaches for during a session. Nothing that is set once and left.
+DEFAULT_MINI_ROWS = ("nr", "boost", "frame_generation", "profile")
+
 
 # --- Base layout (1440p units) --------------------------------------------
 PANEL_W = 540
@@ -245,6 +270,11 @@ def _window_record(value: Any) -> dict:
             "identity": legacy if hwnd is not None else value}
 
 
+#: The kinds mini mode can keep or drop. Buttons and info rows are not
+#: among them: the action strip and what it says are the panel's floor.
+MINI_PICKABLE = ("toggle", "slider", "choice", "segmented")
+
+
 @dataclass
 class Item:
     """A layout item: what it is, where it sits, what it belongs to."""
@@ -304,6 +334,16 @@ class OverlayMenu:
         # Manual multiplier: needed before the fonts are created, they size
         # themselves through _u
         self.user_scale = 1.0
+        #: Mini mode: the main page carries only the rows in `mini_rows`.
+        #: The other pages are untouched - settings is where you go to set
+        #: something, and a shortened settings page would just be a page
+        #: with things missing.
+        self.mini = False
+        #: Choosing what mini mode keeps. While this is on, every row is
+        #: laid out again, so a row that was dropped can be put back where
+        #: it used to sit: the way out of a mode has to live inside it.
+        self.mini_pick = False
+        self.mini_rows: set = set(DEFAULT_MINI_ROWS)
         self._load_font = font_loader
         self.visible = False
         self.lang = "en"
@@ -584,6 +624,19 @@ class OverlayMenu:
         self.user_scale = value
         self._build_fonts()
 
+    def mini_hides(self, key: str) -> bool:
+        """Whether mini mode leaves this row out of the main page."""
+        return (self.mini and not self.mini_pick and self.page == "main"
+                and key not in self.mini_rows)
+
+    def mini_keep(self, key: str) -> bool:
+        """Keep or drop a row; returns whether mini mode keeps it now."""
+        if key in self.mini_rows:
+            self.mini_rows.discard(key)
+        else:
+            self.mini_rows.add(key)
+        return key in self.mini_rows
+
     def toggle(self) -> bool:
         self.visible = not self.visible
         return self.visible
@@ -662,7 +715,12 @@ class OverlayMenu:
             elif k == "params" and isinstance(v, dict):
                 self.state["params"] = dict(v)
             elif k in self.state:
+                was = self.state.get(k)
                 self.state[k] = v
+                # The contrast theme draws in another face, so a theme change
+                # is a font change too - and the faces are cached per size.
+                if k == "theme" and (was == "contrast") != (v == "contrast"):
+                    self._build_fonts()
 
     def _load(self, size: int, mono: bool = False):
         """One face, through the loader the caller handed us.
@@ -688,10 +746,18 @@ class OverlayMenu:
         language - titles, labels, hints, buttons - and the monospaced one
         carries readings, where a fixed advance keeps digits from dancing
         sideways as they change.
+
+        The contrast theme is the exception, and only that one: it draws
+        EVERY role in the monospaced face. fonts.py records why the program
+        stopped doing that in 1.6.0 - "one monospaced face for a whole
+        interface is why the menu read as a debug console rather than as a
+        program" - which is an objection to the look, and the look is what
+        this theme is for. Light and dark keep the split.
         """
-        self._font = self._load(self._u(FONT_SIZE))
-        self._title_font = self._load(self._u(TITLE_SIZE))
-        self._small_font = self._load(self._u(SMALL_SIZE))
+        ui_mono = self.state.get("theme") == "contrast"
+        self._font = self._load(self._u(FONT_SIZE), mono=ui_mono)
+        self._title_font = self._load(self._u(TITLE_SIZE), mono=ui_mono)
+        self._small_font = self._load(self._u(SMALL_SIZE), mono=ui_mono)
         self._mono = self._load(self._u(FONT_SIZE), mono=True)
         self._mono_small = self._load(self._u(SMALL_SIZE), mono=True)
 
@@ -997,6 +1063,11 @@ class OverlayMenu:
         act_h = self._u(ACTION_H)
 
         items: list[Item] = []
+        #: Mini mode, and not choosing: the page is the kept rows plus the
+        #: action strip. Named once here because three blocks outside the
+        #: row builders have to honour it.
+        mini_short = (self.mini and not self.mini_pick
+                      and self.page == "main")
         # Header icons: help, settings and the collapse button. The collapse
         # used to be a footer button next to "quit the program" - the two
         # looked equally harmless, even though one hides the menu and the
@@ -1005,7 +1076,10 @@ class OverlayMenu:
         iw = self._u(ICON_W)
         igap = self._u(8)
         iy = self._u(TITLE_H) // 2 - iw // 2
-        order = (["help", "gear", "min"] if self.page == "main"
+        order = (["help", "gear"]
+                 + (["pick"] if self.mini else [])
+                 + ["mini", "min"]
+                 if self.page == "main"
                  else ["close"] if self.page == "settings"
                  else [])  # the windows page: no header icons at all - the
         # Back button in the footer is the only way out (user rule 10.09).
@@ -1076,6 +1150,11 @@ class OverlayMenu:
             squares = squares_here
             if not show:
                 return
+            # Mini mode is a handful of rows, not an outline of them: four
+            # titles over four rows is more furniture than content. The
+            # flags above are still set - the builders below read them.
+            if self.mini and self.page == "main":
+                return
             # Measured from what is actually on the page, not from whatever the
             # last builder left in `cy`: each of them adds its own trailing air
             # (one adds ROW_GAP, the preset row adds 8, a hinted slider adds a
@@ -1104,7 +1183,7 @@ class OverlayMenu:
                    mark: float | None = None, bare: bool = False,
                    ticks: int = 5) -> None:
             nonlocal cy
-            if not show:
+            if not show or self.mini_hides(key):
                 return
             # `bare`: the track alone, with no caption line and no value cell.
             # The ruler under it carries the position instead - for a control
@@ -1156,7 +1235,7 @@ class OverlayMenu:
         def choice(key: str, label: str, current: str, options: list,
                    labels: list | None = None, hint: str = "") -> None:
             nonlocal cy
-            if not show:
+            if not show or self.mini_hides(key):
                 return
             extra = {"label": label, "current": current,
                      "labels": list(labels or options),
@@ -1193,6 +1272,8 @@ class OverlayMenu:
             expand/collapse machinery; here both options are visible at once.
             """
             nonlocal cy
+            if self.mini_hides(key):
+                return
             if not show:
                 return
             if label:
@@ -1225,7 +1306,7 @@ class OverlayMenu:
                    inline_right: list[tuple[str, str, bool]] | None = None,
                    segments_only: bool = False) -> None:
             nonlocal cy
-            if not show:
+            if not show or self.mini_hides(key):
                 return
             # Small inline buttons at the row's right end, beside the switch:
             # the multiplier rides the FG row itself (user, 14.09) instead of
@@ -1742,7 +1823,8 @@ class OverlayMenu:
             choice("lang", s["language"], self.lang, langs,
                    labels=[STRINGS[L].get(f"lang_{L}", L) for L in langs])
             segmented("theme", s["theme"], self.state.get("theme", "light"),
-                      ["light", "dark"], [s["theme_light"], s["theme_dark"]])
+                      ["light", "dark", "contrast"],
+                      [s["theme_light"], s["theme_dark"], s["theme_contrast"]])
             # No extra gap here: segmented() already ends with one, and
             # section() opens with its own - three stacked was a hole
             # (user, 13.09: the padding below is excessive).
@@ -2076,7 +2158,7 @@ class OverlayMenu:
             # strip says "these two belong together" without spending a border
             # each to say it (user, 20.09).
             bw = inner_w // 2
-            for idx, (key, label) in enumerate((
+            for idx, (key, label) in enumerate(() if mini_short else (
                     ("save_preset", s["save_preset"]),
                     ("delete_preset", s["delete_preset"]))):
                 cw = bw if idx == 0 else inner_w - bw
@@ -2087,7 +2169,8 @@ class OverlayMenu:
                                          "pair": "left" if idx == 0 else "right",
                                          "disabled": key == "delete_preset"
                                          and not self.state.get("preset_active")}))
-            cy += act_h + self._u(8)
+            if not mini_short:
+                cy += act_h + self._u(8)
 
             section(s["sec_compare"])
             split_val = float(self.state.get("split", 0.0))
@@ -2238,9 +2321,13 @@ class OverlayMenu:
                                   extra={"label": s["back"],
                                          "filled": False}))
             cy += act_h + pad
-        else:
+        elif not mini_short:
             # The name and nothing else, centred: the key and the
             # explanation under it turned one button into a paragraph.
+            #
+            # Not in mini mode: the panel is four rows there, and a
+            # full-width red button under four rows is the one that gets
+            # pressed by accident. The menu still quits from settings.
             items.append(Item("action", "exit",
                               pygame.Rect(pad, cy, inner_w, act_h),
                               extra={"label": s["exit_full"], "danger": True,
@@ -2655,6 +2742,19 @@ class OverlayMenu:
                 self._move_from = (event.pos, tuple(self.offset))
                 self._capture_mouse(True)
                 return out
+            if self.mini_pick and self.page == "main":
+                # Choosing, so the ROW is the target and not its control: a
+                # click that both kept a row and moved its slider would be
+                # one nobody could undo. This cannot go through `hit` - that
+                # one answers with the CONTROL's own rectangle by design
+                # (rule 16.09), which while choosing is the one place a
+                # click must not land, and which leaves the dot and the
+                # label dead.
+                picked = self._mini_hit(event.pos)
+                if picked is not None:
+                    self.mini_keep(picked.key)
+                    self._set_focus(picked, from_mouse=True)
+                    return out + [("mini_rows", sorted(self.mini_rows))]
             item = self.hit(event.pos)
             if item is None:
                 self._drag_item = None
@@ -2711,9 +2811,21 @@ class OverlayMenu:
         return out
 
     def _icon_click(self, key: str) -> list[tuple]:
-        """The header: help, settings, collapse, returning from settings."""
+        """The header: help, settings, mini mode, collapse, and back."""
         if key == "help":
             return [("button", "github")]
+        if key == "mini":
+            self.mini = not self.mini
+            # Leaving mini mode ends the choosing with it: the dots mean
+            # nothing on a page that shows everything anyway.
+            if not self.mini:
+                self.mini_pick = False
+            self.scroll = 0
+            return [("mini", self.mini)]
+        if key == "pick":
+            self.mini_pick = not self.mini_pick
+            self.scroll = 0
+            return [("mini_pick", self.mini_pick)]
         if key == "gear":
             self.page = "settings"
             self.scroll = 0
@@ -3149,6 +3261,8 @@ class OverlayMenu:
              # option items, like the entries of an expanded list).
              "option": lambda *_: None}[item.kind](surface, item, s)
         self._draw_segment_groups(surface)
+        if self.mini_pick and self.page == "main":
+            self._draw_mini_marks(surface)
         if self.open_choice and self.options:
             # The expanded list fades at its edges: a soft gradient around
             # the rows (top/bottom/left/right) instead of dimming the whole
@@ -3194,6 +3308,46 @@ class OverlayMenu:
         if focused is not None and focused.kind == "icon":
             self._draw_focus_ring(surface, focused)
         self._draw_scrollbar(surface)
+
+    def _mini_hit(self, pos) -> "Item | None":
+        """The row under the pointer while choosing what mini mode keeps.
+
+        The whole width of the panel, so the dot in the left margin, the
+        label and the control are one target: the row is what is kept or
+        dropped, and three outcomes for one row would be three ways to be
+        surprised.
+        """
+        if self._viewport.h > 0 and not self._viewport.collidepoint(pos):
+            return None
+        for item in self.items:
+            if item.kind not in MINI_PICKABLE:
+                continue
+            row = pygame.Rect(self.panel_rect.x, item.rect.y,
+                              self.panel_rect.w, item.rect.h)
+            if row.collidepoint(pos):
+                return item
+        return None
+
+    def _draw_mini_marks(self, surface) -> None:
+        """While choosing: a dot per row, and the dropped ones stand back.
+
+        The dot sits in the panel's left margin rather than in the row, so
+        it cannot land on a switch or a slider track - every row kind has
+        something at both ends, and the margin belongs to no control.
+        """
+        radius = max(3, self._u(4))
+        x = self.panel_rect.x + self._u(11)
+        for item in self.items:
+            if item.kind not in MINI_PICKABLE:
+                continue
+            kept = item.key in self.mini_rows
+            if not kept:
+                veil = pygame.Surface(item.rect.size, pygame.SRCALPHA)
+                veil.fill((*_rgb(self.c["bg"]), 150))
+                surface.blit(veil, item.rect.topleft)
+            centre = (x, item.rect.y + min(self._u(17), item.rect.h // 2))
+            pygame.draw.circle(surface, _rgb(self.c["accent"]), centre,
+                               radius, 0 if kept else max(1, self._u(1)))
 
     def _draw_focus_ring(self, surface, item: Item) -> None:
         """The keyboard focus ring - never drawn for a mouse click.
@@ -4244,6 +4398,34 @@ class OverlayMenu:
             img = self._font.render("?", True, _rgb(col))
             surface.blit(img, (cx - img.get_width() // 2,
                                cy - img.get_height() // 2))
+        elif item.key == "mini":
+            # Two stacked bars, the lower one short: a full panel and the
+            # short one it becomes. Filled while mini mode is on, so the
+            # icon says which state you are in rather than what it does.
+            w1, w2, h = self._u(13), self._u(7), self._u(4)
+            top = pygame.Rect(cx - w1 // 2, cy - h - self._u(2), w1, h)
+            low = pygame.Rect(cx - w1 // 2, cy + self._u(2), w2, h)
+            fill = 0 if self.mini else max(1, self._u(1))
+            pygame.draw.rect(surface, _rgb(col), top, fill,
+                             border_radius=self._u(1))
+            pygame.draw.rect(surface, _rgb(col), low, fill,
+                             border_radius=self._u(1))
+        elif item.key == "pick":
+            # A pencil on the diagonal: a body and a point. It was a ring
+            # with a dot in it - the same mark the rows wear while they are
+            # chosen - but an icon has to say what pressing it DOES, and
+            # every interface the user has says that with a pencil.
+            if self.mini_pick:
+                col = self.c["accent"]
+            off = max(1, self._u(2))
+            tip = (cx - self._u(6), cy + self._u(6))
+            base = (cx - self._u(3), cy + self._u(3))
+            end = (cx + self._u(6), cy - self._u(6))
+            pygame.draw.line(surface, _rgb(col), base, end,
+                             max(2, self._u(4)))
+            pygame.draw.polygon(surface, _rgb(col),
+                                [tip, (base[0] + off, base[1] + off),
+                                 (base[0] - off, base[1] - off)])
         elif item.key == "close":
             d = max(3, self._u(5))
             pygame.draw.line(surface, _rgb(col), (cx - d, cy - d),

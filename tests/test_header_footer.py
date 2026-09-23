@@ -76,8 +76,22 @@ def main() -> int:
     keys = [i.key for i in icons]
     visual = list(reversed(keys))
     print(f"header icons (list {keys}, visual {visual})")
-    if visual != ["help", "gear", "min"]:
-        failures.append(f"the header should be [help, gear, min], got {visual}")
+    if visual != ["help", "gear", "mini", "min"]:
+        failures.append(f"the header should be [help, gear, mini, min], "
+                        f"got {visual}")
+
+    # Choosing what mini mode keeps appears only while mini mode is on -
+    # which is also the only place where its result can be seen.
+    menu.mini = True
+    menu.layout(3840, 2160)
+    mini_visual = list(reversed([i.key for i in menu.items
+                                 if i.kind == "icon"]))
+    print(f"header icons in mini mode: {mini_visual}")
+    if mini_visual != ["help", "gear", "pick", "mini", "min"]:
+        failures.append(f"mini mode's header should be "
+                        f"[help, gear, pick, mini, min], got {mini_visual}")
+    menu.mini = False
+    menu.layout(3840, 2160)
 
     # 2. The min icon emits the close command (hide the menu).
     min_icon = next((i for i in icons if i.key == "min"), None)

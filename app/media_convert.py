@@ -35,6 +35,7 @@ the same reason the desktop is.
 from __future__ import annotations
 
 import os
+import queue
 import sys
 import threading
 import time
@@ -47,7 +48,8 @@ import numpy as np
 
 from guides import TemporalGuideGenerator
 from pipeline import shutdown_worker, start_worker
-from protocol import send_frame, send_resize
+from protocol import (SharedFrameBuffer, send_frame, send_motion_size,
+                      send_out, send_resize)
 
 #: Stills the converter will open. Kept to what the bundled Pillow can both
 #: read and write without extra plugins - a format that opens and then fails
@@ -131,6 +133,18 @@ FRAME_TIMEOUT_S = 60.0
 #: worker on frame 0; a conversion has no watchdog and no picture to keep
 #: alive, so it pays the smallest warm-up that still lets NGX settle.
 WARMUP_FRAMES = 8
+
+#: How many frames may wait between two stages of a video conversion. The
+#: depth is what the overlap costs in memory: two lanes hold 2 frames each,
+#: and the reader's ring grows to about as many again - 8 MB a frame at
+#: 1080p, four times that at 4K. Two is already enough to keep all three
+#: stages busy, and a deeper lane only buys latency nobody is waiting on.
+STAGE_DEPTH = 2
+
+#: Run the three stages on their own threads. `NS_CONVERT_PIPELINE=0` puts
+#: them back on one, which is the order this module had before the overlap
+#: and the way to tell a pipeline bug from a conversion bug.
+PIPELINE = os.environ.get("NS_CONVERT_PIPELINE", "1") != "0"
 
 
 class ConversionCancelled(RuntimeError):
@@ -277,8 +291,40 @@ def processing_size(width: int, height: int, work_scale: float,
     return _work_size(width, height, float(work_scale), nr_passes)
 
 
+def flow_size(work_w: int, work_h: int) -> tuple[int, int]:
+    """The grid a motion field travels on - TemporalGuideGenerator's rule.
+
+    Repeated here rather than imported, because a still has no guides to ask:
+    its motion is zeros, and building a generator to learn the shape of them
+    would allocate six work-sized buffers to say so. tests/test_media_convert
+    holds the two together.
+    """
+    scale = min(1.0, 320 / max(1, work_w))
+    return (max(64, int(round(work_w * scale / 2) * 2)),
+            max(64, int(round(work_h * scale / 2) * 2)))
+
+
 class _Engine:
-    """One worker, held open for the frames of one file."""
+    """One worker, held open for the frames of one file.
+
+    The worker's three side channels are negotiated here for the reason the
+    live pipeline negotiates them: a converted frame is the same 8 MB at
+    1080p as a captured one, and it used to travel the same way - written
+    into a pipe, read out of it, and the answer back the same way.
+
+        SHMI  the frame goes into a mapping; only its 24-byte header travels.
+        OUTS  the processed frame comes back through a second mapping.
+        MOTS  the motion field travels at flow size (~320x180) and the worker
+              upscales it on the GPU, instead of the CPU building it at the
+              work size - 6 million values, every frame.
+
+    Each is optional and each is asked for separately: a worker that refuses
+    one keeps the old path for that one and says so, which is how channels.py
+    treats the same three. Measured on the CPU alone at 1080p with the work
+    size at the frame size, per frame: 13.7 ms of guides becomes 6.0, 2.7 ms
+    of tobytes and 6.2 ms of pipe become 0.9 ms of memcpy, and the pixels
+    coming back cost 0.4 instead of about 3.
+    """
 
     def __init__(self, params: dict, width: int, height: int,
                  work_w: int, work_h: int, nr_passes: int = 1):
@@ -294,10 +340,32 @@ class _Engine:
         self.reader = None
         self.logs: list = []
         self.stop = None
+        self.shm: SharedFrameBuffer | None = None
+        #: The motion field travels at flow size and the worker upscales it.
+        self.motion_small = False
+        #: The processed frame comes back through a section, not the pipe.
+        self.out_shm = False
+
+    @property
+    def motion_size(self) -> tuple[int, int]:
+        """The size of the motion field this worker expects to be handed."""
+        if self.motion_small:
+            return flow_size(self.work_w, self.work_h)
+        return self.work_w, self.work_h
 
     def __enter__(self) -> "_Engine":
         full_w = self.width if self.upscale else 0
         full_h = self.height if self.upscale else 0
+        try:
+            # The motion capacity is the WORK size, not the flow size: MOTS
+            # may be refused after the mapping is made, and the full field
+            # has to fit when it is.
+            self.shm = SharedFrameBuffer(self.width, self.height,
+                                         self.work_w, self.work_h)
+        except Exception as exc:
+            print(f"[convert] no shared memory ({exc}) - frames through "
+                  f"the pipe", file=sys.stderr)
+            self.shm = None
         # The residual strength is NOT derived here. It was, briefly, as
         # 1/passes - which quietly made a two-pass conversion apply half the
         # effect of a one-pass one, the same surprise the overlay had. It is
@@ -306,7 +374,7 @@ class _Engine:
         # converted file matches what the panel is showing.
         self.worker, self.logs, self.reader, self.stop = start_worker(
             self.params, self.work_w, self.work_h, WARMUP_FRAMES,
-            full_w, full_h, None)
+            full_w, full_h, self.shm)
         # The cascade depth reaches the worker ONLY on a resize: the stream
         # header has no field for it (see tests/test_nr_passes_wire). A
         # converter that never sent one therefore ran a single pass whatever
@@ -318,7 +386,37 @@ class _Engine:
             self.reader.wait_rack(timeout=60.0)
             self.reader.set_output_size(full_w or self.work_w,
                                         full_h or self.work_h)
+        self._open_channels()
         return self
+
+    def _open_channels(self) -> None:
+        """MOTS and OUTS, each on its own, each refusable.
+
+        Both live inside the worker process, so they are asked for after it
+        is up and after any resize - a feature rebuilt at another size keeps
+        neither. Neither is fatal: the field is upscaled on the CPU and the
+        pixels come back through the pipe, which is what this module did.
+        """
+        flow_w, flow_h = flow_size(self.work_w, self.work_h)
+        try:
+            send_motion_size(self.worker, flow_w, flow_h)
+            self.reader.wait_mack(timeout=15.0)
+            self.motion_small = True
+        except Exception as exc:
+            self.motion_small = False
+            print(f"[convert] the motion field is upscaled on the CPU ({exc})",
+                  file=sys.stderr)
+        if self.shm is None:
+            return
+        try:
+            self.shm.open_out(self.width, self.height)
+            send_out(self.worker, self.width, self.height, self.shm.out_name)
+            self.reader.wait_oak(timeout=15.0)
+            self.out_shm = True
+        except Exception as exc:
+            self.out_shm = False
+            print(f"[convert] the processed frame comes back through the "
+                  f"pipe ({exc})", file=sys.stderr)
 
     def __exit__(self, *exc) -> None:
         if self.worker is not None:
@@ -327,6 +425,15 @@ class _Engine:
             except Exception:
                 pass
             self.worker = None
+        if self.shm is not None:
+            # The frames already handed out are copies in the reader's own
+            # ring, not views into the section, so closing it here cannot
+            # pull a frame out from under the encoder.
+            try:
+                self.shm.close()
+            except Exception:
+                pass
+            self.shm = None
 
     def evaluate(self, index: int, rgba: np.ndarray,
                  motion: np.ndarray, reset: bool) -> np.ndarray | None:
@@ -335,7 +442,8 @@ class _Engine:
             tail = "\n".join(self.logs[-12:]) or "(no worker output)"
             raise ConversionError("worker", f"the worker exited:\n{tail}")
         send_frame(self.worker, index, rgba, motion, reset, index,
-                   shm=None, want_pixels=True, skip_static=False)
+                   shm=self.shm, want_pixels=True, skip_static=False,
+                   motion_small=self.motion_small)
         return self.reader.recv(index, timeout=FRAME_TIMEOUT_S)
 
 
@@ -407,7 +515,10 @@ def convert_image(source: Path, output: Path, params: dict, *,
     with _Engine(params, width, height, work_w, work_h, nr_passes) as engine:
         _check(cancel)
         say("processing", 0, 1, f"{width}x{height}")
-        pixels = engine.evaluate(0, frame, _zero_motion(work_w, work_h), True)
+        # The field is zeros either way; its SHAPE is the worker's, which
+        # depends on whether it took the MOTS channel.
+        pixels = engine.evaluate(0, frame, _zero_motion(*engine.motion_size),
+                                 True)
     if pixels is None:
         raise ConversionError("process", "the worker returned no pixels")
     _check(cancel)
@@ -644,6 +755,255 @@ class _AacTrack:
             container.mux(packet)
 
 
+class _Lane:
+    """A bounded hand-off between two stages, with one shared stop.
+
+    put and get poll instead of blocking outright: when one stage dies, the
+    others have to notice, and a thread parked forever on a queue that will
+    never move again is a hung conversion with no error to show for it.
+    """
+
+    def __init__(self, depth: int, stop: threading.Event):
+        self._queue: queue.Queue = queue.Queue(maxsize=max(1, depth))
+        self._stop = stop
+
+    def put(self, item) -> bool:
+        """True once the item is in; False if everything was stopped."""
+        while not self._stop.is_set():
+            try:
+                self._queue.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def get(self):
+        """The next item, or None if everything was stopped."""
+        while not self._stop.is_set():
+            try:
+                return self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+        return None
+
+
+def _staged(stage: str, call):
+    """Run a stage's callable, naming the stage if it fails.
+
+    The stage is what the queue turns into a sentence for the user
+    (convert_jobs.friendly_error), and with the work on three threads it is
+    no longer a variable the loop can move - each stage carries its own.
+    """
+    def run(item):
+        try:
+            call(item)
+        except (ConversionCancelled, ConversionError):
+            raise
+        except Exception as exc:
+            raise ConversionError(stage, exc) from exc
+    return run
+
+
+def _tagged(items, stage: str):
+    """The same, for something that is iterated rather than called."""
+    try:
+        for item in items:
+            yield item
+    except (ConversionCancelled, ConversionError):
+        raise
+    except Exception as exc:
+        raise ConversionError(stage, exc) from exc
+
+
+def _decoded_items(container, streams, video_index: int, audio_mode: str,
+                   even_w: int, even_h: int, guides, cancel,
+                   notes: list, bad: dict):
+    """Everything the source holds, in the order it holds it.
+
+        ("video", rgba, motion, reset, time) | ("audio", packet) | ("sound", frame)
+
+    The guides run HERE rather than next to the worker. The optical flow
+    reads two decoded frames and nothing the network produces, so it has no
+    reason to wait for it - and it is the most expensive thing the CPU does
+    per frame: 6.0 ms at 1080p even with the field kept at flow size.
+    """
+    import av
+
+    def decoded(packet):
+        """The packet's frames; a packet that will not decode is skipped."""
+        try:
+            return packet.decode()
+        except av.error.InvalidDataError as exc:
+            bad["n"] += 1
+            if bad["n"] == 1:
+                notes.append("some of the source could not be decoded - "
+                             "those frames are left out")
+            if bad["n"] > MAX_BAD_PACKETS:
+                raise ConversionError("decode", exc) from exc
+            return ()
+
+    for packet in container.demux(*streams):
+        _check(cancel)
+        if packet.stream.index != video_index:
+            if audio_mode == "copy":
+                if packet.dts is None:
+                    continue              # the demuxer's flush packet
+                yield ("audio", packet)
+            elif audio_mode == "aac":
+                for audio_frame in decoded(packet):
+                    yield ("sound", audio_frame)
+            continue
+        for frame in decoded(packet):
+            _check(cancel)
+            rgba = _as_rgba(frame.to_ndarray(format="rgba"))
+            if rgba.shape[1] != even_w or rgba.shape[0] != even_h:
+                rgba = np.ascontiguousarray(rgba[:even_h, :even_w])
+            guide = guides.process(rgba)
+            # The generator hands back a buffer it reuses for the next
+            # frame, and with the stages overlapped this one may still be
+            # on its way into the worker's mapping: 230 KB at flow size.
+            yield ("video", rgba, guide.motion.copy(), guide.reset, frame.time)
+
+
+class _Writer:
+    """The output side: the muxer, the video encoder, and the audio track.
+
+    One thread owns all three. The pts is carried by the item, not by a
+    counter here, so a variable-rate source keeps its own spacing.
+    """
+
+    def __init__(self, av, container, stream, audio_out, aac,
+                 even_w: int, even_h: int, step: int):
+        self._av = av
+        self._container = container
+        self._stream = stream
+        self._audio_out = audio_out
+        self._aac = aac
+        self._even_w, self._even_h = even_w, even_h
+        self._time_base = stream.time_base
+        #: One frame's length on the output clock, for a frame the demuxer
+        #: left without a timestamp - the muxer's tick is far finer than a
+        #: frame (1/12800 s for a 25 fps AVI in mp4).
+        self._step = step
+        self._last_pts = -1
+
+    def write(self, item) -> None:
+        kind = item[0]
+        if kind == "audio":
+            packet = item[1]
+            packet.stream = self._audio_out
+            self._container.mux(packet)
+            return
+        if kind == "sound":
+            self._aac.push(item[1], self._container)
+            return
+        self._video(item[1], item[2])
+
+    def _video(self, pixels, when) -> None:
+        out = np.ascontiguousarray(pixels)[:self._even_h, :self._even_w]
+        video_frame = self._av.VideoFrame.from_ndarray(out, format="rgba")
+        # The colour tags belong on the FRAME as well as the stream:
+        # swscale takes its matrix from the frame while the player reads
+        # the stream, and that mismatch is what the recorder's own comment
+        # calls "the contrast".
+        video_frame.color_range = 2          # full (sRGB)
+        video_frame.colorspace = 1           # BT.709
+        video_frame.color_primaries = 1
+        video_frame.color_trc = 13           # sRGB
+        pts = (int(round(float(when) / float(self._time_base)))
+               if when is not None else self._last_pts + self._step)
+        pts = max(pts, self._last_pts + 1)
+        self._last_pts = pts
+        video_frame.pts = pts
+        video_frame.time_base = self._time_base
+        for out_packet in self._stream.encode(video_frame):
+            self._container.mux(out_packet)
+
+
+class _Overlap:
+    """Decode, the network and encode on three threads instead of one.
+
+    The middle stage stays on the calling thread, because it owns the
+    worker: the input mapping has one slot, so its send and its receive
+    must stay paired (protocol.SharedFrameBuffer). The two ends run ahead
+    of it and behind it.
+
+    Order is exact. Every item passes through both lanes in the order the
+    demuxer produced it, so the muxer still sees audio and video
+    interleaved the way the source was - the overlap moves work off the
+    critical path, it does not reorder the file.
+
+    The first exception from either end stops everything and is raised on
+    the calling thread, carrying the stage it happened in.
+    """
+
+    def __init__(self, source, sink, depth: int):
+        self._source = _tagged(source, "decode")
+        self._sink = _staged("encode", sink)
+        self.stop = threading.Event()
+        self._in = _Lane(depth, self.stop)
+        self._out = _Lane(depth, self.stop)
+        self._error: BaseException | None = None
+        self._threads: list[threading.Thread] = []
+
+    def _produce(self) -> None:
+        try:
+            for item in self._source:
+                if not self._in.put(("item", item)):
+                    return
+        except BaseException as exc:      # noqa: BLE001 - raised on the caller
+            self._error = self._error or exc
+        finally:
+            self._in.put(("end", None))
+
+    def _consume(self) -> None:
+        while True:
+            got = self._out.get()
+            if got is None or got[0] == "end":
+                return
+            try:
+                self._sink(got[1])
+            except BaseException as exc:  # noqa: BLE001 - raised on the caller
+                self._error = self._error or exc
+                self.stop.set()
+                return
+
+    def items(self):
+        """The source's items, decoded up to `depth` frames ahead."""
+        while True:
+            got = self._in.get()
+            if got is None or got[0] == "end":
+                break
+            yield got[1]
+        if self._error is not None:
+            raise self._error
+
+    def emit(self, item) -> None:
+        if not self._out.put(("item", item)):
+            raise self._error or ConversionCancelled("stopped")
+
+    def finish(self) -> None:
+        """Let the encode stage drain what is still in flight, then join."""
+        self._out.put(("end", None))
+        for thread in self._threads:
+            thread.join(timeout=FRAME_TIMEOUT_S)
+        if self._error is not None:
+            raise self._error
+
+    def __enter__(self) -> "_Overlap":
+        for name, target in (("convert-decode", self._produce),
+                             ("convert-encode", self._consume)):
+            thread = threading.Thread(target=target, name=name, daemon=True)
+            thread.start()
+            self._threads.append(thread)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop.set()
+        for thread in self._threads:
+            thread.join(timeout=10.0)
+
+
 def convert_video(source: Path, output: Path, params: dict, *,
                   work_scale: float = 0.65, nr_small: bool = True,
                   nr_passes: int = 1, flow_preset: str = "fast",
@@ -781,88 +1141,60 @@ def convert_video(source: Path, output: Path, params: dict, *,
         # "decode", the network is "process", writing the file is "encode".
         # It used to be "process" for all three, and a truncated source was
         # reported as "the file could not be written".
-        stage = "decode"
-        done = 0
-        skipped = 0
-        bad = 0
-        last_pts = -1
+        stage = "process"
+        counted = {"done": 0, "skipped": 0}
+        bad = {"n": 0}
         time_base = out_stream.time_base
         # One frame's length on the output clock: the step for a frame the
-        # demuxer left without a timestamp. `last_pts + 1` assumed one tick per
-        # frame, and the muxer's tick is far finer (1/12800 s for a 25 fps AVI
-        # in mp4) - a 10-minute film came out a second long.
+        # demuxer left without a timestamp. `last_pts + 1` assumed one tick
+        # per frame, and the muxer's tick is far finer (1/12800 s for a
+        # 25 fps AVI in mp4) - a 10-minute film came out a second long.
         step = max(1, int(round(float(1 / rate) / float(time_base))))
         streams = [stream] + ([audio_in] if audio_mode in ("copy", "aac") else [])
         say("starting", 0, total, size_text)
+        # The worker is started HERE, not on the first decoded frame as it
+        # used to be: the decode stage runs the guides, and whether their
+        # field is built at work size or at flow size is the worker's answer
+        # to MOTS. It still comes after the output header, so a file that
+        # cannot be written costs no worker at all.
+        engine = _Engine(params, even_w, even_h, work_w, work_h, nr_passes)
+        engine.__enter__()
+        guides.emit_small = engine.motion_small
+        writer = _Writer(av, out_container, out_stream, audio_out, aac,
+                         even_w, even_h, step)
 
-        def decoded(packet):
-            """The packet's frames; a packet that will not decode is skipped."""
-            nonlocal bad
-            try:
-                return packet.decode()
-            except av.error.InvalidDataError as exc:
-                bad += 1
-                if bad == 1:
-                    notes.append("some of the source could not be decoded - "
-                                 "those frames are left out")
-                if bad > MAX_BAD_PACKETS:
-                    raise ConversionError("decode", exc) from exc
-                return ()
+        def middle(items, emit) -> None:
+            """The network's own stage: one frame in, one frame out.
 
-        for packet in container.demux(*streams):
-            _check(cancel)
-            stage = "decode"
-            if packet.stream.index != stream.index:
-                if audio_mode == "copy":
-                    if packet.dts is None:
-                        continue          # the demuxer's flush packet
-                    packet.stream = audio_out
-                    stage = "encode"
-                    out_container.mux(packet)
-                elif aac is not None:
-                    for audio_frame in decoded(packet):
-                        stage = "encode"
-                        aac.push(audio_frame, out_container)
-                        stage = "decode"
-                continue
-            for frame in decoded(packet):
+            Everything that is not a video frame passes straight through,
+            which is what keeps the output interleaved like the source.
+            """
+            for item in items:
                 _check(cancel)
-                stage = "decode"
-                rgba = _as_rgba(frame.to_ndarray(format="rgba"))
-                stage = "process"
-                if rgba.shape[1] != even_w or rgba.shape[0] != even_h:
-                    rgba = np.ascontiguousarray(rgba[:even_h, :even_w])
-                if engine is None:
-                    engine = _Engine(params, even_w, even_h,
-                                     work_w, work_h, nr_passes)
-                    engine.__enter__()
-                guide = guides.process(rgba)
-                pixels = engine.evaluate(done, rgba, guide.motion, guide.reset)
+                if item[0] != "video":
+                    emit(item)
+                    continue
+                _kind, rgba, motion, reset, when = item
+                pixels = engine.evaluate(counted["done"], rgba, motion, reset)
                 if pixels is None:
-                    skipped += 1
+                    counted["skipped"] += 1
                     pixels = rgba
-                out = np.ascontiguousarray(pixels)[:even_h, :even_w]
-                video_frame = av.VideoFrame.from_ndarray(out, format="rgba")
-                # The colour tags belong on the FRAME as well as the
-                # stream: swscale takes its matrix from the frame while
-                # the player reads the stream, and that mismatch is what
-                # the recorder's own comment calls "the contrast".
-                video_frame.color_range = 2          # full (sRGB)
-                video_frame.colorspace = 1           # BT.709
-                video_frame.color_primaries = 1
-                video_frame.color_trc = 13           # sRGB
-                when = frame.time
-                pts = (int(round(float(when) / float(time_base)))
-                       if when is not None else last_pts + step)
-                pts = max(pts, last_pts + 1)
-                last_pts = pts
-                video_frame.pts = pts
-                video_frame.time_base = time_base
-                stage = "encode"
-                for out_packet in out_stream.encode(video_frame):
-                    out_container.mux(out_packet)
-                done += 1
-                say("processing", done, max(total, done), size_text)
+                emit(("video", pixels, when))
+                counted["done"] += 1
+                say("processing", counted["done"],
+                    max(total, counted["done"]), size_text)
+
+        source_items = _decoded_items(container, streams, stream.index,
+                                      audio_mode, even_w, even_h, guides,
+                                      cancel, notes, bad)
+        if PIPELINE:
+            with _Overlap(source_items, writer.write, STAGE_DEPTH) as overlap:
+                middle(overlap.items(), overlap.emit)
+                overlap.finish()
+        else:
+            middle(_tagged(source_items, "decode"),
+                   _staged("encode", writer.write))
+        done, skipped = counted["done"], counted["skipped"]
 
         if done == 0:
             raise ConversionError("decode", "no frames could be decoded")

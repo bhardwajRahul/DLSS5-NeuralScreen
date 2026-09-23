@@ -600,6 +600,9 @@ _SETTINGS_KEYS = (
     "nr_pass_params",
     "tray_on_minimise", "tray_on_close",
     "menu_scale", "menu_scale_auto",
+    # Mini mode and the rows it keeps: a report from a shortened
+    # panel would otherwise show a page the reporter never saw.
+    "menu_mini", "menu_mini_rows",
     # The four switches that decide WHICH pipeline ran. Without them a report
     # is ambiguous about the code path it came from, and `worker_present` in
     # particular decides whether the picture is the worker's own window or
