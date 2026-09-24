@@ -474,6 +474,9 @@ stage and HRESULT/SEH/DRED markers, plus an allow-list of product settings
 (each value bounded; no paths, presets or hotkeys). It excludes the environment
 dump; usernames, secrets, absolute user paths, other programs' window titles
 and the names of files the conversion queue refused are redacted.
+`NeuralScreen.log` itself is moved aside to `NeuralScreen.log.1` at startup
+once it passes 8 MB, so it keeps the latest sessions and does not grow without
+end.
 
 ## Performance
 
