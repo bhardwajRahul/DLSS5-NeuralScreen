@@ -837,7 +837,9 @@ build drops into `native/libraries/`.
 The NR and FG runtimes ship in the archive. A user-supplied build in
 `native/libraries/` takes priority over `native/`; an NR BYO file is checked for
 an NVIDIA signature and product identity before it is mapped, otherwise the
-bundled copy remains the fallback. There is no network updater or downloader.
+bundled copy remains the fallback. The signature is judged as of its
+timestamp, as Windows judges it, so a DLL whose certificate has expired since
+it was signed still passes. There is no network updater or downloader.
 
 ## Reproducible release contract
 

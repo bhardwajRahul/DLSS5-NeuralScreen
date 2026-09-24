@@ -44,7 +44,7 @@ static const char kHdrCompositeHlsl[] =
     "Texture2D<float4> proxyIn : register(t1);\n"
     "Texture2D<float4> proxyOut : register(t2);\n"
     "RWTexture2D<float4> dst : register(u0);\n"
-    "cbuffer Params : register(b0) { float white; uint bypass; uint split; uint hdrDisplay; };\n"
+    "cbuffer Params : register(b0) { float white; uint bypass; uint split; uint hdrDisplay; uint rotate180; };\n"
     "[numthreads(8,8,1)] void CSMain(uint3 p : SV_DispatchThreadID) {\n"
     " uint w,h; dst.GetDimensions(w,h); if(p.x>=w || p.y>=h) return;\n"
     " float3 a=ToLinear(proxyIn.Load(int3(p.xy,0)).rgb);\n"
@@ -53,8 +53,15 @@ static const char kHdrCompositeHlsl[] =
     // than the output and does not cover all of it (PresentHdr). There the
     // SDR proxy stands in, lifted by the capture's own scale, rather than
     // the black an out-of-range Load returns.
+    //
+    // rotate180: the native frame is the duplication's own texture, as
+    // unrotated as the capture shader found it, while both proxies were
+    // turned over on capture. Read the same way, or a "Landscape (flipped)"
+    // display gets the original upside down under an upright correction
+    // (issue #47).
     " uint nw,nh; nativeFrame.GetDimensions(nw,nh);\n"
-    " float3 original=(p.x<nw && p.y<nh) ? nativeFrame.Load(int3(p.xy,0)).rgb : white*a;\n"
+    " int2 q = rotate180 ? int2(nw-1-p.x, nh-1-p.y) : int2(p.xy);\n"
+    " float3 original=(p.x<nw && p.y<nh) ? nativeFrame.Load(int3(q,0)).rgb : white*a;\n"
     " bool raw=bypass || (split!=0xffffffff && p.x<split);\n"
     // No inverse tone mapping: it becomes singular near white. Lift a bounded
     // linear residual using the same scale as capture, preserving signed gamut

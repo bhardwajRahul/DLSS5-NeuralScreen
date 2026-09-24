@@ -140,6 +140,60 @@ def main() -> int:
     if "hdr_feed_lost_at" not in cpp or "the HDR10 recording lost its HDR picture" not in cpp:
         failures.append("an HDR10 recording that leaves the HDR path is not closed")
 
+    # 10. The BYO runtime is loaded through a buffer that outlives its block
+    byo = _code(cpp.split('L"libraries\\\\nvngx_dlssnr.dll"', 1)[-1][:1500])
+    if "dll_name = candidate" in byo:
+        failures.append("the BYO runtime's path points into a block-scoped "
+                        "buffer that is dead by the LoadLibraryW")
+
+    # 11. DRED: the settings come from the runtime, before the device
+    init = _code(_body(cpp, "static bool InitDisguise()"))
+    if "EnableDred(d3d12)" not in init or "create_device(" not in init:
+        failures.append("InitDisguise does not enable DRED")
+    elif init.index("EnableDred(d3d12)") > init.index("create_device("):
+        failures.append("DRED is enabled after the device exists - it applies "
+                        "only to devices created after it")
+    if re.search(r"h\.dev->QueryInterface\(__uuidof\(ID3D12DeviceRemovedExtendedDataSettings", cpp):
+        failures.append("the DRED settings are asked of the device again - no "
+                        "Windows answers that")
+    if "D3D12GetDebugInterface" not in _code(_body(cpp, "static void EnableDred(HMODULE d3d12)")):
+        failures.append("EnableDred does not use D3D12GetDebugInterface")
+
+    # 12. The overlay never hangs past a shrunken window, and a size mismatch
+    #     really hides it
+    follow = _code(_body(cpp, "static void FollowCapturedWindow()"))
+    if "bw > rw || bh > rh" not in follow:
+        failures.append("a buffer larger than the followed window is still "
+                        "placed over it - it hangs past the right/bottom edge")
+    if "!g_present_mismatch" not in follow:
+        failures.append("the window-back re-show ignores a size mismatch")
+    active = _code(_body(cpp, "static bool PresentModeActive(const VideoState &v)"))
+    mismatch = active.split("if (ow != g_present_w || oh != g_present_h)", 1)[-1][:900]
+    if "ShowWindow(g_present_hwnd, SW_HIDE)" not in mismatch:
+        failures.append("a size mismatch only clears the flag - the stale "
+                        "overlay stays on screen")
+
+    # 13. The HDR composite reads a flipped display's native frame turned over
+    shaders = _read("hdr_shaders.h")
+    composite = shaders.split("kHdrCompositeHlsl[]", 1)[-1][:3000]
+    if "rotate180" not in composite:
+        failures.append("the HDR composite ignores rotate180 - upside down on a "
+                        "Landscape (flipped) display")
+    if "SetComputeRoot32BitConstants(1, 4," in hdr:
+        failures.append("the HDR composite is handed 4 constants, not 5 "
+                        "(rotate180 missing)")
+
+    # 14. The DLL gate judges the chain at the signature's time, with its
+    #     own certificates
+    chain = _code(trust.split("static bool NsChainMachineRootsOnly(", 1)[-1][:2500])
+    if "CertGetCertificateChain(engine, leaf, &at, signature_store" not in chain:
+        failures.append("the machine-root chain is built at the current time "
+                        "without the signature's certificates - a timestamped "
+                        "DLL is refused once its certificate expires")
+    held = _code(_body(trust, "static bool NsTrustedDllHeld(const wchar_t *path, HANDLE hold)"))
+    if "sftVerifyAsOf" not in held:
+        failures.append("the gate does not take the time WinVerifyTrust judged at")
+
     for f in failures:
         print("FAIL:", f)
     if failures:

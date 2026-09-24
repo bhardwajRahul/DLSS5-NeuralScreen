@@ -60,7 +60,15 @@ static int g_trusted_file_count = 0;
 // validates against the Authenticode policy with the exclusive machine-root
 // set. A per-user root cannot participate: hExclusiveRoot replaces the
 // engine's root set instead of adding to it.
-static bool NsChainMachineRootsOnly(PCCERT_CONTEXT leaf)
+//
+// `when` is the moment WinVerifyTrust judged the signature at (the
+// timestamp's time), and `signature_store` the certificates the signature
+// carries - its intermediates, which an offline machine may have nowhere
+// else. Built at the current time with neither, the chain refused a
+// timestamped DLL whose certificate had since expired, and a machine without
+// a cached intermediate.
+static bool NsChainMachineRootsOnly(PCCERT_CONTEXT leaf, const FILETIME *when,
+                                    HCERTSTORE signature_store)
 {
     if (leaf == nullptr) return false;
 
@@ -83,7 +91,8 @@ static bool NsChainMachineRootsOnly(PCCERT_CONTEXT leaf)
         CERT_CHAIN_PARA para = {};
         para.cbSize = sizeof(para);
         PCCERT_CHAIN_CONTEXT chain = nullptr;
-        if (CertGetCertificateChain(engine, leaf, nullptr, nullptr,
+        FILETIME at = *when;
+        if (CertGetCertificateChain(engine, leaf, &at, signature_store,
                                     &para, 0, nullptr, &chain))
         {
             CERT_CHAIN_POLICY_PARA pp = {};
@@ -182,9 +191,28 @@ static bool NsTrustedDllHeld(const wchar_t *path, HANDLE hold)
 
     GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     LONG status = WinVerifyTrust((HWND)INVALID_HANDLE_VALUE, &action, &wd);
+    // The moment WinVerifyTrust judged the chain at: the countersignature's
+    // time for a timestamped file, which is what keeps a signature valid
+    // after its certificate expires. The machine-root check below has to
+    // judge at the same moment, or it refuses every NVIDIA DLL whose
+    // certificate has run out since - the ones the libraries README sends
+    // people to fetch.
+    FILETIME verified_at = {};
+    bool have_time = false;
+    if (status == ERROR_SUCCESS)
+    {
+        CRYPT_PROVIDER_DATA *provider = WTHelperProvDataFromStateData(wd.hWVTStateData);
+        CRYPT_PROVIDER_SGNR *signer = provider != nullptr
+            ? WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0) : nullptr;
+        if (signer != nullptr)
+        {
+            verified_at = signer->sftVerifyAsOf;
+            have_time = true;
+        }
+    }
     wd.dwStateAction = WTD_STATEACTION_CLOSE;
     WinVerifyTrust(nullptr, &action, &wd);
-    if (status != ERROR_SUCCESS)
+    if (status != ERROR_SUCCESS || !have_time)
         return false;
 
     // ---- the signer, through the machine-root chain -------------------
@@ -213,7 +241,7 @@ static bool NsTrustedDllHeld(const wchar_t *path, HANDLE hold)
     if (!signer_ok)
     { CertFreeCertificateContext(leaf); CertCloseStore(store, 0); return false; }
 
-    bool chain_ok = NsChainMachineRootsOnly(leaf);
+    bool chain_ok = NsChainMachineRootsOnly(leaf, &verified_at, store);
     CertFreeCertificateContext(leaf);
     CertCloseStore(store, 0);
     if (!chain_ok) return false;

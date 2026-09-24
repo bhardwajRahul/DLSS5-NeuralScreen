@@ -48,7 +48,7 @@ static std::vector<unsigned char> read(ID3D11Texture2D *t, UINT bpp)
     ctx->Unmap(staging.Get(),0); return bytes;
 }
 static void dispatch(const char *shader, std::vector<ID3D11Texture2D*> inputs,
-                     ID3D11Texture2D *out, const void *constants)
+                     ID3D11Texture2D *out, const void *constants, UINT size=16)
 {
     ComPtr<ID3DBlob> code,errors;
     HRESULT result=D3DCompile(shader,strlen(shader),"hdr-test",nullptr,nullptr,"CSMain","cs_5_0",
@@ -60,8 +60,12 @@ static void dispatch(const char *shader, std::vector<ID3D11Texture2D*> inputs,
     std::vector<ID3D11ShaderResourceView*> ptrs;
     for(size_t i=0;i<inputs.size();++i) { hr(dev->CreateShaderResourceView(inputs[i],nullptr,&views[i])); ptrs.push_back(views[i].Get()); }
     ComPtr<ID3D11UnorderedAccessView> uav; hr(dev->CreateUnorderedAccessView(out,nullptr,&uav));
-    D3D11_BUFFER_DESC bd={}; bd.ByteWidth=16; bd.Usage=D3D11_USAGE_DEFAULT; bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
-    D3D11_SUBRESOURCE_DATA data={constants,0,0}; ComPtr<ID3D11Buffer> cb; hr(dev->CreateBuffer(&bd,&data,&cb));
+    // A constant buffer is whole 16-byte registers: `size` is the caller's
+    // struct, padded with zeroes (a field the caller does not pass reads 0).
+    std::array<unsigned char,32> bytes{}; check(size<=bytes.size(),"constants too large");
+    memcpy(bytes.data(),constants,size);
+    D3D11_BUFFER_DESC bd={}; bd.ByteWidth=(size+15)/16*16; bd.Usage=D3D11_USAGE_DEFAULT; bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SUBRESOURCE_DATA data={bytes.data(),0,0}; ComPtr<ID3D11Buffer> cb; hr(dev->CreateBuffer(&bd,&data,&cb));
     ctx->CSSetShader(cs.Get(),nullptr,0); ctx->CSSetConstantBuffers(0,1,cb.GetAddressOf());
     ctx->CSSetShaderResources(0,(UINT)ptrs.size(),ptrs.data());
     ctx->CSSetUnorderedAccessViews(0,1,uav.GetAddressOf(),nullptr);
@@ -92,6 +96,19 @@ int main()
         dispatch(kHdrCompositeHlsl,{native.Get(),proxy.Get(),proxy.Get()},result.Get(),&comp);
         auto unchanged=read(result.Get(),8);
         check(memcmp(unchanged.data(),raw.data(),unchanged.size())==0,"zero edit must preserve original FP16 bit for bit");
+        // Landscape (flipped): both proxies come off the capture turned over,
+        // so the native frame must be read turned over too (issue #47) - with
+        // a zero edit the output is the capture rotated 180, bit for bit.
+        {
+            struct { float white; UINT bypass,split,hdr,rotate180; } rot={2.5f,0,UINT_MAX,1,1};
+            dispatch(kHdrCompositeHlsl,{native.Get(),proxy.Get(),proxy.Get()},result.Get(),&rot,sizeof(rot));
+            auto turned=read(result.Get(),8);
+            bool exact=true;
+            for(UINT y=0;y<H;++y) for(UINT x=0;x<W;++x)
+                exact=exact && memcmp(turned.data()+(y*W+x)*8,
+                                      raw.data()+((H-1-y)*W+(W-1-x))*4,8)==0;
+            check(exact,"with rotate180 the composite must read the native frame turned over, like the proxies");
+        }
         // A window resizing under HDR: the capture changes size before the
         // output does, and the composite runs on the mismatched pair until the
         // client resizes (PresentHdr). Larger capture: the output is its
@@ -255,7 +272,7 @@ int main()
         cap.hdr=0;
         auto display=QueryHdrDisplay(MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY));
         printf("Display probe: HDR=%d, SDR white=%.1f nits\n",display.enabled,display.white*80);
-        puts("PASS: HDR shader compilation, highlights, signed gamut, zero-edit identity, capture/output size mismatch (clipped, filled), bypass, wipe, finite edits, SDR output, channel order, 180 rotation and SDR-FP16 white (#99) (WARP)");
+        puts("PASS: HDR shader compilation, highlights, signed gamut, zero-edit identity, capture/output size mismatch (clipped, filled), bypass, wipe, finite edits, SDR output, channel order, 180 rotation in capture and composite (#47) and SDR-FP16 white (#99) (WARP)");
         return 0;
     } catch(const std::exception &e) { fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
 }

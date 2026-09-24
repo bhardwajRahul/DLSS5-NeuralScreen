@@ -545,7 +545,11 @@ static bool InitDirectNr(const wchar_t *data_path)
             }
             else
             {
-                dll_name = candidate;
+                // Copied into the function's own buffer, as the NS_NR_DLL
+                // branch does: `candidate` ends with this block, and the
+                // load below runs after it.
+                wcscpy_s(dll_path, candidate);
+                dll_name = dll_path;
                 Log("[pure] NR runtime from native\\libraries\\ (BYO, verified)");
             }
         }
@@ -1038,7 +1042,57 @@ static void SafeReleaseFeature(NVSDK_NGX_Handle *f)
 }
 
 typedef HRESULT (WINAPI *PFN_D3D12CreateDevice_)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
+typedef HRESULT (WINAPI *PFN_D3D12GetDebugInterface_)(REFIID, void **);
 typedef HRESULT (WINAPI *PFN_CreateDXGIFactory1_)(REFIID, void **);
+
+// DRED breadcrumbs: when the device is removed (TDR on Win10, issue #1) the
+// reason code and the faulting command list are the only way to tell WHERE it
+// died. Without them the log says only "code 6" and the user cannot help. The
+// device itself is queried for the breadcrumbs at the failure site
+// (LogDeviceRemoved).
+//
+// The settings belong to the D3D12 runtime, not to a device: they come from
+// D3D12GetDebugInterface (they are not the debug layer and do not turn it on)
+// and apply to the devices created AFTER them. They used to be asked of the
+// device once it existed, which no Windows answers - "DRED settings
+// unavailable (settings1=0x80004002, settings=0x80004002)" in every log, and
+// a removed device with nothing behind its reason code.
+static void EnableDred(HMODULE d3d12)
+{
+    auto get_debug = d3d12 ? reinterpret_cast<PFN_D3D12GetDebugInterface_>(
+                                 GetProcAddress(d3d12, "D3D12GetDebugInterface")) : nullptr;
+    if (get_debug == nullptr)
+    {
+        Log("[host] DRED settings unavailable (no D3D12GetDebugInterface)");
+        return;
+    }
+    ID3D12DeviceRemovedExtendedDataSettings1 *dred1 = nullptr;
+    const HRESULT hr1 = get_debug(__uuidof(ID3D12DeviceRemovedExtendedDataSettings1),
+                                  reinterpret_cast<void **>(&dred1));
+    if (SUCCEEDED(hr1) && dred1 != nullptr)
+    {
+        dred1->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        dred1->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        dred1->Release();
+        Log("[host] DRED breadcrumbs enabled (settings1)");
+        return;
+    }
+    // Older SDKs / OS builds: the v1 settings interface.
+    ID3D12DeviceRemovedExtendedDataSettings *dred = nullptr;
+    const HRESULT hr0 = get_debug(__uuidof(ID3D12DeviceRemovedExtendedDataSettings),
+                                  reinterpret_cast<void **>(&dred));
+    if (SUCCEEDED(hr0) && dred != nullptr)
+    {
+        dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        dred->Release();
+        Log("[host] DRED breadcrumbs enabled (settings)");
+        return;
+    }
+    // Pre-1903 Windows 10: the settings interface does not exist.
+    Log("[host] DRED settings unavailable (settings1=0x%08X, settings=0x%08X)",
+        (unsigned)hr1, (unsigned)hr0);
+}
 
 // --test and the feed mode have no window of their own any more, but this
 // thread still owns a message queue (COM and the driver can post to it), so it
@@ -1119,6 +1173,8 @@ static bool InitDisguise()
     auto create_device  = d3d12 ? reinterpret_cast<PFN_D3D12CreateDevice_>(GetProcAddress(d3d12, "D3D12CreateDevice")) : nullptr;
     auto create_factory = dxgi ? reinterpret_cast<PFN_CreateDXGIFactory1_>(GetProcAddress(dxgi, "CreateDXGIFactory1")) : nullptr;
     if (create_device == nullptr || create_factory == nullptr) { Log("[host] dxgi/d3d12 exports missing"); return false; }
+    // Before the device exists: DRED applies to the devices created after it.
+    EnableDred(d3d12);
 
     IDXGIFactory2 *factory = nullptr;
     HRESULT hr = create_factory(__uuidof(IDXGIFactory2), reinterpret_cast<void **>(&factory));
@@ -1181,45 +1237,6 @@ static bool InitDisguise()
                        reinterpret_cast<void **>(&h.dev));
     nvidia->Release();
     if (FAILED(hr)) { Log("[host] D3D12CreateDevice failed 0x%08X", hr); return false; }
-
-    // DRED breadcrumbs: when the device is removed (TDR on Win10, issue #1)
-    // the reason code and the faulting command list are the only way to tell
-    // WHERE it died. Without them the log says only "code 6" and the user
-    // cannot help. Enable the settings interface before any work is
-    // submitted; the device itself is queried for the breadcrumbs at the
-    // failure site (BeginCommands).
-    {
-        ID3D12DeviceRemovedExtendedDataSettings1 *dred1 = nullptr;
-        const HRESULT hr1 = h.dev->QueryInterface(__uuidof(ID3D12DeviceRemovedExtendedDataSettings1),
-                                                  reinterpret_cast<void **>(&dred1));
-        if (SUCCEEDED(hr1))
-        {
-            dred1->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-            dred1->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-            dred1->Release();
-            Log("[host] DRED breadcrumbs enabled (settings1)");
-        }
-        else
-        {
-            // Older SDKs / OS builds: the v1 settings interface.
-            ID3D12DeviceRemovedExtendedDataSettings *dred = nullptr;
-            const HRESULT hr0 = h.dev->QueryInterface(__uuidof(ID3D12DeviceRemovedExtendedDataSettings),
-                                                      reinterpret_cast<void **>(&dred));
-            if (SUCCEEDED(hr0))
-            {
-                dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-                dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-                dred->Release();
-                Log("[host] DRED breadcrumbs enabled (settings)");
-            }
-            else
-            {
-                // Pre-1903 Windows 10: the settings interface does not exist.
-                Log("[host] DRED settings unavailable (settings1=0x%08X, settings=0x%08X)",
-                    (unsigned)hr1, (unsigned)hr0);
-            }
-        }
-    }
 
     factory->Release();
     D3D12_COMMAND_QUEUE_DESC qd = {};
@@ -2237,6 +2254,9 @@ static int                        g_present_x = 0;
 static int                        g_present_y = 0;
 static std::atomic<bool>          g_present_shown{false};      // shared with the FG presenter
 static std::atomic<bool>          g_present_revealed{false};   // the first Present already happened
+// The output no longer has the overlay's size (PresentModeActive): hidden
+// until it has again, and nothing may show it before then.
+static std::atomic<bool>          g_present_mismatch{false};
 static RECT                       g_present_follow = {};   // where the target window was last seen
 // Defined here rather than with the capture code below: the present window
 // has to know whether one window is being captured, and which one, and this
@@ -2409,6 +2429,7 @@ static void ClosePresent()
     // logic must run again (user: blank flash on mode switches).
     g_present_shown = false;
     g_present_revealed = false;
+    g_present_mismatch = false;
     // A fresh swap chain knows nothing about its colour space either.
     g_present_space_set = false;
     g_present_space = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
@@ -2504,6 +2525,8 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     return true;
 }
 
+static bool ShowPresentBelowPanel();   // defined next to RevealOnFirstPresent
+
 // True when the result can go straight to the overlay instead of the client.
 static bool PresentModeActive(const VideoState &v)
 {
@@ -2522,9 +2545,32 @@ static bool PresentModeActive(const VideoState &v)
         // A size change makes the overlay stale, not the pipeline: the client
         // rebuilds on its own when the window moves/resizes, and a one-time
         // warning is enough. The overlay must stay hidden rather than show a
-        // stale-sized picture (audit C++ M1).
+        // stale-sized picture (audit C++ M1) - hidden, not just marked so:
+        // clearing the flag alone left the last frame frozen on screen, and
+        // in window mode FollowCapturedWindow took the cleared flag for a
+        // minimise and showed the window again on the next frame.
+        g_present_mismatch = true;
+        if (g_present_shown && g_present_hwnd != nullptr)
+        {
+            ShowWindow(g_present_hwnd, SW_HIDE);
+            Log("[present] the overlay is hidden until the output has its size again");
+        }
         g_present_shown = false;
         return false;
+    }
+    if (g_present_mismatch)
+    {
+        g_present_mismatch = false;
+        // Desktop mode has no follower to bring it back, so it comes back
+        // here - below the panel, like every re-show. Window mode leaves it
+        // to FollowCapturedWindow, which also knows about a minimised target.
+        if (!g_wgc_active && !g_present_shown && g_present_hwnd != nullptr
+            && g_present_revealed)
+        {
+            if (!ShowPresentBelowPanel()) ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
+            g_present_shown = true;
+            Log("[present] the output has the overlay's size again - shown");
+        }
     }
     return true;
 }
@@ -2538,7 +2584,6 @@ static bool PresentModeActive(const VideoState &v)
 // shared memory are all built for one frame size, so a resize means rebuilding
 // the pipeline, which only the client can do. Until it does, the picture keeps
 // the old size in the corner of the window.
-static bool ShowPresentBelowPanel();   // defined next to RevealOnFirstPresent
 static void FollowCapturedWindow()
 {
     if (!g_wgc_active || g_present_hwnd == nullptr || g_wgc_hwnd == nullptr) return;
@@ -2564,48 +2609,43 @@ static void FollowCapturedWindow()
                                      &r, sizeof(r))) &&
         !GetWindowRect(g_wgc_hwnd, &r))
         return;
-    if (!g_present_shown && g_present_revealed)
+    // Follow the size, but never stretch stale content. Two failure modes
+    // measured on the real path (user, 14.09):
+    //   * SWP_NOSIZE (the old behaviour): after a shrink the window's
+    //     bottom/right part hung over the desktop with stale pixels - the
+    //     trail of copies.
+    //   * following the size with the OLD buffer (the first attempt): the
+    //     compositor stretched the old-size capture into the new rect and
+    //     kept re-stretching it at every intermediate drag size - the
+    //     picture shimmered for the whole stability wait.
+    // So the window keeps the buffer's own size, and a buffer that is
+    // SMALLER than the target sits in its top-left corner, inside the rect.
+    // A buffer that is LARGER cannot be shown at all without one of the two:
+    // it used to be placed anyway - the origin "clamp" moved it left and then
+    // straight back, so it hung past the right and bottom edges, the trail of
+    // copies again. Until the client's live resize lands the new size, the
+    // overlay gets out of the way, as it does for a minimised window.
+    const UINT bw = g_present_w, bh = g_present_h;
+    const UINT rw = (UINT)(r.right - r.left), rh = (UINT)(r.bottom - r.top);
+    if (bw > rw || bh > rh)
     {
-        const bool below = ShowPresentBelowPanel();
-        if (!below) ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
-        g_present_shown = true;
-        Log("[wgc] the window is back - the overlay is shown (%s)",
-            below ? "below the panel" : "on top - no usable panel handle");
+        if (g_present_shown)
+        {
+            ShowWindow(g_present_hwnd, SW_HIDE);
+            g_present_shown = false;
+            Log("[wgc] the window is smaller than the picture (%ux%u) - the "
+                "overlay is hidden until the resize lands", bw, bh);
+        }
+        return;
     }
     if (r.left != g_present_follow.left || r.top != g_present_follow.top ||
         r.right != g_present_follow.right || r.bottom != g_present_follow.bottom)
     {
         g_present_follow = r;
-        // Follow the size, but never stretch stale content. Two failure
-        // modes measured on the real path (user, 14.09):
-        //   * SWP_NOSIZE (the old behaviour): after a shrink the window's
-        //     bottom/right part hung over the desktop with stale pixels -
-        //     the trail of copies.
-        //   * following the size with the OLD buffer (the first attempt):
-        //     the compositor stretched the old-size capture into the new
-        //     rect and kept re-stretching it at every intermediate drag
-        //     size - the picture shimmered for the whole stability wait.
-        // The resolution: follow the size only when the buffer already
-        // matches the window (g_present_w/h == the rect), otherwise keep
-        // the buffer-sized window but clamp its rect to the target's, so
-        // no part of it hangs outside the window being followed. The live
-        // resize lands the exact size either way.
-        const UINT bw = g_present_w, bh = g_present_h;
-        const bool buffer_matches =
-            bw == (UINT)(r.right - r.left) && bh == (UINT)(r.bottom - r.top);
-        int left = r.left, top = r.top;
-        UINT w = r.right - r.left, hgt = r.bottom - r.top;
-        if (!buffer_matches)
-        {
-            // Stale content: keep the buffer's own size, clamp the origin
-            // so the window never extends past the target's rect.
-            w = bw;
-            hgt = bh;
-            if (left + (int)w > r.right) left = r.right - (int)w;
-            if (top + (int)hgt > r.bottom) top = r.bottom - (int)hgt;
-            if (left < r.left) left = r.left;
-            if (top < r.top) top = r.top;
-        }
+        // The buffer fits: its own size (the exact size once the live resize
+        // has landed), in the target's top-left corner.
+        const int left = r.left, top = r.top;
+        const UINT w = bw, hgt = bh;
         // A move, never a raise: the window keeps its place inside the
         // topmost band (SWP_NOZORDER), and the raise stays the client HUD
         // raise's business (P3 ownership). The previous shape had this
@@ -2617,6 +2657,17 @@ static void FollowCapturedWindow()
         // even the NR UI").
         SetWindowPos(g_present_hwnd, nullptr, left, top, w, hgt,
                      SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+    // Shown only once it is in place (it used to come back one frame at the
+    // position it was hidden from), and never while the output does not have
+    // its size (PresentModeActive keeps it hidden until it does).
+    if (!g_present_shown && g_present_revealed && !g_present_mismatch)
+    {
+        const bool below = ShowPresentBelowPanel();
+        if (!below) ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
+        g_present_shown = true;
+        Log("[wgc] the window is back - the overlay is shown (%s)",
+            below ? "below the panel" : "on top - no usable panel handle");
     }
 }
 
@@ -5305,7 +5356,8 @@ static void CloseWgc()
     // Back to the desktop as the input: hide again or the pipeline would
     // capture its own output.
     ApplyPresentAffinity();
-    if (!g_present_shown && g_present_hwnd != nullptr && g_present_revealed)
+    if (!g_present_shown && g_present_hwnd != nullptr && g_present_revealed
+        && !g_present_mismatch)
     {
         // It was hidden because the target was minimised; the next mode must
         // not inherit an invisible overlay. Only after the first Present:
