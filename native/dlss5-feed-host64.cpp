@@ -2475,6 +2475,13 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     sd.BufferCount = 3;
     sd.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.AlphaMode   = DXGI_ALPHA_MODE_IGNORE;
+    // The waitable object exists only on a chain CREATED with this flag, and
+    // ResizeBuffers keeps whatever the chain was created with - it cannot be
+    // added later. Without it FgStart's SetMaximumFrameLatency(1) was refused
+    // and the FG presenter always fell back to the clock. Created with it, the
+    // chain's latency is 1, which is what flickered the ordinary path in R13;
+    // it goes back to the default 3 right after the create, below.
+    sd.Flags       = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     IDXGISwapChain1 *sc1 = nullptr;
     // The swapchain must be created on the very queue that will write the back
     // buffer, which is the same queue NGX submits on.
@@ -2497,7 +2504,14 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     IDXGISwapChain2 *sc2 = nullptr;
     hr = sc1->QueryInterface(__uuidof(IDXGISwapChain2), reinterpret_cast<void **>(&sc2));
     if (SUCCEEDED(hr) && sc2 != nullptr)
+    {
+        // The default a chain without the waitable flag has - see sd.Flags.
+        const HRESULT latency = sc2->SetMaximumFrameLatency(3);
+        if (FAILED(latency))
+            Log("[present] the default frame latency was refused 0x%08X",
+                static_cast<unsigned>(latency));
         sc2->Release();
+    }
     CloseFgWaitable();
     hr = sc1->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&g_present_swap));
     sc1->Release();

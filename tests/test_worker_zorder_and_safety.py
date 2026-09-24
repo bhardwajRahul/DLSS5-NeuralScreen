@@ -105,6 +105,16 @@ def main() -> int:
                         "the presenter can miss it and join() blocks for good")
     if re.search(r"~FgState\(\)\s*\{\s*stop\s*=\s*true", fg):
         failures.append("~FgState stores `stop` outside the mutex")
+    # ...and the chain can hand the presenter its latency waitable: created
+    # with the flag, and put back on the default latency for the ordinary path
+    present = _code(_body(cpp, "static bool OpenPresent(UINT width, UINT height, uint32_t flags)"))
+    if "DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT" not in present:
+        failures.append("the overlay chain is created without the latency "
+                        "waitable - FgStart's SetMaximumFrameLatency(1) is "
+                        "refused and FG pacing always falls back to the clock")
+    elif "SetMaximumFrameLatency(3)" not in present:
+        failures.append("the chain created with the waitable is left at "
+                        "latency 1 - the ordinary present path flickers (R13)")
 
     # 6. split UAV cache
     release = _code(_body(cpp, "static void ReleaseVideoTextures(VideoState &v)"))

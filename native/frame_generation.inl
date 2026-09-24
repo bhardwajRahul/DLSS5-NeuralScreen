@@ -462,9 +462,10 @@ static bool EnsureFg(VideoState &v, DXGI_FORMAT format)
         {
             // Both calls need a swap chain created with
             // DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT; without it
-            // they refuse and there is no handle. The log used to say "paced
-            // by the compositor" either way, and the chain is created without
-            // the flag - so it now says which pacing actually runs.
+            // they refuse and there is no handle. OpenPresent creates the
+            // chain with it (and puts the ordinary path back on latency 3);
+            // the log still says which pacing actually runs, in case a driver
+            // refuses anyway.
             CloseFgWaitable();
             const HRESULT latency = sc2->SetMaximumFrameLatency(1);
             if (SUCCEEDED(latency)) g_fg_waitable = sc2->GetFrameLatencyWaitableObject();
