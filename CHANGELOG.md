@@ -8,7 +8,7 @@ in UTC, not the tag timestamps.
 
 Scope and honesty notes:
 
-* The list starts at `v1.0.0` and ends at `v2.1.3`; every tag in that range has a
+* The list starts at `v1.0.0` and ends at `v2.1.4`; every tag in that range has a
   published GitHub release. GitHub returns more releases than the tag count
   because the count includes the tags listed as out of scope below.
   The tag `v0.1.0-alpha` (2026-09-06) is **not** part of this history: it is a tag
@@ -29,6 +29,59 @@ Scope and honesty notes:
   (the early releases carried a different set - see the individual entries).
 
 ---
+
+## v2.1.4 - 2026-09-24 - the fixes from PR #124
+
+Patch release on the v2.1 line, built from a contribution (PR #124): fixes across
+the worker, the converter, the panel and the log, including the frame generation
+pacing that silently never ran.
+
+* **Frame generation is paced by the compositor now.** FG was to wait for the
+  compositor to release the previous back buffer instead of presenting on
+  wall-clock deadlines, and it never did: `SetMaximumFrameLatency(1)` and
+  `GetFrameLatencyWaitableObject` work only on a swap chain created with
+  `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`, and the chain was created
+  without it. v2.1.2 only made the log admit the fallback. The chain starts at
+  latency 3 and only an FG session takes it to 1, restoring 3 when it stops - a
+  chain created with the flag starts at 1, which is what flickered the ordinary
+  NR path in the R13 attempt. `ResizeBuffers` passes the chain's own flags back,
+  so the flag survives an HDR switch. Confirmed live:
+  `[fg] the presenter is paced by the compositor (latency 1)`.
+* **Six defects in the native worker:** the BYO runtime was loaded through a
+  pointer into a buffer that was dead by the `LoadLibraryW` call; the DRED
+  settings were asked of the created device, which no Windows answers, so every
+  log said `unavailable (0x80004002)` and a removed device had nothing behind its
+  reason code (they come from `D3D12GetDebugInterface` and were moved before
+  `D3D12CreateDevice`); in window mode an oversized picture hung past the window's
+  right and bottom edges because the clamp moved it left and straight back; a size
+  mismatch left the last frame frozen on screen and in window mode came back every
+  frame; the HDR composite on a "Landscape (flipped)" display (#47) read the
+  native frame the right way up while the capture shader turned it over, giving an
+  upside-down double image; and the DLL signature gate built its chain at the
+  current time and without the signature's own certificates, so a timestamped
+  NVIDIA DLL whose certificate has expired was refused as not NVIDIA-signed.
+* **A converted photo or video is seen the way its source is.** EXIF orientation
+  is applied and removed from the EXIF written back; a photo's colour profile
+  carries into the output; a 16-bit grey image is scaled instead of clipped
+  (Pillow's `I;16` to RGBA took everything above 255 as white - a ramp measured
+  99.6% white); a video's display matrix is read from the first frame and set on
+  the output stream. A portrait still that fits on its side now goes through
+  turned and comes back upright instead of failing as "the network stopped" (the
+  worker's 7680x4320 limit is a landscape shape and the converter never asked);
+  a file too large both ways is refused up front, in all twelve languages.
+* **The panel:** the window recreated when a fullscreen game changes the display
+  mode kept a third copy of the theme restore, accepted light and dark only, and
+  reverted contrast on the next save; it also took the panel height from the dying
+  window and never gave it back. The show-yourself message was `0x8000 + 0x4E53`,
+  called `WM_APP` - which ends at `0xBFFF`, while `0xC000-0xFFFF` is where
+  `RegisterWindowMessage` hands numbers to every program in the session; it is a
+  registered name now.
+* **The log stops growing without a bound.** A user's log reached 7.8 MB and
+  81,768 lines in two and a half days, almost all of it heartbeat lines; a start
+  now moves a log past 8 MB to `NeuralScreen.log.1`.
+* New or extended tests, each failing on v2.1.3: `test_convert_orientation`,
+  `test_log_rotation`, `test_single_instance_message`, `test_theme_rebuild`,
+  `test_worker_zorder_and_safety`.
 
 ## v2.1.3 - 2026-09-23 - conversion speed, a contrast theme, and mini mode
 
