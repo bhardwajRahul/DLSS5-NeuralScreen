@@ -22,8 +22,10 @@ native/nvngx_dlssnr.dll
 # Optional local Python runtime next to the program
 runtime/
 
-# Program log (pythonw launch without a console)
+# Program log (pythonw launch without a console), and the one a start moved
+# aside when it grew too large (startup._rotate_log)
 NeuralScreen.log
+NeuralScreen.log.1
 
 # The worker's own log, written next to the binary. It appears whenever the
 # worker runs directly - `nvngx.dll --test` writes one every time - and it was

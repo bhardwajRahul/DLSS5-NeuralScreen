@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -62,6 +63,29 @@ from tray import TrayController
 # and the like) are additionally shown in a message box (see the bottom of
 # this file).
 LOG_PATH = BASE_DIR / "NeuralScreen.log"
+
+#: NeuralScreen.log is appended to by every run and was never trimmed: one
+#: user's reached 7.8 MB in two and a half days, most of it the NR and FG
+#: heartbeats. Past this size a start moves it aside to NeuralScreen.log.1
+#: (replacing the previous one) and begins a new file - two files at most,
+#: and the current one is the one a support bundle reads.
+LOG_ROTATE_BYTES = 8 * 1024 * 1024
+
+
+def _rotate_log(path: Path = LOG_PATH, limit: int = LOG_ROTATE_BYTES) -> bool:
+    """Move an oversized log aside before it is opened; True if it was moved.
+
+    A second copy of the program gets here too - the single-instance check
+    comes after the log - while the first copy holds the file open. Windows
+    refuses the rename then, and the file is simply kept.
+    """
+    try:
+        if path.stat().st_size < limit:
+            return False
+        os.replace(path, path.with_name(path.name + ".1"))
+        return True
+    except OSError:
+        return False
 
 
 # Every line in the log carries the time it was written.
@@ -110,6 +134,7 @@ class _StampedLog:
 
 def _init_logging() -> None:
     """Redirect stdout/stderr into NeuralScreen.log (utf-8), with timestamps."""
+    _rotate_log()
     try:
         log_file = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
         sys.stdout = _StampedLog(log_file)

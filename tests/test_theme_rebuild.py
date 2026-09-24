@@ -194,10 +194,13 @@ def main() -> int:
     #    do it again: scan the sources for a two-name theme whitelist
     #    (`in ("light", "dark")` and its list spelling) instead of trusting
     #    the reader to notice. The canonical three-name tuple in settings_io
-    #    is the one this test wants, so it is not matched here.
+    #    is the one this test wants, so it is not matched here. main.py is
+    #    scanned too: its window-recreate path (a fullscreen game changing
+    #    the display mode) keeps a third copy of the restore, and v2.1.3
+    #    shipped it with the two-name list after the app/ copies were fixed.
     stale = []
     pair = re.compile(r"""[([]\s*["']light["']\s*,\s*["']dark["']\s*[)\]]""")
-    for path in sorted((BASE / "app").glob("*.py")):
+    for path in sorted((BASE / "app").glob("*.py")) + [BASE / "main.py"]:
         text = path.read_text(encoding="utf-8")
         for lineno, line in enumerate(text.splitlines(), 1):
             code = line.split("#", 1)[0]
@@ -206,6 +209,19 @@ def main() -> int:
     if stale:
         failures.append("a theme whitelist is duplicated again (use "
                         "settings_io.THEME_NAMES): " + "; ".join(stale))
+
+    # 8. The same recreate path in main.py snapshots the panel height into
+    #    cfg before the window dies; it has to give it back to the new menu
+    #    as rebuild_pipeline does, or the next save_menu_layout writes
+    #    menu_height null over the height the user dragged.
+    main_text = (BASE / "main.py").read_text(encoding="utf-8")
+    recreate = main_text.split("recreating the window", 1)[-1][:6000]
+    if 'st.cfg["menu_height"]' not in recreate:
+        failures.append("main.py's window recreate no longer snapshots the "
+                        "panel height - update this check")
+    elif "st.display.menu.user_height = int(saved_height)" not in recreate:
+        failures.append("main.py's window recreate snapshots the panel height "
+                        "but never gives it back to the new menu")
 
     for f in failures:
         print("FAIL:", f)

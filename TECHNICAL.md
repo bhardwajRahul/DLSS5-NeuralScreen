@@ -243,6 +243,15 @@ the queue in `convert_jobs.py`):
 - Output goes to a `.partial` name first and is published when complete, as a
   recording is; the format is named explicitly because neither Pillow nor PyAV
   can guess it from that suffix.
+- **A converted file is seen the way its source is.** A still is turned by its
+  EXIF orientation before it goes in - a phone stores a portrait photo as
+  landscape pixels and a "turn me" tag - and keeps its colour profile and EXIF;
+  a 16-bit grey image is scaled to 8 bits, where Pillow's own conversion clips
+  it to white. A video keeps its display matrix: the frames go through as they
+  are stored, and the file says how to turn them, as the source did. The
+  worker takes frames up to 7680x4320, a landscape shape, so a portrait still
+  taller than 4320 goes through on its side and comes back upright; a file too
+  large both ways is refused with a sentence that says so.
 - **A frame does not travel through a pipe, and the stages overlap.** The
   conversion worker takes the same three channels the live pipeline does: the
   frame through shared memory (`SHMI`), the result back through a second
@@ -465,6 +474,9 @@ stage and HRESULT/SEH/DRED markers, plus an allow-list of product settings
 (each value bounded; no paths, presets or hotkeys). It excludes the environment
 dump; usernames, secrets, absolute user paths, other programs' window titles
 and the names of files the conversion queue refused are redacted.
+`NeuralScreen.log` itself is moved aside to `NeuralScreen.log.1` at startup
+once it passes 8 MB, so it keeps the latest sessions and does not grow without
+end.
 
 ## Performance
 
@@ -837,7 +849,9 @@ build drops into `native/libraries/`.
 The NR and FG runtimes ship in the archive. A user-supplied build in
 `native/libraries/` takes priority over `native/`; an NR BYO file is checked for
 an NVIDIA signature and product identity before it is mapped, otherwise the
-bundled copy remains the fallback. There is no network updater or downloader.
+bundled copy remains the fallback. The signature is judged as of its
+timestamp, as Windows judges it, so a DLL whose certificate has expired since
+it was signed still passes. There is no network updater or downloader.
 
 ## Reproducible release contract
 

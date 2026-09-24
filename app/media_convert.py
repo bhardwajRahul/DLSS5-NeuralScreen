@@ -462,6 +462,93 @@ def _as_rgba(array: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(array, dtype=np.uint8)
 
 
+#: The largest frame the worker takes: its stream header refuses a width over
+#: 7680 or a height over 4320 (RunVideo in dlss5-feed-host64.cpp) - a
+#: landscape shape, so a portrait 4000x6000 is refused while it has fewer
+#: pixels than the limit.
+WORKER_MAX_W, WORKER_MAX_H = 7680, 4320
+
+#: Pillow formats that carry a colour profile and EXIF when saving.
+_META_FORMATS = ("JPEG", "PNG", "WEBP", "TIFF")
+
+
+def _load_image(handle) -> tuple[np.ndarray, dict]:
+    """The still as it is meant to be seen (HxWx4 uint8), and what to save back.
+
+    Three things the pixels alone do not say:
+
+      * The EXIF orientation. A phone stores a portrait photo as landscape
+        pixels and a tag that says "turn me", every viewer honours the tag,
+        and the converted file - written without it - showed the result
+        sideways. exif_transpose applies it and takes the tag out of the
+        EXIF it hands back, so the saved copy is not turned twice.
+      * 16-bit greys. Pillow's I;16 -> RGBA conversion clips every value
+        above 255 rather than scaling it: a 16-bit PNG came out 99.6% white.
+      * The colour profile and the EXIF, which go back into the output: a
+        Display P3 photo saved without its profile is read as sRGB and
+        looks washed out.
+    """
+    from PIL import ImageOps
+
+    image = ImageOps.exif_transpose(handle)
+    keep = {}
+    icc = image.info.get("icc_profile")
+    if icc:
+        keep["icc_profile"] = icc
+    exif = image.info.get("exif")
+    if exif:
+        keep["exif"] = exif
+    if image.mode.startswith("I;16") or image.mode == "I":
+        grey = np.asarray(image).astype(np.int64)
+        # "I" is 32-bit and holds 8-bit greys as often as 16-bit ones.
+        if image.mode.startswith("I;16") or grey.max(initial=0) > 255:
+            grey = (np.clip(grey, 0, 65535) * 255 + 32767) // 65535
+        return _as_rgba(np.clip(grey, 0, 255).astype(np.uint8)), keep
+    return _as_rgba(np.asarray(image.convert("RGBA"))), keep
+
+
+def _quarter_turns_to_fit(width: int, height: int) -> int:
+    """0 if the worker takes the frame as it is, 1 if it takes it turned.
+
+    A portrait frame taller than 4320 fits the worker's landscape-shaped
+    limit on its side - which is also the way a phone stored it before the
+    EXIF turn - so it goes through turned and comes back upright. Only a
+    frame that fits neither way is refused, and with a sentence that says so.
+    """
+    if width <= WORKER_MAX_W and height <= WORKER_MAX_H:
+        return 0
+    if height <= WORKER_MAX_W and width <= WORKER_MAX_H:
+        return 1
+    raise ConversionError(
+        "too_large", f"{width}x{height} is larger than the "
+                     f"{WORKER_MAX_W}x{WORKER_MAX_H} the worker processes")
+
+
+def _display_rotation(source: Path) -> int:
+    """The turn a player gives the source's picture, in degrees (0 if none).
+
+    A phone stores a portrait video as landscape frames and a display matrix
+    that says "turn me"; the frames decode as stored. The matrix belongs to
+    the stream, and the converted file - a new stream - came out without it:
+    a portrait clip played sideways. PyAV reports it on the decoded frame
+    (counter-clockwise, -180..180, FFmpeg's convention), so the first frame
+    is decoded once, from its own handle, to learn it before the output's
+    header is written.
+    """
+    import av
+
+    try:
+        with av.open(str(source)) as probe:
+            stream = next((s for s in probe.streams if s.type == "video"), None)
+            if stream is None:
+                return 0
+            for frame in probe.decode(stream):
+                return int(round(float(frame.rotation or 0)))
+    except Exception as exc:
+        print(f"[convert] display rotation not read ({exc})", file=sys.stderr)
+    return 0
+
+
 def _check(cancel: threading.Event | None) -> None:
     if cancel is not None and cancel.is_set():
         raise ConversionCancelled("cancelled")
@@ -499,7 +586,7 @@ def convert_image(source: Path, output: Path, params: dict, *,
     try:
         with Image.open(source) as handle:
             handle.load()
-            frame = _as_rgba(np.asarray(handle.convert("RGBA")))
+            frame, keep = _load_image(handle)
     except Exception as exc:
         raise ConversionError("decode", exc) from exc
 
@@ -507,12 +594,16 @@ def convert_image(source: Path, output: Path, params: dict, *,
     if width < 64 or height < 64:
         raise ConversionError(
             "decode", f"{width}x{height} is below the 64x64 the worker accepts")
-    work_w, work_h = processing_size(width, height, work_scale, nr_small,
+    turns = _quarter_turns_to_fit(width, height)
+    if turns:
+        frame = np.ascontiguousarray(np.rot90(frame, turns))
+    proc_h, proc_w = frame.shape[0], frame.shape[1]
+    work_w, work_h = processing_size(proc_w, proc_h, work_scale, nr_small,
                                      nr_passes)
     _check(cancel)
 
     say("starting", 0, 1, f"{width}x{height}")
-    with _Engine(params, width, height, work_w, work_h, nr_passes) as engine:
+    with _Engine(params, proc_w, proc_h, work_w, work_h, nr_passes) as engine:
         _check(cancel)
         say("processing", 0, 1, f"{width}x{height}")
         # The field is zeros either way; its SHAPE is the worker's, which
@@ -528,6 +619,8 @@ def convert_image(source: Path, output: Path, params: dict, *,
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         out = np.ascontiguousarray(pixels)[:, :, :3]
+        if turns:
+            out = np.ascontiguousarray(np.rot90(out, -turns))
         image = Image.fromarray(out, mode="RGB")
         # The partial name is the recorder's rule, for the recorder's reason:
         # a file that exists is a file someone will open, and a conversion
@@ -538,10 +631,11 @@ def convert_image(source: Path, output: Path, params: dict, *,
         # been through the network - the whole conversion lost at the last
         # step (found by the first real run).
         fmt = _PIL_FORMATS.get(output.suffix.lower(), "PNG")
+        meta = keep if fmt in _META_FORMATS else {}
         if fmt == "JPEG":
-            image.save(partial, format=fmt, quality=97, subsampling=0)
+            image.save(partial, format=fmt, quality=97, subsampling=0, **meta)
         else:
-            image.save(partial, format=fmt)
+            image.save(partial, format=fmt, **meta)
         os.replace(partial, output)
     except Exception as exc:
         _drop_partial(partial)
@@ -1072,6 +1166,13 @@ def convert_video(source: Path, output: Path, params: dict, *,
         # An odd dimension cannot be encoded as yuv420p and the worker's own
         # sizing assumes even frames; rounding DOWN keeps us inside the source.
         even_w, even_h = width - (width % 2), height - (height % 2)
+        if even_w > WORKER_MAX_W or even_h > WORKER_MAX_H:
+            raise ConversionError(
+                "too_large", f"{width}x{height} is larger than the "
+                             f"{WORKER_MAX_W}x{WORKER_MAX_H} the worker processes")
+        # The frames go through as they are stored, and the file says how to
+        # turn them, the way the source did (_display_rotation).
+        rotation = _display_rotation(source)
         rate = stream.average_rate or stream.guessed_rate or Fraction(30, 1)
         rate = Fraction(rate).limit_denominator(1001 * 1000)
         total = _estimate_frames(container, stream, rate)
@@ -1111,6 +1212,8 @@ def convert_video(source: Path, output: Path, params: dict, *,
                                     format=container_format)
             out_stream = _add_video_stream(out_container, codec_used, rate,
                                            even_w, even_h, quality, grid=grid)
+            if rotation:
+                out_stream.set_display_rotation(rotation)
             audio_out = None
             aac = None
             try:

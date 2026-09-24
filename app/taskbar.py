@@ -83,6 +83,8 @@ user32.TranslateMessage.argtypes = [ctypes.POINTER(wt.MSG)]
 user32.TranslateMessage.restype = wt.BOOL
 user32.DispatchMessageW.argtypes = [ctypes.POINTER(wt.MSG)]
 user32.DispatchMessageW.restype = LRESULT
+user32.RegisterWindowMessageW.argtypes = [wt.LPCWSTR]
+user32.RegisterWindowMessageW.restype = wt.UINT
 
 WS_POPUP = 0x80000000
 WS_VISIBLE = 0x10000000
@@ -95,10 +97,27 @@ WM_NCACTIVATE = 0x0086
 WA_CLICKACTIVE = 0x2
 WA_ACTIVE = 0x1
 WM_SYSCOMMAND = 0x0112
+#: What copies of the program before this one listen for. It is not in the
+#: WM_APP range its comment claimed - 0x8000 + 0x4E53 = 0xCE53, and WM_APP
+#: ends at 0xBFFF - but in the range RegisterWindowMessage hands out, where
+#: another program's broadcast message could carry the same number and open
+#: the panel on its own. Only posted now, for an older copy still running.
+WM_NS_SHOW_LEGACY = 0x8000 + 0x4E53
+
+
+def _registered_message(name: str) -> int:
+    """The number every process in the session gets for `name`."""
+    try:
+        return int(user32.RegisterWindowMessageW(name))
+    except Exception:
+        return 0
+
+
 #: Posted by a second copy of the program that was just started: "you are
-#: already running - show yourself". WM_APP range, so no system message can
-#: collide with it.
-WM_NS_SHOW = 0x8000 + 0x4E53
+#: already running - show yourself". A registered message: every process gets
+#: the same number for the same name, and no other program's can have it.
+#: The WM_APP number stands in if registration ever fails.
+WM_NS_SHOW = _registered_message("NeuralScreen.ShowSettings") or 0x8000 + 0x3E53
 SC_MINIMIZE = 0xF020
 SC_RESTORE = 0xF120
 SC_CLOSE = 0xF060

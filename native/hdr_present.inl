@@ -83,7 +83,7 @@ static bool EnsureHdrPipeline(UINT w, UINT height, bool pq)
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].DescriptorTable = {2, ranges};
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants = {0, 0, 4};
+    params[1].Constants = {0, 0, 5};   // white, bypass, split, hdr, rotate180
     D3D12_ROOT_SIGNATURE_DESC rs = {2, params};
     if (FAILED(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, signature.put(), errors.put())))
         return false;
@@ -202,10 +202,13 @@ static bool PresentHdr(VideoState &v, bool bypass, bool allow_fg)
     h.list->SetComputeRootSignature(g_hdr_rs);
     h.list->SetPipelineState(g_hdr_pso);
     h.list->SetComputeRootDescriptorTable(0, g_hdr_heap->GetGPUDescriptorHandleForHeapStart());
-    struct { float white; UINT bypass, split, hdr; } constants = {
+    // rotate180 exactly as the capture shader gets it: only a duplicated
+    // desktop comes back unrotated (a WGC window is already composed).
+    struct { float white; UINT bypass, split, hdr, rotate180; } constants = {
         g_hdr_frame_white, bypass ? 1u : 0u, g_hdr_split,
-        (g_capture_display.enabled ? 1u : 0u) | (framegen ? 2u : 0u)};
-    h.list->SetComputeRoot32BitConstants(1, 4, &constants, 0);
+        (g_capture_display.enabled ? 1u : 0u) | (framegen ? 2u : 0u),
+        (g_dda_active && g_capture_rotate180) ? 1u : 0u};
+    h.list->SetComputeRoot32BitConstants(1, 5, &constants, 0);
     h.list->Dispatch((w+7)/8, (height+7)/8, 1);
     if (rec_pq)
     {
@@ -217,7 +220,7 @@ static bool PresentHdr(VideoState &v, bool bypass, bool allow_fg)
         h.list->SetComputeRootDescriptorTable(0, table);
         auto pq = constants;
         pq.hdr |= 2u;   // the shader's PQ encode, as for DLSS-G
-        h.list->SetComputeRoot32BitConstants(1, 4, &pq, 0);
+        h.list->SetComputeRoot32BitConstants(1, 5, &pq, 0);
         h.list->Dispatch((w+7)/8, (height+7)/8, 1);
         auto to_copy = Transition(g_rec_pq, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                   D3D12_RESOURCE_STATE_COPY_SOURCE);
