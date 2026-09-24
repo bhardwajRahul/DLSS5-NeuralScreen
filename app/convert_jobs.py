@@ -146,6 +146,8 @@ def friendly_error(exc: BaseException) -> str:
         return "denied"
     if stage == "hdr":
         return "hdr"
+    if stage == "too_large":
+        return "too_large"
     if stage == "decode":
         return "unreadable"
     if stage in ("process", "worker"):

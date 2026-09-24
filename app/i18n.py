@@ -3279,6 +3279,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "Preset saved: {}",
         "preset_deleted": "Preset deleted: {}",
         "convert_err_hdr": "HDR video cannot be converted yet",
+        "convert_err_too_large": "too large - 7680x4320 at most",
         "compat_title": "NeuralScreen - compatibility check",
         "compat_blocked": (
             "NeuralScreen will not start screen capture: the compatibility "
@@ -3295,6 +3296,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "Пресет сохранён: {}",
         "preset_deleted": "Пресет удалён: {}",
         "convert_err_hdr": "HDR-видео пока не конвертируется",
+        "convert_err_too_large": "слишком большой - не больше 7680x4320",
         "compat_title": "NeuralScreen - проверка совместимости",
         "compat_blocked": (
             "NeuralScreen не будет запускать захват экрана: проверка "
@@ -3312,6 +3314,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "Préréglage enregistré : {}",
         "preset_deleted": "Préréglage supprimé : {}",
         "convert_err_hdr": "la vidéo HDR ne peut pas encore être convertie",
+        "convert_err_too_large": "trop grand - 7680x4320 au maximum",
         "compat_title": "NeuralScreen - vérification de compatibilité",
         "compat_blocked": (
             "NeuralScreen ne lancera pas la capture d'écran : la vérification "
@@ -3329,6 +3332,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "Voreinstellung gespeichert: {}",
         "preset_deleted": "Voreinstellung gelöscht: {}",
         "convert_err_hdr": "HDR-Video kann noch nicht konvertiert werden",
+        "convert_err_too_large": "zu groß - höchstens 7680x4320",
         "compat_title": "NeuralScreen - Kompatibilitätsprüfung",
         "compat_blocked": (
             "NeuralScreen startet die Bildschirmaufnahme nicht: Die "
@@ -3346,6 +3350,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "Preajuste guardado: {}",
         "preset_deleted": "Preajuste eliminado: {}",
         "convert_err_hdr": "el vídeo HDR aún no se puede convertir",
+        "convert_err_too_large": "demasiado grande - máximo 7680x4320",
         "compat_title": "NeuralScreen - comprobación de compatibilidad",
         "compat_blocked": (
             "NeuralScreen no iniciará la captura de pantalla: la comprobación "
@@ -3363,6 +3368,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "Preset salvato: {}",
         "preset_deleted": "Preset eliminato: {}",
         "convert_err_hdr": "i video HDR non si possono ancora convertire",
+        "convert_err_too_large": "troppo grande - al massimo 7680x4320",
         "compat_title": "NeuralScreen - verifica di compatibilità",
         "compat_blocked": (
             "NeuralScreen non avvierà la cattura dello schermo: la verifica di "
@@ -3380,6 +3386,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "Predefinição salva: {}",
         "preset_deleted": "Predefinição excluída: {}",
         "convert_err_hdr": "vídeo HDR ainda não pode ser convertido",
+        "convert_err_too_large": "grande demais - no máximo 7680x4320",
         "compat_title": "NeuralScreen - verificação de compatibilidade",
         "compat_blocked": (
             "O NeuralScreen não vai iniciar a captura de tela: a verificação "
@@ -3397,6 +3404,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "Zapisano ustawienie: {}",
         "preset_deleted": "Usunięto ustawienie: {}",
         "convert_err_hdr": "wideo HDR nie może jeszcze zostać przekonwertowane",
+        "convert_err_too_large": "za duży - najwyżej 7680x4320",
         "compat_title": "NeuralScreen - test zgodności",
         "compat_blocked": (
             "NeuralScreen nie uruchomi przechwytywania ekranu: test zgodności "
@@ -3413,6 +3421,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "Пресет збережено: {}",
         "preset_deleted": "Пресет видалено: {}",
         "convert_err_hdr": "HDR-відео поки не конвертується",
+        "convert_err_too_large": "завеликий - не більше 7680x4320",
         "compat_title": "NeuralScreen - перевірка сумісності",
         "compat_blocked": (
             "NeuralScreen не запускатиме захоплення екрана: перевірку "
@@ -3430,6 +3439,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "预设已保存：{}",
         "preset_deleted": "预设已删除：{}",
         "convert_err_hdr": "暂不支持转换 HDR 视频",
+        "convert_err_too_large": "尺寸过大 - 最大 7680x4320",
         "compat_title": "NeuralScreen - 兼容性检查",
         "compat_blocked": (
             "NeuralScreen 不会启动屏幕捕获：兼容性检查未通过。\n\n结果：{verdict}。"
@@ -3445,6 +3455,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "プリセットを保存しました: {}",
         "preset_deleted": "プリセットを削除しました: {}",
         "convert_err_hdr": "HDR 動画はまだ変換できません",
+        "convert_err_too_large": "大きすぎます - 最大 7680x4320",
         "compat_title": "NeuralScreen - 互換性チェック",
         "compat_blocked": (
             "互換性チェックに合格しなかったため、NeuralScreen は画面キャプチャを"
@@ -3461,6 +3472,7 @@ _AUDIT_STRINGS = {
         "preset_saved": "프리셋 저장됨: {}",
         "preset_deleted": "프리셋 삭제됨: {}",
         "convert_err_hdr": "HDR 동영상은 아직 변환할 수 없습니다",
+        "convert_err_too_large": "너무 큽니다 - 최대 7680x4320",
         "compat_title": "NeuralScreen - 호환성 검사",
         "compat_blocked": (
             "호환성 검사를 통과하지 못해 NeuralScreen 이 화면 캡처를 시작하지 "
