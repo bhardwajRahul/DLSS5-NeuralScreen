@@ -501,12 +501,15 @@ def main() -> int:
         print("[main] another NeuralScreen is already running - this copy "
               "asks it to show its menu and exits", file=sys.stderr)
         try:
-            from taskbar import WM_NS_SHOW
+            from taskbar import WM_NS_SHOW, WM_NS_SHOW_LEGACY
             user32 = ctypes.windll.user32
             user32.FindWindowW.restype = ctypes.c_void_p
             running = user32.FindWindowW("NeuralScreenTaskbar", "NeuralScreen")
             if running:
-                user32.PostMessageW(ctypes.c_void_p(running), WM_NS_SHOW, 0, 0)
+                # Both numbers: the running copy may be an older one, which
+                # listens only for the legacy one (a new copy ignores it).
+                for message in (WM_NS_SHOW, WM_NS_SHOW_LEGACY):
+                    user32.PostMessageW(ctypes.c_void_p(running), message, 0, 0)
         except Exception:
             pass
         return 1
