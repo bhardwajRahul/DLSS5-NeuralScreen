@@ -7444,6 +7444,7 @@ static int RunVideo()
         // forces the reset when frames resume.
         static ULONGLONG last_fresh_tick = GetTickCount64();
         static bool stall_pending = false;
+        static unsigned long stall_gap_ms = 0;
         const ULONGLONG now_tick = GetTickCount64();
         if (CaptureActive())
         {
@@ -7534,10 +7535,12 @@ static int RunVideo()
             // invisible.
             if (source_fresh)
             {
+                // The pause is recorded here, not reset here: the reset is
+                // consumed further down, where NR and FG both read it, and the
+                // line is written there so it cannot announce a reset that
+                // never happened (#130).
                 if (stall_pending && now_tick - last_fresh_tick > 1000)
-                    Log("[reset] capture resumed after %lu ms - NR and FG history reset",
-                        (unsigned long)(now_tick - last_fresh_tick));
-                stall_pending = false;
+                    stall_gap_ms = (unsigned long)(now_tick - last_fresh_tick);
                 last_fresh_tick = now_tick;
             }
             else if (!got && now_tick - last_fresh_tick > 1000)
@@ -7685,14 +7688,21 @@ static int RunVideo()
         // every frame of the mode, and resetting on it made the runtime
         // interpolate nothing at all on that path (#104).
         const bool fg_source_switch = (bypass != g_fg_source_bypass);
-        g_fg_reset = frame == 0 || fh.reset != 0 || fg_source_switch
-                     || previous_hdr_split != g_hdr_split
-                     || (stall_pending && source_fresh);
-        g_fg_source_bypass = bypass;
-        // The NR evaluate shares the same stall reset: one forced reset
-        // frame, then the ordinary flow.
+        // The stall reset is consumed HERE, where both histories read it, and
+        // it is the only place it happens. The detector above only marks the
+        // pause: clearing the flag there (as it did since R12) left every
+        // reset dead while the log still claimed one (#130).
         const bool stall_reset = stall_pending && source_fresh;
-        if (stall_reset) { fh.reset = 1; stall_pending = false; Log("[video] history reset after the capture pause"); }
+        g_fg_reset = frame == 0 || fh.reset != 0 || fg_source_switch
+                     || previous_hdr_split != g_hdr_split || stall_reset;
+        g_fg_source_bypass = bypass;
+        if (stall_reset)
+        {
+            fh.reset = 1;
+            stall_pending = false;
+            Log("[reset] capture resumed after %lu ms - NR and FG history reset",
+                stall_gap_ms);
+        }
         if (!bypass)
         {
             const double t_eval = PhaseNow();

@@ -236,6 +236,35 @@ def main() -> int:
     if not 0 <= closing.find("FlushPresentQueue(") < closing.find("g_present_swap->Release()"):
         failures.append("the swap chain is released before the present queue is drained")
 
+    # 16. A capture pause is finally RESET, not just announced (#130)
+    #
+    # The stall detector used to clear its own flag on the first fresh frame,
+    # three hundred lines above the one place that consumes it. The reset was
+    # therefore dead: the log printed "capture resumed ... history reset" on
+    # every pause while NR kept its temporal accumulation and FG kept its
+    # interpolation slots pointed at a picture that no longer existed - the
+    # jerk on a window drag in the report. The flag must survive until the
+    # consumer, and the consumer must be the only one that clears it.
+    detector = _code(cpp[cpp.index("R12: the pause detector"):])
+    detector = detector[:detector.index("if (!got && !g_dda_ready)")]
+    if "stall_pending = false" in detector:
+        failures.append("the pause detector clears its own flag - the reset it "
+                        "announces is dead before the consumer reads it (#130)")
+    if "stall_pending = true" not in detector:
+        failures.append("the pause detector no longer marks a long silence")
+    consumer = _code(cpp[cpp.index("const bool stall_reset = "):])
+    consumer = consumer[:consumer.index("if (!bypass)")]
+    if "stall_pending = false" not in consumer or "fh.reset = 1" not in consumer:
+        failures.append("the stall reset is not consumed where NR and FG read "
+                        "it - nothing is reset after a capture pause (#130)")
+    if "g_fg_reset" not in consumer or "stall_reset" not in consumer:
+        failures.append("the stall reset does not reach g_fg_reset - FG keeps "
+                        "interpolating across the pause (#130)")
+    # The announcement must live with the reset, not with the detector.
+    if "capture resumed after" not in consumer:
+        failures.append("the resume line is printed away from the reset it "
+                        "describes - the log claims a reset that may not happen")
+
     for f in failures:
         print("FAIL:", f)
     if failures:
@@ -243,8 +272,3 @@ def main() -> int:
     print("OK: the worker's z-order keeps the panel on top, the HDR/FG, "
           "presenter, descriptor, DLL-gate and recorder fixes are in place, and "
           "frames go to the screen on their own queue")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
