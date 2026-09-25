@@ -362,6 +362,10 @@ class _Pipeline:
         "follow_resize",
         "follow_size",
         "mon_resize",
+        #: The devicename whose absence has already been reported, so a
+        #: monitor that stays gone does not repeat the line every 30 frames
+        #: (#128). Cleared as soon as the monitor answers again.
+        "mon_gone",
         "environment",
         "frame_index",
         "gpu_ok",
