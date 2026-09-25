@@ -4208,6 +4208,15 @@ static ID3D11Fence            *g_dda_signal11 = nullptr;
 static HANDLE                  g_dda_fence_ev = nullptr;  // event wait for the D3D11 copy
 static UINT64                  g_dda_fence_value = 1;
 static bool                    g_dda_ready = false;      // current frame is in v.color
+// True until the CURRENT duplication session has handed over one frame. The
+// first AcquireNextFrame of a freshly opened Desktop Duplication session
+// publishes an empty surface - the desktop has not been composited into it
+// yet - and that frame is not a picture of anything (#128: a screenshot taken
+// right after NR OFF woke the capture came back black, because it was
+// answered from exactly that frame). Cleared where the duplication opens, set
+// by the first frame it actually produces. Desktop Duplication only: a WGC
+// frame pool carries frames the window has already produced.
+static bool                    g_dda_first_frame = true;
 // Bits per colour of the captured display's scan-out, read from IDXGIOutput6
 // when the capture opens. Above 8 the duplicated desktop alternates
 // FP16/BGRA8 through the legacy DuplicateOutput, so the capture is pinned to
@@ -5080,6 +5089,7 @@ static bool OpenDda(UINT w, UINT hgt)
                         : "");
     }
     g_dda_w = w; g_dda_h = hgt; g_dda_active = true;
+    g_dda_first_frame = true;   // the duplication has produced nothing yet
     Log("[dda] capture %ux%u active", w, hgt);
     return true;
 }
@@ -5429,6 +5439,27 @@ static bool DdaGrab(VideoState &v)
         return false;
     }
     if (st != StageResult::Ok) return false;
+    // Desktop Duplication publishes an EMPTY surface on the first
+    // AcquireNextFrame of a session: the desktop has not been composited in
+    // yet, so there is nothing to duplicate. Swizzling it would overwrite the
+    // last good frame in v.color with black, and that black is what a
+    // screenshot taken right after the capture was reopened was made of
+    // (#128: NR OFF suspended the capture, the screenshot woke it, and the
+    // answer came from this very frame). Consume it and keep what is already
+    // there; g_dda_ready stays false, so a consumer asking for pixels is told
+    // "no colour yet" and gets the next frame instead of a black one.
+    //
+    // NOT done for WGC: a window's frame pool carries frames the window has
+    // already produced, so its first frame is the picture, and discarding it
+    // starves a static window of the only frame it will ever offer
+    // (test_pixels_after_resize).
+    if (g_dda_first_frame)
+    {
+        g_dda_first_frame = false;
+        Log("[cap] the duplication session's first frame is empty - consumed, "
+            "not shown");
+        return false;
+    }
     return SwizzleCaptureIntoColor(v);
 }
 

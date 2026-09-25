@@ -265,10 +265,62 @@ def main() -> int:
         failures.append("the resume line is printed away from the reset it "
                         "describes - the log claims a reset that may not happen")
 
+    # 17. The first frame of a new Desktop Duplication session is consumed,
+    #     not shown (#128: a screenshot after NR OFF woke the capture and came
+    #     back black, because that empty surface was answered from).
+    #
+    # A fresh duplication session publishes an EMPTY surface on its first
+    # AcquireNextFrame - the desktop has not been composited into it. Showing
+    # it would overwrite the last good frame in v.color with black. The flag
+    # has to be raised where the session opens, cleared by the first frame it
+    # actually produces, and the empty frame must leave g_dda_ready false so a
+    # consumer asking for pixels gets "no colour yet", not a black picture.
+    open_dda = _code(_body(cpp, "static bool OpenDda(UINT w, UINT hgt)"))
+    if "g_dda_first_frame = true" not in open_dda:
+        failures.append("a new duplication session does not raise the "
+                        "first-frame flag - a reopened capture can publish its "
+                        "empty first frame (#128a)")
+    grab = _code(_body(cpp, "static bool DdaGrab(VideoState &v)"))
+    if "g_dda_first_frame" not in grab:
+        failures.append("DdaGrab does not consume the empty first frame of a "
+                        "duplication session (#128a)")
+    else:
+        consume = grab[grab.index("g_dda_first_frame"):]
+        swizzle = consume.find("SwizzleCaptureIntoColor(")
+        if swizzle < 0:
+            failures.append("DdaGrab no longer swizzles the capture - cannot "
+                            "tell where the empty first frame is handled (#128a)")
+        else:
+            guard = consume[:swizzle]
+            if not 0 <= guard.find("g_dda_first_frame = false"):
+                failures.append("the empty first frame reaches "
+                                "SwizzleCaptureIntoColor - the last good frame "
+                                "in v.color is overwritten with black (#128a)")
+            elif guard.find("g_dda_first_frame = false") > guard.rfind("return false"):
+                failures.append("the first-frame flag is cleared after the guard "
+                                "returns - the frame is dropped, not consumed "
+                                "(#128a)")
+            if "return false" not in guard:
+                failures.append("the empty first frame is not answered as "
+                                "\"no frame\" - the consumer cannot tell it from "
+                                "a real one (#128a)")
+    # The fix is for Desktop Duplication ONLY: discarding the first frame of a
+    # WGC pool starves a static window of the only frame it will ever offer.
+    wgc = re.search(r"static bool WgcGrab\(VideoState &v\)\s*\{.*?\n\}", cpp, re.S)
+    if wgc and "g_dda_first_frame" in _code(wgc.group(0)):
+        failures.append("the WGC path also discards its first frame - a static "
+                        "captured window would never be shown (#128a)")
+
     for f in failures:
         print("FAIL:", f)
     if failures:
         return 1
     print("OK: the worker's z-order keeps the panel on top, the HDR/FG, "
-          "presenter, descriptor, DLL-gate and recorder fixes are in place, and "
-          "frames go to the screen on their own queue")
+          "presenter, descriptor, DLL-gate and recorder fixes are in place, "
+          "frames go to the screen on their own queue, and a reopened "
+          "duplication session no longer shows its empty first frame")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
