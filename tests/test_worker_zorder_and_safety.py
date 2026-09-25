@@ -17,7 +17,10 @@ swapped DLL). Each check names the behaviour it protects:
   configured NS_NR_DLL goes through it;
 * the GPU recorder frees its device on a failed start, detaches late sample
   returns, and bounds the audio ring by its mapping;
-* an HDR10 recording that loses its HDR picture is closed, not frozen.
+* an HDR10 recording that loses its HDR picture is closed, not frozen;
+* a frame due on screen is copied and presented on the swap chain's own
+  queue, never on the worker's behind the next NR pass (with FG 2x at 4K
+  every real frame waited ~13 ms there).
 
 Run:  runtime\\python.exe tests\\test_worker_zorder_and_safety.py
 """
@@ -204,12 +207,42 @@ def main() -> int:
     if "sftVerifyAsOf" not in held:
         failures.append("the gate does not take the time WinVerifyTrust judged at")
 
+    # 15. A frame due on screen does not queue behind the network: the swap
+    #     chain lives on its own queue, and no back buffer is written on the
+    #     worker's
+    opened = _code(_body(cpp, "static bool OpenPresent(UINT width, UINT height, uint32_t flags)"))
+    if "CreateSwapChainForHwnd(PresentQueue()," not in opened:
+        failures.append("the swap chain is created on the worker's queue - every "
+                        "frame due on screen waits behind the next NR pass")
+    presenter = _code(_body(fg, "static void FgPresenter()"))
+    if ("h.queue->ExecuteCommandLists" in presenter
+            or "PresentQueue()->ExecuteCommandLists" not in presenter):
+        failures.append("the FG presenter copies on the worker's queue")
+    back_buffer_on_worker = re.compile(r"h\.list->CopyResource\(\s*bb")
+    for name, signature, call in (
+            ("PresentFrame", "static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)",
+             "CopyToBackBuffer(bb,"),
+            ("PresentBypass", "static bool PresentBypass(VideoState &v)", "CopyToBackBuffer(bb,"),
+            ("PresentHdr", None, "CopyToBackBuffer(bb.get(),")):
+        body = present_hdr if signature is None else _code(_body(cpp, signature))
+        if not body:
+            failures.append(f"{name} not found")
+        elif back_buffer_on_worker.search(body) or call not in body:
+            failures.append(f"{name} writes the back buffer on the worker's queue")
+    fmt = _code(_body(hdr, "static bool EnsurePresentFormat(bool hdr, bool pq)"))
+    if not 0 <= fmt.find("FlushPresentQueue(") < fmt.find("ResizeBuffers("):
+        failures.append("ResizeBuffers runs before the present queue is drained")
+    closing = _code(_body(cpp, "static void ClosePresent()"))
+    if not 0 <= closing.find("FlushPresentQueue(") < closing.find("g_present_swap->Release()"):
+        failures.append("the swap chain is released before the present queue is drained")
+
     for f in failures:
         print("FAIL:", f)
     if failures:
         return 1
-    print("OK: the worker's z-order keeps the panel on top, and the HDR/FG, "
-          "presenter, descriptor, DLL-gate and recorder fixes are in place")
+    print("OK: the worker's z-order keeps the panel on top, the HDR/FG, "
+          "presenter, descriptor, DLL-gate and recorder fixes are in place, and "
+          "frames go to the screen on their own queue")
     return 0
 
 

@@ -1,5 +1,6 @@
 // Included after the capture bridge. All resources here belong to the worker's
-// D3D12 device and are used on its single, fence-serialized command queue.
+// D3D12 device and are used on its fence-serialized command queue; only the
+// copy into the back buffer runs on the present queue (CopyToBackBuffer).
 static ID3D12RootSignature *g_hdr_rs = nullptr;
 static ID3D12PipelineState *g_hdr_pso = nullptr;
 static ID3D12DescriptorHeap *g_hdr_heap = nullptr;
@@ -32,6 +33,8 @@ static bool EnsurePresentFormat(bool hdr, bool pq)
         // This failure is fatal on either path, and deliberately so: both
         // presents CopyResource into the back buffer, and a copy between
         // mismatched formats is not a wrong picture, it is a removed device.
+        // Their copies ran on the present queue, where Present may still sit.
+        FlushPresentQueue("present-format");
         if (FAILED(g_present_swap->ResizeBuffers(0, 0, 0, format, desc.Flags)))
         { Log("[hdr] swap chain format change failed"); return false; }
         Log("[hdr] presentation=%s", pq ? "HDR10 PQ (DLSS-G)" : hdr ? "FP16 scRGB" : "8-bit SDR");
@@ -226,12 +229,11 @@ static bool PresentHdr(VideoState &v, bool bypass, bool allow_fg)
                                   D3D12_RESOURCE_STATE_COPY_SOURCE);
         h.list->ResourceBarrier(1, &to_copy);
     }
-    D3D12_RESOURCE_BARRIER copy[] = {
-        Transition(g_hdr_output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
-        Transition(bb.get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST)};
-    h.list->ResourceBarrier(framegen ? 1 : 2, copy);
-    if (!framegen) h.list->CopyResource(bb.get(), g_hdr_output);
-    // Both candidates are in COPY_SOURCE here.
+    auto to_copy_source = Transition(g_hdr_output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                     D3D12_RESOURCE_STATE_COPY_SOURCE);
+    h.list->ResourceBarrier(1, &to_copy_source);
+    // Both candidates are in COPY_SOURCE here. The back buffer is written on
+    // the present queue once this list is done (CopyToBackBuffer, below).
     if (rec_pq) RecordCopyAt(h.list, g_rec_pq, rec_t);
     else if (rec && framegen) RecordCopyAt(h.list, g_hdr_output, rec_t);
     if (rec_pq)
@@ -242,12 +244,10 @@ static bool PresentHdr(VideoState &v, bool bypass, bool allow_fg)
     }
     D3D12_RESOURCE_BARRIER post[] = {
         Transition(g_hdr_output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
-        Transition(bb.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
         Transition(g_dda_d12, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
         Transition(v.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
     h.list->ResourceBarrier(1, post);
-    if (!framegen) h.list->ResourceBarrier(1, post + 1);
-    h.list->ResourceBarrier(bypass ? 1 : 2, post + 2);
+    h.list->ResourceBarrier(bypass ? 1 : 2, post + 1);
     // Spout consumers are SDR, and so is every recording but an HDR10 one
     // (taken above; RecordCopy stands down for it).
     ID3D12Resource *export_src = bypass ? v.color.tex : v.output;
@@ -278,6 +278,11 @@ static bool PresentHdr(VideoState &v, bool bypass, bool allow_fg)
         // out - HDR with 3x/4x on a card that refuses it. The SDR paths
         // already fall through to a plain present here.
         return PresentHdr(v, bypass, false);
+    }
+    if (!CopyToBackBuffer(bb.get(), g_hdr_output, D3D12_RESOURCE_STATE_COMMON, "hdr-present"))
+    {
+        if (g_submission_failed) bb.detach();
+        return false;
     }
     const bool ok = PresentStatus(g_present_swap->Present(0, 0), "hdr present");
     if (ok) { RevealOnFirstPresent(); SpoutBridgeSend(); }

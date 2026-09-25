@@ -2275,6 +2275,107 @@ static void CloseFgWaitable()
     if (g_fg_waitable != nullptr) CloseHandle(g_fg_waitable);
     g_fg_waitable = nullptr;
 }
+
+// The swap chain's own queue. Every write into a back buffer, and every
+// Present, goes through it - CopyToBackBuffer below and the FG presenter.
+// On h.queue a frame due on screen queued behind whatever the worker had
+// submitted first, which is usually the next frame's NR pass: measured at
+// 4K with four passes, every real frame of FG 2x waited ~13 ms for its copy,
+// generated frames at 3x/4x up to 24 ms, and at 4x one generated frame in
+// nine missed its slot. It is also the queue DXGI stalls while the
+// compositor still holds a back buffer, and that stall no longer holds up
+// the network. High priority: one frame's copy fits in between the
+// network's dispatches instead of after all of them.
+static ID3D12CommandQueue        *g_present_queue = nullptr;
+static ID3D12Fence               *g_present_fence = nullptr;
+static UINT64                     g_present_fence_value = 0;
+static ID3D12CommandAllocator    *g_present_alloc = nullptr;
+static ID3D12GraphicsCommandList *g_present_list = nullptr;
+
+// Created once, with the first overlay, and kept for the device's life. The
+// list and fence are needed either way; if no queue of its own can be had,
+// PresentQueue() hands out h.queue and everything runs where it always did.
+static bool EnsurePresentQueue()
+{
+    if (g_present_list != nullptr) return true;
+    if ((g_present_fence == nullptr &&
+         FAILED(h.dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_present_fence)))) ||
+        (g_present_alloc == nullptr &&
+         FAILED(h.dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                              IID_PPV_ARGS(&g_present_alloc)))) ||
+        FAILED(h.dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_present_alloc,
+                                        nullptr, IID_PPV_ARGS(&g_present_list))))
+    {
+        g_present_list = nullptr;
+        Log("[present] the present list or fence could not be created");
+        return false;
+    }
+    g_present_list->Close();
+    D3D12_COMMAND_QUEUE_DESC qd = {};
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    qd.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
+    if (FAILED(h.dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&g_present_queue))))
+    {
+        g_present_queue = nullptr;
+        qd.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        if (FAILED(h.dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&g_present_queue))))
+        {
+            g_present_queue = nullptr;
+            Log("[present] no queue of its own - frames go to the screen on the worker's");
+            return true;
+        }
+        Log("[present] a high-priority queue was refused; the present queue runs at normal");
+    }
+    Log("[present] frames go to the screen on their own queue");
+    return true;
+}
+
+static ID3D12CommandQueue *PresentQueue()
+{
+    return g_present_queue != nullptr ? g_present_queue : h.queue;
+}
+
+// Copy `source`, resting in `rest`, into the back buffer on the present queue
+// and wait for it. The caller has already waited for the worker's list that
+// produced `source`, so nothing on h.queue writes it meanwhile, and the
+// source is back in `rest` when this returns.
+static bool CopyToBackBuffer(ID3D12Resource *bb, ID3D12Resource *source,
+                             D3D12_RESOURCE_STATES rest, const char *where)
+{
+    if (g_present_list == nullptr)
+        return FailGpuWork(where, "command-error", E_POINTER);
+    HRESULT hr = g_present_alloc->Reset();
+    if (SUCCEEDED(hr)) hr = g_present_list->Reset(g_present_alloc, nullptr);
+    if (FAILED(hr)) return FailGpuWork(where, "command-error", hr);
+    const bool move = rest != D3D12_RESOURCE_STATE_COPY_SOURCE;
+    D3D12_RESOURCE_BARRIER pre[] = {
+        Transition(bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
+        Transition(source, rest, D3D12_RESOURCE_STATE_COPY_SOURCE)};
+    g_present_list->ResourceBarrier(move ? 2 : 1, pre);
+    g_present_list->CopyResource(bb, source);
+    D3D12_RESOURCE_BARRIER post[] = {
+        Transition(bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
+        Transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE, rest)};
+    g_present_list->ResourceBarrier(move ? 2 : 1, post);
+    hr = g_present_list->Close();
+    if (FAILED(hr)) return FailGpuWork(where, "command-error", hr);
+    ID3D12CommandList *lists[] = {g_present_list};
+    PresentQueue()->ExecuteCommandLists(1, lists);
+    const UINT64 v = ++g_present_fence_value;
+    hr = PresentQueue()->Signal(g_present_fence, v);
+    if (FAILED(hr)) return FailGpuWork(where, "fence-error", hr);
+    return WaitFenceValue(g_present_fence, v, 2000, where);
+}
+
+// Nothing of ours in flight on the present queue: before ResizeBuffers and
+// before the swap chain is released.
+static void FlushPresentQueue(const char *where)
+{
+    if (g_present_queue == nullptr || g_present_fence == nullptr) return;
+    const UINT64 v = ++g_present_fence_value;
+    if (SUCCEEDED(g_present_queue->Signal(g_present_fence, v)))
+        WaitFenceValue(g_present_fence, v, 2000, where, false);
+}
 // What the swap chain has already been told its colours mean. Asking DXGI
 // every frame is both a waste and a way to fail on the SDR path, which has
 // never made the call at all - see EnsurePresentFormat.
@@ -2393,6 +2494,9 @@ static DWORD WINAPI PresentWindowThread(LPVOID)
 static void ClosePresent()
 {
     CloseFgResources();
+    // The FG presenter has stopped and the ordinary paths wait for their own
+    // copies; what can still be queued there is Present itself.
+    FlushPresentQueue("present-close");
     if (g_present_swap != nullptr) { g_present_swap->Release(); g_present_swap = nullptr; }
     CloseFgWaitable();
     // Only the thread that created the window can destroy it. This used to
@@ -2484,8 +2588,11 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     sd.Flags       = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     IDXGISwapChain1 *sc1 = nullptr;
     // The swapchain must be created on the very queue that will write the back
-    // buffer, which is the same queue NGX submits on.
-    hr = factory->CreateSwapChainForHwnd(h.queue, g_present_hwnd, &sd, nullptr, nullptr, &sc1);
+    // buffer. That is the present queue, not the one NGX submits on: nothing
+    // but CopyToBackBuffer and the FG presenter writes a back buffer, and
+    // both do it there.
+    if (!EnsurePresentQueue()) { factory->Release(); ClosePresent(); return false; }
+    hr = factory->CreateSwapChainForHwnd(PresentQueue(), g_present_hwnd, &sd, nullptr, nullptr, &sc1);
     if (FAILED(hr) || sc1 == nullptr)
     {
         Log("[present] CreateSwapChainForHwnd failed 0x%08X", hr);
@@ -3111,24 +3218,22 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
     if (BeginCommands())
     {
         ProfileGpuBegin(PS_PRESENT);
-        D3D12_RESOURCE_BARRIER pre[] = {
-            Transition(bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
-            Transition(v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
-        };
-        h.list->ResourceBarrier(_countof(pre), pre);
-        h.list->CopyResource(bb, v.output);
+        // The export stays on the worker's queue; the back buffer is written
+        // on the present queue once this list is done (CopyToBackBuffer).
+        auto pre = Transition(v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                              D3D12_RESOURCE_STATE_COPY_SOURCE);
+        h.list->ResourceBarrier(1, &pre);
         ExportCopy(h.list, v.output, v.upscale ? v.full_w : v.w,
                    v.upscale ? v.full_h : v.hgt);
-        D3D12_RESOURCE_BARRIER post[] = {
-            Transition(bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
-            Transition(v.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-        };
-        h.list->ResourceBarrier(_countof(post), post);
+        auto post = Transition(v.output, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                               D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        h.list->ResourceBarrier(1, &post);
         ProfileGpuEnd(PS_PRESENT);
         const UINT64 fv = EndCommands();
         if (submitted) *submitted = fv;
         if (fv != 0) SendEarlyReply();
-        if (ProfileWait(PS_PRESENT, fv, submitted ? 60000 : 2000))
+        if (ProfileWait(PS_PRESENT, fv, submitted ? 60000 : 2000)
+            && CopyToBackBuffer(bb, v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, "present"))
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
             ok = PresentStatus(g_present_swap->Present(0, 0), "present");
@@ -3141,7 +3246,7 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
         }
         else
         {
-            Log("[present] fence wait failed");
+            Log("[present] fence wait or back-buffer copy failed");
             return false; // Retain the backbuffer until failing-process teardown.
         }
     }
@@ -3191,24 +3296,20 @@ static bool PresentBypass(VideoState &v)
     if (BeginCommands())
     {
         ProfileGpuBegin(PS_PRESENT);
-        D3D12_RESOURCE_BARRIER pre[] = {
-            Transition(bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
-            Transition(v.color.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                       D3D12_RESOURCE_STATE_COPY_SOURCE),
-        };
-        h.list->ResourceBarrier(_countof(pre), pre);
-        h.list->CopyResource(bb, v.color.tex);
+        // As in PresentFrame: export here, the back buffer on the present queue.
+        auto pre = Transition(v.color.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                              D3D12_RESOURCE_STATE_COPY_SOURCE);
+        h.list->ResourceBarrier(1, &pre);
         ExportCopy(h.list, v.color.tex, v.upscale ? v.full_w : v.w,
                    v.upscale ? v.full_h : v.hgt);
-        D3D12_RESOURCE_BARRIER post[] = {
-            Transition(bb, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
-            Transition(v.color.tex, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-        };
-        h.list->ResourceBarrier(_countof(post), post);
+        auto post = Transition(v.color.tex, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        h.list->ResourceBarrier(1, &post);
         ProfileGpuEnd(PS_PRESENT);
         const UINT64 fv = EndCommands();
-        if (ProfileWait(PS_PRESENT, fv, 2000))
+        if (ProfileWait(PS_PRESENT, fv, 2000)
+            && CopyToBackBuffer(bb, v.color.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                "bypass-present"))
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
             ok = PresentStatus(g_present_swap->Present(0, 0), "present");
@@ -3221,7 +3322,7 @@ static bool PresentBypass(VideoState &v)
         }
         else
         {
-            Log("[present] bypass fence wait timed out");
+            Log("[present] bypass fence wait or back-buffer copy failed");
             return false; // Retain the backbuffer until failing-process teardown.
         }
     }
