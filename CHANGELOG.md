@@ -8,7 +8,7 @@ in UTC, not the tag timestamps.
 
 Scope and honesty notes:
 
-* The list starts at `v1.0.0` and ends at `v2.1.4`; every tag in that range has a
+* The list starts at `v1.0.0` and ends at `v2.1.5`; every tag in that range has a
   published GitHub release. GitHub returns more releases than the tag count
   because the count includes the tags listed as out of scope below.
   The tag `v0.1.0-alpha` (2026-09-06) is **not** part of this history: it is a tag
@@ -29,6 +29,38 @@ Scope and honesty notes:
   (the early releases carried a different set - see the individual entries).
 
 ---
+
+## v2.1.5 - 2026-09-25 - the fixes from the tracker, and presentation on its own queue
+
+Patch release on the v2.1 line: the three open reports (#128, #129, #130) plus
+the frame generation work of PR #127, which ships here for the first time.
+
+* **A capture pause really resets NR and FG.** The stall detector cleared its own
+  flag on the first fresh frame, three hundred lines above the one place that
+  reads it, so the reset it announced never happened: NR kept its temporal
+  accumulation and FG kept its interpolation slots pointed at a picture that no
+  longer existed while the log printed `capture resumed ... history reset` on
+  every pause. That is the jerk a window drag showed.
+* **A reopened capture never shows its empty first frame.** The first
+  `AcquireNextFrame` of a fresh Desktop Duplication session publishes an empty
+  surface - the desktop is not composited into it yet - and swizzling it
+  overwrote the last good frame with black, which is what a screenshot taken
+  right after NR OFF woke the capture was made of. The empty frame is consumed
+  instead; Desktop Duplication only, because a WGC frame pool carries frames the
+  window has already produced.
+* **The pipeline moves off a monitor that is gone.** An unplugged or
+  switched-off captured display left the program running against a devicename
+  DXGI no longer exposes, while the worker refused the output on every reopen.
+  It switches to a live monitor by devicename, not by index, debounced like a
+  size change.
+* **DRED breadcrumbs can be switched off** with `NS_DRED=0` (they are on by
+  default since v2.1.4; Microsoft measures 2-5% on a typical engine). The log
+  says which state it is in either way.
+* **Presentation has its own queue (PR #127).** With FG 2x and NR on, every real
+  frame waited about 13 ms for the next NR pass to finish on the shared queue -
+  two frames close together, then a long gap, while `[fg] displayed` still read
+  a clean 2x. Waits drop under 1 ms, nothing is dropped, and the source rate
+  with FG on goes up 5-19%.
 
 ## v2.1.4 - 2026-09-24 - the fixes from PR #124
 
