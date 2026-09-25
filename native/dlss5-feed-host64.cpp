@@ -1057,8 +1057,28 @@ typedef HRESULT (WINAPI *PFN_CreateDXGIFactory1_)(REFIID, void **);
 // device once it existed, which no Windows answers - "DRED settings
 // unavailable (settings1=0x80004002, settings=0x80004002)" in every log, and
 // a removed device with nothing behind its reason code.
+// On by default: the breadcrumbs are what make a device-removal report
+// diagnosable (issue #1 arrived as "code 6" and nothing else). They are not
+// free - the D3D12 runtime inserts a breadcrumb after every render op, and
+// Microsoft measures 2-5% on a typical AAA engine - so NS_DRED=0 turns them
+// off for anyone chasing the last percent. Same convention as NS_ARCH_SPOOF.
+static bool DredRequested()
+{
+    char buf[8] = {};
+    const DWORD got = GetEnvironmentVariableA("NS_DRED", buf, sizeof(buf));
+    if (got > 0 && got < sizeof(buf) && buf[0] == '0') return false;
+    return true;
+}
+
 static void EnableDred(HMODULE d3d12)
 {
+    if (!DredRequested())
+    {
+        // Said out loud, and not as "unavailable": a log that cannot tell a
+        // switch from a failure is how a real diagnostic gap hides.
+        Log("[host] DRED breadcrumbs off (NS_DRED=0)");
+        return;
+    }
     auto get_debug = d3d12 ? reinterpret_cast<PFN_D3D12GetDebugInterface_>(
                                  GetProcAddress(d3d12, "D3D12GetDebugInterface")) : nullptr;
     if (get_debug == nullptr)
