@@ -838,6 +838,22 @@ the raw capture instead of the neural frame, so the doubled rate survives
 turning NR off. It used to be stopped by the bypass present path on every
 frame, which is why the switch appeared to do nothing there (#104).
 
+**Frames go to the screen on their own queue.** The swap chain lives on a
+high-priority queue of its own, and every copy into a back buffer runs there -
+the FG presenter's and the ordinary SDR, bypass and HDR presents'. The network,
+the capture and FG's own evaluation stay on the worker's queue. While the two
+shared one queue, a frame due on screen waited for whatever had been submitted
+before it, usually the next frame's NR pass. Measured at 4K (work 2496×1404,
+four passes, HDR, RTX 5080): every real frame of FG x2 waited ~13 ms for its
+copy, so the output left in uneven pairs while the counter read a clean 2x; at
+x4 one generated frame in nine missed its slot and was dropped. On its own
+queue the copy waits under 1 ms and none are dropped, the worker's source rate
+with FG on is 5-19% higher (x2-x4), and the compositor's back-buffer waits no
+longer stall the network. The ordinary present with FG off pays for the second
+submission: +0.3 ms a frame. With `NS_PHASE=1` the presenter logs its copy and
+vblank waits and how many generated frames were shown, late or superseded
+(`[phase] fg presenter`).
+
 The FG runtime (`nvngx_dlssg.dll`) ships in the archive - the public
 310.9.1.0 redistributable, NVIDIA-signed, included unmodified. The licensing
 position is stated in the README notice: research use, takedown on request.

@@ -136,6 +136,9 @@ static void CloseFgResources()
 
 // The presenter has its own command list/allocator/fence. The producer never
 // waits for frame pacing. Slots being displayed cannot be recycled by it.
+// It submits on the present queue - the swap chain's own - so a frame due on
+// screen is copied and shown while the producer's next NR pass is still
+// running, not after it.
 static void FgPresenter()
 {
     winrt::com_ptr<ID3D12CommandAllocator> alloc;
@@ -150,6 +153,28 @@ static void FgPresenter()
     if (!event) { g_fg.failed = true; return; }
     UINT64 value = 0, previous = 0, shown = 0;
     auto report = std::chrono::steady_clock::now();
+    // Where the presenter's time goes, for the phase profiler (NS_PHASE=1):
+    // the copy wait runs from ExecuteCommandLists to the copy's fence, so it
+    // holds whatever the queue had to finish first; the vblank wait is the
+    // compositor's latency waitable. A generated frame is "late" when its
+    // slot had passed before it could be shown, "superseded" when a newer
+    // real frame arrived first. Counted always, logged only with the profiler.
+    struct PresentStat { double sum = 0.0, max = 0.0; unsigned n = 0; };
+    PresentStat copy_gen, copy_real, vblank;
+    unsigned copy_bins[6] = {}, planned = 0, shown_gen = 0, late = 0,
+             superseded = 0, flat = 0, skipped = 0;
+    double last_copy_ms = 0.0;
+    auto add = [](PresentStat &s, double ms) { s.sum += ms; if (ms > s.max) s.max = ms; ++s.n; };
+    auto bin_of = [](double ms) {
+        return ms < 1.0 ? 0 : ms < 2.0 ? 1 : ms < 4.0 ? 2 : ms < 8.0 ? 3 : ms < 16.0 ? 4 : 5;
+    };
+    auto wait_vblank = [&](DWORD ms) {
+        const auto t = std::chrono::steady_clock::now();
+        const DWORD r = WaitForSingleObject(g_fg_waitable, ms);
+        add(vblank, std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t).count());
+        return r;
+    };
     // R11: when the swapchain gave us a frame-latency waitable object, the
     // compositor paces us: waiting on it releases one back buffer one
     // vblank before the previous frame hits the screen. The first wait
@@ -179,8 +204,9 @@ static void FgPresenter()
         hr = list->Close();
         if (FAILED(hr)) return FailGpuWork("fg-present", "command-error", hr);
         ID3D12CommandList *commands[] = {list.get()};
-        h.queue->ExecuteCommandLists(1, commands);
-        hr = h.queue->Signal(fence.get(), ++value);
+        const auto t_copy = std::chrono::steady_clock::now();
+        PresentQueue()->ExecuteCommandLists(1, commands);
+        hr = PresentQueue()->Signal(fence.get(), ++value);
         if (FAILED(hr))
         {
             bb.detach();
@@ -212,6 +238,8 @@ static void FgPresenter()
             bb.detach();
             return FailGpuWork("fg-present-fence", "fence-error", E_FAIL);
         }
+        last_copy_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t_copy).count();
         const HRESULT pr = g_present_swap->Present(0, 0);
         if (pr == DXGI_STATUS_MODE_CHANGED)
         {
@@ -246,43 +274,47 @@ static void FgPresenter()
             if (g_fg.stop) break;
             for (auto &s : g_fg.slots)
                 if (s.state == 2 && (!chosen || s.sequence > chosen->sequence)) chosen = &s;
-            for (auto &s : g_fg.slots) if (s.state == 2 && &s != chosen) s.state = 0;
+            for (auto &s : g_fg.slots) if (s.state == 2 && &s != chosen) { s.state = 0; ++skipped; }
             chosen->state = 3;
         }
         const auto start = std::chrono::steady_clock::now();
         // If a frame was dropped, do not interpolate against an unseen frame.
         if (chosen->interpolate && chosen->sequence == previous + 1)
         {
+            planned += chosen->count;
             for (unsigned index = 0; index < chosen->count && !g_fg.stop && !g_fg.failed; ++index)
             {
                 const auto deadline = start + std::chrono::duration<double>(
                     chosen->interval * (index + 1) / (chosen->count + 1));
                 // A delayed GPU copy must not cause a burst of obsolete generated frames.
-                if (std::chrono::steady_clock::now() >= deadline) continue;
+                if (std::chrono::steady_clock::now() >= deadline) { ++late; continue; }
                 if (g_fg_waitable != nullptr)
                 {
                     // The compositor's pacing: wait for the back buffer to
                     // be released instead of sleeping to a wall-clock
                     // deadline that drifts against the vblank.
-                    if (WaitForSingleObject(g_fg_waitable, 2000) != WAIT_OBJECT_0)
+                    if (wait_vblank(2000) != WAIT_OBJECT_0)
                         Log("[fg] waitable timeout - the compositor stalled");
                 }
                 if (!present(chosen->interpolated[index].get())) g_fg.failed = true;
+                else { ++shown_gen; add(copy_gen, last_copy_ms); ++copy_bins[bin_of(last_copy_ms)]; }
                 std::unique_lock<std::mutex> lock(g_fg.mutex);
                 if (g_fg.wake.wait_until(lock, deadline, [&] {
                     if (g_fg.stop) return true;
                     for (auto &slot : g_fg.slots)
                         if (slot.state == 2 && slot.sequence > chosen->sequence) return true;
                     return false;
-                })) break;
+                })) { superseded += chosen->count - index - 1; break; }
             }
         }
+        else ++flat;
         if (!g_fg.stop && !g_fg.failed)
         {
             if (g_fg_waitable != nullptr
-                && WaitForSingleObject(g_fg_waitable, 2000) != WAIT_OBJECT_0)
+                && wait_vblank(2000) != WAIT_OBJECT_0)
                 Log("[fg] waitable timeout on the real frame");
             if (!present(chosen->real.get())) g_fg.failed = true;
+            else add(copy_real, last_copy_ms);
         }
         previous = chosen->sequence;
         {
@@ -299,6 +331,19 @@ static void FgPresenter()
             // ran).
             Log("[fg] displayed %.1f FPS (real + generated, %ux); experimental flat-depth guides",
                 shown / elapsed, chosen->count + 1);
+            if (PhaseEnabled())
+                Log("[phase] fg presenter: copy wait generated %.2f/%.2f real %.2f/%.2f ms | "
+                    "generated by copy wait <1=%u 1-2=%u 2-4=%u 4-8=%u 8-16=%u 16+=%u | "
+                    "vblank wait %.2f/%.2f ms | generated shown %u of %u (late %u, "
+                    "superseded %u) | real skipped %u, without generated %u (mean/max)",
+                    copy_gen.n ? copy_gen.sum / copy_gen.n : 0.0, copy_gen.max,
+                    copy_real.n ? copy_real.sum / copy_real.n : 0.0, copy_real.max,
+                    copy_bins[0], copy_bins[1], copy_bins[2], copy_bins[3], copy_bins[4],
+                    copy_bins[5], vblank.n ? vblank.sum / vblank.n : 0.0, vblank.max,
+                    shown_gen, planned, late, superseded, skipped, flat);
+            copy_gen = PresentStat{}; copy_real = PresentStat{}; vblank = PresentStat{};
+            for (auto &b : copy_bins) b = 0;
+            planned = shown_gen = late = superseded = flat = skipped = 0;
             shown = 0; report = start;
         }
     }
