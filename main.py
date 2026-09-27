@@ -670,6 +670,23 @@ def main() -> int:
                 # rebuild raised it and the menu was closed in between.
                 st.display.drop_switch_mode()
                 st.display.set_visible(False)
+                # The window is hidden but it is still a window, and this
+                # branch is the only thing running: every other pump lives in
+                # drawing or in the frame path, neither of which this branch
+                # reaches. Unpumped, Windows marks it Not Responding and stops
+                # answering it - measured (#135): a `SendMessageTimeoutW` to
+                # this window returns nothing and `IsHungAppWindow` turns True.
+                # The native Save As dialog is OWNED by this very window
+                # (commands.open_save_dialog hands over st.display.get_hwnd()),
+                # and an owner that does not answer blocks the dialog: the
+                # reporter's own log waited 59193 ms for the answer and only
+                # moved when he opened the menu - which is what pumps again.
+                # pump(), not get(): the branch above opens the menu and must
+                # still find its events queued.
+                try:
+                    pygame.event.pump()
+                except Exception:
+                    pass
 
         while st.running:
             loop_start = time.perf_counter()

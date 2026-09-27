@@ -30,6 +30,25 @@ Scope and honesty notes:
 
 ---
 
+## Unreleased
+
+* **The screenshot dialog opens while NR is off (#135).** With NR off and the
+  panel closed the program hides its window and sleeps, and the only call that
+  took messages off that window's queue lived inside the menu branch - so
+  nothing pumped it. Windows marked the window Not Responding and stopped
+  answering it, and the native Save As dialog is OWNED by that very window, so
+  opening it stalled: the reporter's own log opened the dialog at 18:36:23.545
+  and recorded the answer at 18:37:22.643, 59193 ms later, the only event in
+  between being `overlay menu opened` - which is exactly what started pumping
+  again. Measured on the bench, four states of the real program: NR ON with the
+  menu open answered a `SendMessageTimeoutW` in 2 ms and the dialog appeared at
+  once; NR OFF with the menu closed did not answer at all, `IsHungAppWindow`
+  turned True, and no dialog appeared in 100 s. The idle branch pumps the
+  window now. This also explains the second half of the report - the panel
+  appearing in the saved file "though it did not before": the file is written
+  when the dialog is ANSWERED, so it carried the menu as it looked 59 seconds
+  later, not as it looked when the screenshot was taken.
+
 ## v2.1.7 - 2026-09-27 - Frame Generation takes only new pictures and is paced by the display
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).

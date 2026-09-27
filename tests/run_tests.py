@@ -101,6 +101,7 @@ ABOUT = {
     "test_hud_handle_before_worker.py": "the panel publishes its handle before the worker reads it",
     "test_screenshot_opaque.py": "a PNG screenshot carries no transparency over the panel",
     "test_foreign_window_rule.py": "shell chrome and our own windows never count as covering us",
+    "test_idle_overlay_pumps.py": "the idle overlay answers its window's messages, so the Save As dialog opens (#135)",
     "test_i18n_not_mixed.py": "no language's interface shows another language's words",
     "test_zorder_walk_depth.py": "the z-order walk reaches our own windows past any helper stack",
     "test_convert_queue.py": "the conversion queue: order, per-file settings, progress, stop, retry, row text",
@@ -491,6 +492,7 @@ TEST_GROUPS = {
     GROUP_GUI_E2E: frozenset({
         "test_capture_visibility.py",
         "test_focus_z_order.py",
+        "test_idle_overlay_pumps.py",
         "test_monitor_windows.py",
         "test_overlay_toolwindow.py",
         "test_reveal.py",
