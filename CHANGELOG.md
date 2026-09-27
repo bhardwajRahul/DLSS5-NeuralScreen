@@ -30,6 +30,26 @@ Scope and honesty notes:
 
 ---
 
+## Unreleased
+
+Fixes from the review of v2.1.6 against the tracker (#132, #123).
+
+* **Frame Generation takes only new pictures (#132).** Every frame the loop
+  produced went into FG as a new real frame: a pointer-only Desktop
+  Duplication update (the same pixels - the cursor is not in the capture) and
+  a WGC window that had not redrawn. Each cost a full set of DLSS-G evaluates,
+  and its slot, a few ms after the real one, superseded the generated frames
+  of the real step - the video stuttered while the mouse moved, the counter
+  went up and so did the GPU load. Such a frame is now held: no slot, no
+  evaluate, the export and the reply as before. FG spaces its frames by the
+  source's own timestamps (DDA `LastPresentTime`, WGC `SystemRelativeTime`),
+  not by when the loop got to them.
+* **Window capture waits for the window (#132).** WGC's `TryGetNextFrame`
+  returns at once, so a window that was not redrawing spun the whole loop on
+  the same picture - the "FG does nothing in window mode" of the report. The
+  capture now waits for the window's next frame, up to 100 ms, like the
+  Desktop Duplication acquire.
+
 ## v2.1.5 - 2026-09-25 - the fixes from the tracker, and presentation on its own queue
 
 Patch release on the v2.1 line: the three open reports (#128, #129, #130) plus

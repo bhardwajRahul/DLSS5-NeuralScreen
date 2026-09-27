@@ -173,7 +173,13 @@ def main() -> int:
         if "bool bypass" not in present.split("{")[0]:
             failures.append("FgPresent() takes no `bypass`: it cannot tell "
                             "which frame the screen is showing")
-        if "v.color.tex : v.output" not in present:
+        # The choice lives in ExportFgSource, shared by the frame FG takes
+        # and the one it holds (#132); both must hand it `bypass`.
+        export = body_after(fg, "static void ExportFgSource(VideoState &v, bool bypass)")
+        hold = body_after(fg, "static bool FgHold(VideoState &v, bool bypass)")
+        if ("v.color.tex : v.output" not in export
+                or "ExportFgSource(v, bypass)" not in present
+                or "ExportFgSource(v, bypass)" not in hold):
             failures.append("the export source does not follow `bypass`: on the "
                             "bypass path the export keeps sending the stale "
                             "neural frame that the screen is not showing")

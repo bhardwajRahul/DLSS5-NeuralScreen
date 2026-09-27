@@ -5,21 +5,25 @@ bars. The worker captures it through WGC like any window the user picks; with
 NS_WINDOW_POS off-screen as well, a test drives the whole capture -> network
 -> present chain with nothing visible.
 
-Two placements:
+Three placements:
 
 * far off every monitor (the default). DWM delivers such a window's first
   frame and a resize frame, and nothing after that - enough for a test that
   needs one picture;
 * a "ghost" (ghost=True): on the primary monitor, at 1/255 opacity,
   click-through and at the bottom of the z-order. DWM composes it, so every
-  repaint reaches WGC - for a test that needs the picture to change.
+  repaint reaches WGC - for a test that needs the picture to change;
+* a "cover" (cover=True): on the primary monitor at (0, 0), opaque and
+  topmost - the one placement that shows. Desktop Duplication of that corner
+  then sees nothing but this window, so a test can move the pointer over a
+  picture that does not change.
 
 It can be resized while it is being captured (a video player on every
 fullscreen toggle), repainted with other colours (a scene cut), or left to
 animate on its own (a playing video).
 
 Not a test itself: tests import it (test_early_reply, test_hdr_resize,
-test_worker_scene).
+test_worker_scene, test_fg_fresh_frames).
 """
 import ctypes
 import threading
@@ -66,6 +70,7 @@ WS_EX_TOOLWINDOW = 0x80
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_LAYERED = 0x80000
 WS_EX_TRANSPARENT = 0x20
+WS_EX_TOPMOST = 0x8
 LWA_ALPHA = 0x2
 HWND_BOTTOM = wintypes.HWND(1)
 SW_SHOWNOACTIVATE = 4
@@ -93,14 +98,19 @@ class Target:
     """
 
     def __init__(self, width: int, height: int, name: str = "NsOffscreenTarget",
-                 ghost: bool = False):
+                 ghost: bool = False, cover: bool = False):
         self.hwnd = None
         self._size = (width, height)
         self._name = name
         self._ghost = ghost
+        self._cover = cover
         self.bars = tuple(BARS)
-        # Repaint on every turn of the window's own loop (~100 a second).
+        # Repaint on every turn of the window's own loop (~100 a second), or
+        # at most once per `animate_interval` seconds when that is set - a
+        # video at its own frame rate.
         self.animate = False
+        self.animate_interval = 0.0
+        self._next_paint = 0.0
         self._resize_to = None
         self._resized = threading.Event()
         self._ready = threading.Event()
@@ -140,6 +150,9 @@ class Target:
         if self._ghost:
             ex |= WS_EX_LAYERED | WS_EX_TRANSPARENT
             x = y = 0
+        if self._cover:
+            ex |= WS_EX_TOPMOST
+            x = y = 0
         self.hwnd = user32.CreateWindowExW(
             ex, wc.lpszClassName, self._name,
             WS_POPUP, x, y, w, h, None, None, wc.hInstance, None)
@@ -162,9 +175,12 @@ class Target:
                                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)
                 self._paint()
                 self._resized.set()
-            elif self.animate:
+            elif self.animate and time.perf_counter() >= self._next_paint:
                 self._paint()
-            time.sleep(0.01)
+                if self.animate_interval > 0.0:
+                    self._next_paint = max(self._next_paint + self.animate_interval,
+                                           time.perf_counter() - self.animate_interval)
+            time.sleep(0.001 if self.animate_interval > 0.0 else 0.01)
         user32.DestroyWindow(self.hwnd)
 
     def resize(self, width: int, height: int) -> None:

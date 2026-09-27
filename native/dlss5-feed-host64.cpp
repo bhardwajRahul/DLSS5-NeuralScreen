@@ -2193,6 +2193,12 @@ static UINT64 g_fg_present_fence = 0;
 static void StopFgPresentation();
 static void CloseFgResources();
 static bool g_fg_reset = true;
+// What the capture says about the frame FgPresent is handed: whether it is a
+// new picture, and when the source produced it (seconds on the QPC clock, 0 =
+// unknown). Set per frame by the main loop; a frame sent over the pipe is
+// always new and has no source clock.
+static bool g_fg_source_fresh = true;
+static double g_fg_source_seconds = 0.0;
 static bool EnsurePresentFormat(bool hdr, bool pq = false);
 static void CloseHdrResources();
 
@@ -4195,6 +4201,10 @@ static bool                    g_capture_rotate180 = false;
 static bool                    g_no_colour_retried = false;
 static bool                    g_dda_active = false;   // DDA1 with w>0 has been acked
 static bool                    g_capture_visual_changed = false;
+// When the source produced the picture the last grab returned, in seconds on
+// the QPC clock (DDA LastPresentTime, WGC SystemRelativeTime); 0 = unknown.
+// Frame Generation spaces its frames by this, not by when the loop got there.
+static double                  g_capture_source_seconds = 0.0;
 static UINT                    g_dda_w = 0, g_dda_h = 0;
 static ID3D11Device           *g_dda_d11 = nullptr;
 static ID3D11DeviceContext    *g_dda_ctx = nullptr;
@@ -5406,10 +5416,18 @@ static bool DdaGrab(VideoState &v)
         OpenDda(g_dda_w, g_dda_h);
         return false;
     }
-    // LastPresentTime is zero for pointer-only updates. Keep processing them
-    // exactly as before, but do not count them as fresh desktop pictures in
-    // the opt-in performance report.
+    // LastPresentTime is zero for pointer-only updates. NR keeps processing
+    // them, but they are not fresh desktop pictures: not in the opt-in
+    // performance report, and not for Frame Generation, which holds them
+    // (FgHold, #132).
     g_capture_visual_changed = fi.LastPresentTime.QuadPart != 0;
+    if (g_capture_visual_changed)
+    {
+        LARGE_INTEGER qpf = {};
+        QueryPerformanceFrequency(&qpf);
+        g_capture_source_seconds = qpf.QuadPart > 0
+            ? static_cast<double>(fi.LastPresentTime.QuadPart) / qpf.QuadPart : 0.0;
+    }
     ProfileCapture(t_acq, static_cast<UINT64>(fi.LastPresentTime.QuadPart), "dda");
     ID3D11Texture2D *frame = nullptr;
     if (FAILED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void **)&frame)))
@@ -5491,9 +5509,18 @@ struct WgcSession
     UINT pool_w = 0, pool_h = 0;
     UINT pending_w = 0, pending_h = 0;
     ULONGLONG pending_since = 0;
+    winrt::event_token arrived{};
 };
 
 static WgcSession *g_wgc = nullptr;   // g_wgc_active / g_wgc_hwnd live up with the present window
+// Set by the pool's FrameArrived. WgcGrab waits on it when the pool is empty,
+// the way DDA waits inside AcquireNextFrame: TryGetNextFrame returns at once,
+// and without a wait a window that is not redrawing spun the whole loop -
+// capture, NR, FG - on the same picture every few milliseconds (#132).
+// Created once and never closed, so a handler still in flight while a session
+// closes cannot signal a recycled handle.
+static HANDLE g_wgc_arrived = nullptr;
+static constexpr DWORD kWgcIdleWaitMs = 100;
 
 static void CloseWgc()
 {
@@ -5518,6 +5545,7 @@ static void CloseWgc()
     {
         try
         {
+            if (g_wgc->pool != nullptr && g_wgc->arrived) g_wgc->pool.FrameArrived(g_wgc->arrived);
             if (g_wgc->session != nullptr) g_wgc->session.Close();
             if (g_wgc->pool != nullptr) g_wgc->pool.Close();
         }
@@ -5589,6 +5617,9 @@ static bool OpenWgc(HWND hwnd)
                                     : ns_wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
         s->pool_w = (UINT)size.Width;
         s->pool_h = (UINT)size.Height;
+        if (g_wgc_arrived == nullptr) g_wgc_arrived = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (g_wgc_arrived != nullptr)
+            s->arrived = s->pool.FrameArrived([](auto const &, auto const &) { SetEvent(g_wgc_arrived); });
         s->session = s->pool.CreateCaptureSession(s->item);
         try { s->session.IsCursorCaptureEnabled(false); }
         catch (winrt::hresult_error const &) { Log("[wgc] cursor capture stays on"); }
@@ -5667,19 +5698,34 @@ static bool WgcGrab(VideoState &v)
     try
     {
         const double t_acq = PhaseNow();
-        auto frame = g_wgc->pool.TryGetNextFrame();
         // Drain-to-latest: the frame pool queues every frame the window
         // produces. After a stall (a slow eval, a resize hold, a lagging
         // main loop) the queue holds stale frames; grabbing one frame per
         // loop would replay the backlog at one frame per tick. Walk to the
         // LAST available frame and keep only that - one pool slot at a
         // time, closing everything older.
-        for (int drained = 0; drained < 8; ++drained)
+        auto latest = [] {
+            auto frame = g_wgc->pool.TryGetNextFrame();
+            for (int drained = 0; drained < 8; ++drained)
+            {
+                auto next = g_wgc->pool.TryGetNextFrame();
+                if (next == nullptr) break;
+                if (frame != nullptr) frame.Close();
+                frame = next;
+            }
+            return frame;
+        };
+        // Reset before looking: a frame that lands after the look sets the
+        // event again, and one that landed before it is already in the pool.
+        if (g_wgc_arrived != nullptr) ResetEvent(g_wgc_arrived);
+        auto frame = latest();
+        // Nothing new while there is a picture to keep: wait for the window's
+        // next frame, bounded like the DDA acquire. Not before the first
+        // frame - the no-colour recovery polls on its own schedule there.
+        if (frame == nullptr && g_dda_ready && g_wgc_arrived != nullptr)
         {
-            auto next = g_wgc->pool.TryGetNextFrame();
-            if (next == nullptr) break;
-            if (frame != nullptr) frame.Close();
-            frame = next;
+            WaitForSingleObject(g_wgc_arrived, kWgcIdleWaitMs);
+            frame = latest();
         }
         PhaseAdd(PH_ACQ, t_acq);
         // Nothing new: the window has not redrawn. Same meaning as
@@ -5696,6 +5742,7 @@ static bool WgcGrab(VideoState &v)
         }
         ProfileCapture(t_acq, 0, "wgc");
         g_capture_visual_changed = true;
+        g_capture_source_seconds = frame.SystemRelativeTime().count() / 1e7;
 
         // A WGC surface keeps the dimensions used to create the frame pool.
         // After a window resize only ContentSize changes; looking at the
@@ -7541,6 +7588,8 @@ static int RunVideo()
                 }
             }
             source_fresh = got && g_capture_visual_changed;
+            g_fg_source_fresh = source_fresh;
+            g_fg_source_seconds = source_fresh ? g_capture_source_seconds : 0.0;
             // The scene cut, when the client leaves it here. Only a frame that
             // really captured something has a score; a skipped or idle frame
             // leaves the reply without one.
@@ -7609,6 +7658,8 @@ static int RunVideo()
         else
         {
             if (phase_on) ++g_ph_fresh_sources;
+            g_fg_source_fresh = true;
+            g_fg_source_seconds = 0.0;
             const double t_up = PhaseNow();
             const bool up_ok = UploadVideoFrame(v, color_ptr, mv_ptr,
                                    (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0);
