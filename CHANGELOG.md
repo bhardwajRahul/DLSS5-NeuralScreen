@@ -34,6 +34,15 @@ Scope and honesty notes:
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).
 
+* **A still screen no longer resets NR and FG when it moves again.** Since
+  #130 made the stall reset real, any second without a new frame counted as a
+  capture pause - and on a desktop that is simply not changing, that is every
+  second of it. The first scroll, keystroke or video frame after a pause then
+  reset the NR history and showed one frame without generated frames: a hitch
+  exactly where motion starts. The history was never stale there: NR and FG
+  run on every one of those frames. The reset now needs a capture that really
+  missed something - closed, reopened, or a captured window minimised, hidden
+  or cloaked - and still fires in those cases.
 * **A reopened capture keeps the frame it was opened for.** The #128 fix
   consumed the first frame of every Desktop Duplication session to avoid
   showing its empty surface. It did that unconditionally, and the no-colour

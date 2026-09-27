@@ -4205,6 +4205,12 @@ static bool                    g_capture_visual_changed = false;
 // the QPC clock (DDA LastPresentTime, WGC SystemRelativeTime); 0 = unknown.
 // Frame Generation spaces its frames by this, not by when the loop got there.
 static double                  g_capture_source_seconds = 0.0;
+// The capture really missed something since its last new picture: the session
+// was closed or reopened (CloseCaptureBridge), or the captured window was
+// minimised or hidden, so what it shows next may have moved on without it. A
+// desktop that simply did not change is not that: its last frame is still the
+// picture, and the NR and FG histories built on it are still valid (F4).
+static bool                    g_capture_interrupted = false;
 static UINT                    g_dda_w = 0, g_dda_h = 0;
 static ID3D11Device           *g_dda_d11 = nullptr;
 static ID3D11DeviceContext    *g_dda_ctx = nullptr;
@@ -4268,6 +4274,7 @@ static void CloseGray()
 static void CloseCaptureBridge()
 {
     g_dda_ready = false;
+    g_capture_interrupted = true;
     g_hdr_capture = false;
     g_capture_float = false;
     CloseHdrResources();
@@ -5752,6 +5759,14 @@ static bool WgcGrab(VideoState &v)
             if (g_wgc->pending_since != 0 &&
                 GetTickCount64() - g_wgc->pending_since >= 250)
                 RecreateWgcPool(g_wgc->pending_w, g_wgc->pending_h);
+            // A minimised, hidden or cloaked window produces no frames while
+            // its content may still change; a visible one that is silent has
+            // simply not redrawn.
+            BOOL cloaked = FALSE;
+            if (IsIconic(g_wgc_hwnd) || !IsWindowVisible(g_wgc_hwnd) ||
+                (SUCCEEDED(DwmGetWindowAttribute(g_wgc_hwnd, DWMWA_CLOAKED,
+                                                 &cloaked, sizeof(cloaked))) && cloaked))
+                g_capture_interrupted = true;
             return false;
         }
         ProfileCapture(t_acq, 0, "wgc");
@@ -7622,18 +7637,29 @@ static int RunVideo()
             // fresh frame - evaluated with stale history once is enough to
             // see the smear, resetting on the FIRST stale frame keeps it
             // invisible.
+            //
+            // Only a silence in which the capture really missed something
+            // (g_capture_interrupted: closed, reopened, a window minimised or
+            // hidden). A desktop that did not change for a second answers
+            // WAIT_TIMEOUT all along and its last frame IS the picture; since
+            // the static-frame skip went (a0371ca) NR and FG run on every one
+            // of those frames, so their history is valid, and resetting it
+            // put a hitch on the first scroll or video frame after any pause
+            // (F4).
             if (source_fresh)
             {
                 // The pause is recorded here, not reset here: the reset is
                 // consumed further down, where NR and FG both read it, and the
                 // line is written there so it cannot announce a reset that
                 // never happened (#130).
-                if (stall_pending && now_tick - last_fresh_tick > 1000)
+                if (g_capture_interrupted && now_tick - last_fresh_tick > 1000)
+                {
+                    stall_pending = true;
                     stall_gap_ms = (unsigned long)(now_tick - last_fresh_tick);
+                }
+                g_capture_interrupted = false;
                 last_fresh_tick = now_tick;
             }
-            else if (!got && now_tick - last_fresh_tick > 1000)
-                stall_pending = true;
             if (!got && !g_dda_ready)
             {
                 // Not a single real desktop frame yet: keep the protocol
