@@ -132,12 +132,23 @@ def main() -> int:
     vswhere = Path(os.environ.get("ProgramFiles(x86)",
                                   r"C:\Program Files (x86)")) / \
         "Microsoft Visual Studio/Installer/vswhere.exe"
+    # Two passes, release first. vswhere hides PRERELEASE installs unless it is
+    # asked for them, and this bench's only C++ toolset is Visual Studio 18
+    # Insiders - so the single query answered with an empty string and this
+    # check went SILENT: no SKIP was printed (nothing raised), `install` was
+    # empty, and the compile below never ran while the test still reported OK.
+    # Same fix as native\vcvars.bat, tests\test_frame_retirement.py and
+    # tests\test_failure_stages.py.
+    query = [str(vswhere), "-latest", "-products", "*",
+             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+             "-property", "installationPath"]
     try:
         install = subprocess.check_output(
-            [str(vswhere), "-latest", "-products", "*",
-             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-             "-property", "installationPath"],
-            text=True, timeout=120).strip()
+            query, text=True, timeout=120).strip()
+        if not install:
+            install = subprocess.check_output(
+                query[:2] + ["-prerelease"] + query[2:],
+                text=True, timeout=120).strip()
     except Exception as exc:
         print(f"SKIP: MSVC is not available here ({exc}) - the source checks "
               f"above still ran")
@@ -151,7 +162,9 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="ns-compile-") as scratch:
             out_obj = Path(scratch) / "nvngx_deepscan.obj"
             command = (f'"{vcvars}" >nul && cl /nologo /c /O2 /EHsc /W3 /MD '
-                       f'/std:c++17 /Iinclude /Isrc '
+                       f'/std:c++17 '
+                       f'/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS '
+                       f'/Iinclude /Isrc '
                        f'"{SOURCE}" /Fo:"{out_obj}"')
             result = subprocess.run(
                 'cmd /d /s /c "' + command + '"', cwd=str(ROOT / "native"),

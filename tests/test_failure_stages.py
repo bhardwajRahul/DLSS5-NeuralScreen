@@ -56,19 +56,27 @@ def build_harness(work: Path) -> Path:
         Path(os.environ["ProgramFiles(x86)"])
         / "Microsoft Visual Studio/Installer/vswhere.exe"
     )
-    install = subprocess.check_output(
-        [
-            str(vswhere),
-            "-latest",
-            "-products",
-            "*",
-            "-requires",
-            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-            "-property",
-            "installationPath",
-        ],
-        text=True,
-    ).strip()
+    # Two passes, release first: vswhere hides PRERELEASE installs unless it is
+    # asked for them, and this bench's only C++ toolset is Visual Studio 18
+    # Insiders. The single query answered with an empty string, `install`
+    # became ".", and this check failed with "MSVC compiler environment
+    # unavailable" while a complete MSVC sat in Program Files. Same fix as
+    # native\vcvars.bat and tests\test_frame_retirement.py.
+    query = [
+        str(vswhere),
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "-property",
+        "installationPath",
+    ]
+    install = subprocess.check_output(query, text=True).strip()
+    if not install:
+        install = subprocess.check_output(
+            query[:2] + ["-prerelease"] + query[2:], text=True
+        ).strip()
     vcvars = Path(install) / "VC/Auxiliary/Build/vcvars64.bat"
     assert vcvars.is_file(), "MSVC compiler environment unavailable"
 
@@ -137,18 +145,26 @@ int main() {
         f'''@echo off
 call "{vcvars}" >nul
 if errorlevel 1 exit /b 1
-cl /nologo /O2 /EHsc /W3 /MD /std:c++17 /I"{NATIVE / 'include'}" /I"{NATIVE / 'src'}" "{source}" "{NATIVE / 'spout_bridge.cpp'}" "{NATIVE / 'gpu_recorder.cpp'}" /Fe:"{work / 'failure_stages.exe'}" /link "{NATIVE / 'lib/Windows_x86_64/x64/nvsdk_ngx_d.lib'}" "{NATIVE / 'SpoutDX.lib'}" version.lib kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib WindowsApp.lib dwmapi.lib mfplat.lib mfreadwrite.lib mfuuid.lib
+cl /nologo /O2 /EHsc /W3 /MD /std:c++17 /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS /I"{NATIVE / 'include'}" /I"{NATIVE / 'src'}" "{source}" "{NATIVE / 'spout_bridge.cpp'}" "{NATIVE / 'gpu_recorder.cpp'}" /Fe:"{work / 'failure_stages.exe'}" /link "{NATIVE / 'lib/Windows_x86_64/x64/nvsdk_ngx_d.lib'}" "{NATIVE / 'SpoutDX.lib'}" version.lib kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib WindowsApp.lib dwmapi.lib mfplat.lib mfreadwrite.lib mfuuid.lib
 ''',
         encoding="ascii",
     )
+    # The define and errors="replace" are the same two fixes as in
+    # tests\test_frame_retirement.py, and this file needs them for the same
+    # reasons: it compiles the worker's own source, which pulls in C++/WinRT
+    # (STL1011 under MSVC 14.51 and /std:c++17), and the compiler writes its
+    # diagnostics in the console code page - in a Russian locale that killed
+    # the reader thread, `built.stdout` came back None, and the assertion died
+    # on `None + str` instead of reporting what the compiler said.
     built = subprocess.run(
         [os.environ["COMSPEC"], "/d", "/c", str(build)],
         cwd=work,
         capture_output=True,
         text=True,
         timeout=120,
+        errors="replace",
     )
-    assert built.returncode == 0, built.stdout + built.stderr
+    assert built.returncode == 0, (built.stdout or "") + (built.stderr or "")
     return work / "failure_stages.exe"
 
 
