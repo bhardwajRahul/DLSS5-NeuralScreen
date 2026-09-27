@@ -181,10 +181,54 @@ def main() -> int:
     if "!g_present_mismatch" not in follow:
         failures.append("the window-back re-show ignores a size mismatch")
     active = _code(_body(cpp, "static bool PresentModeActive(const VideoState &v)"))
-    mismatch = active.split("if (ow != g_present_w || oh != g_present_h)", 1)[-1][:900]
+    # A 1400-character window, not 900: the original fix (the SW_HIDE) and the
+    # F9 re-show request sit ~950 characters behind the first `if`, and a
+    # window that ends between them silently drops the second check.
+    mismatch = active.split("if (ow != g_present_w || oh != g_present_h)", 1)[-1][:1400]
     if "ShowWindow(g_present_hwnd, SW_HIDE)" not in mismatch:
         failures.append("a size mismatch only clears the flag - the stale "
                         "overlay stays on screen")
+
+    # 12b. The re-show after a mismatch happens AFTER a Present (F9), never in
+    #      PresentModeActive itself.
+    #
+    # PresentModeActive runs BEFORE the frame is presented. Showing the window
+    # there put it back on screen while the compositor still held the frame
+    # from before the mismatch, so one refresh showed a picture that no longer
+    # matched the output - the "one frame early" of the brief. The decision is
+    # taken in PresentModeActive (it is the function that knows the sizes) and
+    # the show is performed by RevealOnFirstPresent, which every present path
+    # calls with the frame of that call already presented.
+    if "g_present_reshow = true" not in mismatch:
+        failures.append("the size mismatch no longer asks for the overlay back "
+                        "(F9) - desktop mode would leave it hidden forever")
+    # Hiding is this region's own job (SW_HIDE, checked above); SHOWING is not.
+    if "SW_SHOW" in mismatch or "ShowPresentBelowPanel" in mismatch:
+        failures.append("the overlay is shown while the sizes are checked - the "
+                        "frame from before the mismatch goes on screen for one "
+                        "refresh (F9)")
+    reveal = _code(_body(cpp, "static void RevealOnFirstPresent()"))
+    if "g_present_reshow" not in reveal:
+        failures.append("nothing consumes the post-mismatch show request - the "
+                        "overlay never comes back after a resize (F9)")
+    elif reveal.find("g_present_reshow") > reveal.find("g_present_revealed) return"):
+        failures.append("the re-show is handled after the already-revealed "
+                        "early return - it is dead code (F9)")
+    # Every path that presents has to offer the show; one that does not leaves
+    # a desktop-mode mismatch hidden until the next mode switch.
+    for name, signature, source in (
+            ("PresentFrame", "static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)", cpp),
+            ("PresentBypass", "static bool PresentBypass(VideoState &v)", cpp),
+            ("PresentHdr", None, present_hdr)):
+        body = source if signature is None else _code(_body(source, signature))
+        if body and "RevealOnFirstPresent()" not in body:
+            failures.append(f"{name} presents without offering the reveal - a "
+                            "re-show requested by PresentModeActive is dropped (F9)")
+    # The one-shot log line is per episode: a session that resizes twice must
+    # not go silent about the second one (F9).
+    if "warned = false" not in mismatch:
+        failures.append("the mismatch warning is one-shot per process, not per "
+                        "episode - the second resize is silent in the log (F9)")
 
     # 13. The HDR composite reads a flipped display's native frame turned over
     shaders = _read("hdr_shaders.h")

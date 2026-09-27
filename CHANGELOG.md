@@ -73,6 +73,30 @@ Scope and honesty notes:
   string is still not an unbind, so a hand-written config cannot mute a hotkey
   by accident.
 
+* **The picture comes back after a resize with the frame that was just
+  presented, not the one from before it.** When the output's size stops
+  matching the overlay's, the overlay is hidden - right, it would otherwise
+  show a stale-sized picture. It used to be shown again from inside the size
+  check itself, which runs BEFORE that frame is presented: for one refresh the
+  screen held the frame from before the mismatch, at the new size, with the
+  sizes already matching. The decision stays where the sizes are known; the
+  show now happens after that frame's Present, where the reveal-on-first-frame
+  already lived. The log line is also per episode now instead of one per run,
+  so a second resize is not silent when someone is reading the log - which is
+  exactly when it matters.
+
+  Found while checking the review's other native item, the two-second waits
+  while the overlay is hidden: **it did not reproduce.** With FG on at 4x and
+  the overlay really hidden - a captured window shrunk below the picture, the
+  one path that hides it while frames keep flowing; a size mismatch does not
+  count, PresentModeActive hands that frame to the client and the presenter
+  idles - the presenter's own two-second report, taken entirely inside the
+  hidden state, showed **184 generated frames shown, no waitable timeout, and
+  a mean vblank wait of 0.02 ms** (1.98 ms worst). The compositor keeps
+  retiring presents for a hidden flip-model window, so the wait returns at
+  once. The item is closed as measured, with no change made against it, and
+  the 2000 ms waits are left as they are.
+
 ## v2.1.7 - 2026-09-27 - Frame Generation takes only new pictures and is paced by the display
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).

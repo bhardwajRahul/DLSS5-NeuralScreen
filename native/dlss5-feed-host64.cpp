@@ -2264,6 +2264,11 @@ static std::atomic<bool>          g_present_revealed{false};   // the first Pres
 // The output no longer has the overlay's size (PresentModeActive): hidden
 // until it has again, and nothing may show it before then.
 static std::atomic<bool>          g_present_mismatch{false};
+// The sizes match again, but the show waits for the next Present: showing
+// first put the frame from before the mismatch on screen for one refresh
+// (F9). Consumed by RevealOnFirstPresent, which every present path calls
+// once its own Present has returned.
+static std::atomic<bool>          g_present_reshow{false};
 static RECT                       g_present_follow = {};   // where the target window was last seen
 // Defined here rather than with the capture code below: the present window
 // has to know whether one window is being captured, and which one, and this
@@ -2541,6 +2546,7 @@ static void ClosePresent()
     g_present_shown = false;
     g_present_revealed = false;
     g_present_mismatch = false;
+    g_present_reshow = false;
     // A fresh swap chain knows nothing about its colour space either.
     g_present_space_set = false;
     g_present_space = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
@@ -2659,11 +2665,14 @@ static bool ShowPresentBelowPanel();   // defined next to RevealOnFirstPresent
 static bool PresentModeActive(const VideoState &v)
 {
     if (g_present_swap == nullptr) return false;
+    // One line per mismatch episode rather than one per process (F9): a
+    // session that resizes twice has two episodes, and the second one is
+    // otherwise silent in the log exactly when someone is reading it.
+    static bool warned = false;
     const UINT ow = v.upscale ? v.full_w : v.w;
     const UINT oh = v.upscale ? v.full_h : v.hgt;
     if (ow != g_present_w || oh != g_present_h)
     {
-        static bool warned = false;
         if (!warned)
         {
             warned = true;
@@ -2689,16 +2698,17 @@ static bool PresentModeActive(const VideoState &v)
     if (g_present_mismatch)
     {
         g_present_mismatch = false;
-        // Desktop mode has no follower to bring it back, so it comes back
-        // here - below the panel, like every re-show. Window mode leaves it
-        // to FollowCapturedWindow, which also knows about a minimised target.
+        warned = false;             // one line per mismatch episode, not per process
+        // Desktop mode has no follower to bring it back, so it ASKS for the
+        // show here - and the show itself happens after the next Present (F9).
+        // Showing it in this function put the picture on screen before the
+        // frame was presented, so the frame from before the mismatch was what
+        // the compositor had to show for one refresh.
+        // Window mode leaves it to FollowCapturedWindow, which also knows
+        // about a minimised target.
         if (!g_wgc_active && !g_present_shown && g_present_hwnd != nullptr
             && g_present_revealed)
-        {
-            if (!ShowPresentBelowPanel()) ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
-            g_present_shown = true;
-            Log("[present] the output has the overlay's size again - shown");
-        }
+            g_present_reshow = true;
     }
     return true;
 }
@@ -3102,7 +3112,23 @@ static bool ShowPresentBelowPanel()
 
 static void RevealOnFirstPresent()
 {
-    if (g_present_hwnd == nullptr || g_present_revealed) return;
+    if (g_present_hwnd == nullptr) return;
+    // The sizes match again after a mismatch (F9): PresentModeActive has
+    // already asked for the re-show and this call is the first one since that
+    // frame's Present returned, so the picture that goes on screen is the one
+    // just presented. Showing it there instead put the pre-mismatch frame on
+    // screen for one refresh - the overlay was visible and still carried the
+    // old picture, which is what the log called "one frame early".
+    if (g_present_reshow && !g_present_shown && g_present_revealed)
+    {
+        g_present_reshow = false;
+        const bool below = ShowPresentBelowPanel();
+        if (!below) ShowWindow(g_present_hwnd, SW_SHOWNOACTIVATE);
+        g_present_shown = true;
+        Log("[present] the output has the overlay's size again - shown");
+        return;
+    }
+    if (g_present_revealed) return;
     // Shown directly BELOW the parent's panel rather than on top of it.
     //
     // ShowWindow puts a topmost window above every other topmost window, and
