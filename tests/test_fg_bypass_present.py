@@ -46,6 +46,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -215,22 +216,23 @@ def main() -> int:
         print("SKIP: the compiler was not found; the compile check did not run")
     else:
         vcvars = Path(install) / "VC/Auxiliary/Build/vcvars64.bat"
-        out_obj = ROOT / "_work" / "nvngx_fg_bypass.obj"
-        command = (f'"{vcvars}" >nul && cl /nologo /c /O2 /EHsc /W3 /MD '
-                   f'/std:c++17 /Iinclude /Isrc "{HOST}" /Fo:"{out_obj}"')
-        result = subprocess.run(
-            'cmd /d /s /c "' + command + '"', cwd=str(ROOT / "native"),
-            capture_output=True, text=True, encoding="cp866",
-            errors="replace", timeout=540)
-        combined = (result.stdout or "") + (result.stderr or "")
-        if result.returncode != 0 or "error C" in combined:
-            failures.append("the worker does not compile:\n" +
-                            "\n".join(l for l in combined.splitlines()
-                                      if "error" in l.lower())[:500])
-        try:
-            out_obj.unlink()
-        except OSError:
-            pass
+        # A temp directory, not repo/_work: that folder is gitignored scratch
+        # that a disk cleanup may remove, and an object file is exactly what
+        # tempfile is for. Writing here needed _work to exist, so the check
+        # failed with C1083 on a tree where the cleanup had taken it.
+        with tempfile.TemporaryDirectory(prefix="ns-compile-") as scratch:
+            out_obj = Path(scratch) / "nvngx_fg_bypass.obj"
+            command = (f'"{vcvars}" >nul && cl /nologo /c /O2 /EHsc /W3 /MD '
+                       f'/std:c++17 /Iinclude /Isrc "{HOST}" /Fo:"{out_obj}"')
+            result = subprocess.run(
+                'cmd /d /s /c "' + command + '"', cwd=str(ROOT / "native"),
+                capture_output=True, text=True, encoding="cp866",
+                errors="replace", timeout=540)
+            combined = (result.stdout or "") + (result.stderr or "")
+            if result.returncode != 0 or "error C" in combined:
+                failures.append("the worker does not compile:\n" +
+                                "\n".join(l for l in combined.splitlines()
+                                          if "error" in l.lower())[:500])
 
     for f in failures:
         print("FAIL:", f)
