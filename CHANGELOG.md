@@ -30,7 +30,11 @@ Scope and honesty notes:
 
 ---
 
-## Unreleased
+## v2.1.8 - 2026-09-27 - Both tracker tickets: the screenshot dialog, and a hotkey master switch
+
+Fixes for the two open tickets (#135, #134), the last native item from the
+v2.1.6 review, and the bench's own C++ toolchain, which had stopped finding
+Visual Studio at all.
 
 * **The screenshot dialog opens while NR is off (#135).** With NR off and the
   panel closed the program hides its window and sleeps, and the only call that
