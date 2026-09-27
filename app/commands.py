@@ -111,6 +111,27 @@ def save_screenshot(st, path: Path, rgba) -> None:
         st.display.alert(UI_STRINGS[st.lang]["shot_fail"])
 
 
+def nr_passes_alert(st, passes: int) -> str:
+    """The alert for a pass-count hotkey: the count set, and the count that
+    really runs where that differs.
+
+    The cascade runs only under Boost, and only with a work size apart from
+    the frame - a frame too small to step aside keeps its size and runs one
+    pass (#126). The hotkey shows the state the pipeline is in, not just the
+    number it accepted.
+    """
+    strings = UI_STRINGS[st.lang]
+    live = settings_io.cascade_passes(st)
+    if live > 1:
+        width, height = int(st.width), int(st.height)
+        if settings_io._work_size(width, height, st.work_scale, live) == (width, height):
+            live = 1
+    text = f"{strings['nr_passes']}: {passes}"
+    if live != passes:
+        text += f" ({strings['nr_passes_runs'].format(live=live)})"
+    return text
+
+
 def request_screenshot(st) -> None:
     """Request pixels before showing Save As, so the dialog cannot be captured.
 
@@ -1491,6 +1512,15 @@ def drain_commands(st) -> bool:
                 st.display.alert(UI_STRINGS[st.lang].get(
                     "fg_on" if state else "fg_off",
                     "DLSS FG ON" if state else "DLSS FG OFF"))
+            elif cmd in ("nr_passes_up", "nr_passes_down"):
+                # The NR cascade one pass up or down (#126), through the same
+                # action the panel's control takes.
+                current = int(getattr(st, "nr_passes", 1) or 1)
+                passes = min(4, max(1, current + (1 if cmd == "nr_passes_up" else -1)))
+                if passes != current:
+                    apply_menu_action(st, ("nr_passes", passes))
+                    st.display.menu.set_state({"nr_passes": passes})
+                st.display.alert(nr_passes_alert(st, passes))
             elif cmd == "record":
                 # Num0: record the NR frame into an MP4. The frames
                 # are requested from the worker through

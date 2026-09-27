@@ -34,6 +34,13 @@ Scope and honesty notes:
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).
 
+* **Hotkeys for the NR passes (#126).** Num+ and Num− step the cascade one
+  pass up or down, 1 to 4, through the same path as the panel's control -
+  no restart - and are rebindable in Settings -> Keys like the rest. The alert
+  names the count and, where it differs, the count that really runs: the
+  cascade needs Boost, and a frame too small to step its work size aside runs
+  one pass. On the numpad on purpose: a global hotkey takes its key from every
+  program, and the main row's minus is typed far too often for that.
 * **Moving off a vanished monitor works when it was output 0 (#128).** The
   switch compared positional indices: once the monitor list was re-read, the
   live monitor was output 0 - the index the unplugged one had - and the switch

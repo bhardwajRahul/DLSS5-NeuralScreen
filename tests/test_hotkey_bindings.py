@@ -8,7 +8,9 @@ measurement script broke because it hard-coded the old key). So:
   * aliases (CONTROL == CTRL, case, whitespace) resolve to the same VK;
   * build_bindings applies overrides and silently ignores bad ones;
   * DEFAULT_BINDINGS are internally consistent: unique commands, valid
-    keys, and numlock_needed() names exactly the numpad bindings;
+    keys, and numlock_needed() names exactly the numpad bindings that
+    Num Lock turns into other keys (the digits and the dot - the arithmetic
+    keys send the same code either way);
   * the test itself never hard-codes a key: it reads DEFAULT_BINDINGS.
 
 Run:  runtime\\python.exe test_hotkey_bindings.py
@@ -22,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
 from hotkeys import (DEFAULT_BINDINGS, _KEY_NAMES, _NUMPAD_VKS,  # noqa: E402
                      MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+                     VK_ADD, VK_DIVIDE, VK_MULTIPLY, VK_SUBTRACT,
                      build_bindings, numlock_needed, parse_binding)
 
 
@@ -78,10 +81,11 @@ def main() -> int:
         if parse_binding(name) is None:
             failures.append(f"binding name {name!r} does not parse")
 
-    # 6. numlock_needed names exactly the numpad bindings.
+    # 6. numlock_needed names exactly the numpad bindings Num Lock affects.
     needed = set(numlock_needed())
+    arithmetic = {VK_ADD, VK_SUBTRACT, VK_MULTIPLY, VK_DIVIDE}
     numpad_names = {name for _, vk, _c, name in DEFAULT_BINDINGS.values()
-                    if vk in _NUMPAD_VKS}
+                    if vk in _NUMPAD_VKS and vk not in arithmetic}
     if needed != numpad_names:
         failures.append(f"numlock_needed {sorted(needed)} != "
                         f"numpad bindings {sorted(numpad_names)}")

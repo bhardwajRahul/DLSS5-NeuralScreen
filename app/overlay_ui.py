@@ -118,6 +118,8 @@ HOTKEY_ROWS = (
     ("window_mode", "hk_window"),
     ("scale_up", "hk_scale_up"),
     ("scale_down", "hk_scale_down"),
+    ("nr_passes_up", "hk_nr_passes_up"),
+    ("nr_passes_down", "hk_nr_passes_down"),
     ("quit", "hk_quit"),
 )
 

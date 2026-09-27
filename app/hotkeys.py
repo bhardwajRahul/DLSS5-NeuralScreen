@@ -104,6 +104,11 @@ DEFAULT_BINDINGS = {
     # Frame Generation on/off, next to the NR toggle on the block (user
     # request 15.09: the FG switch lives two pages deep in the menu).
     9: (MOD_NOREPEAT, VK_NUMPAD[7], "framegen", "Num7"),
+    # The NR cascade one pass up or down (#126). On the block's own + and -,
+    # not the main row's: RegisterHotKey takes a key from every program, and
+    # a hyphen is typed far too often to belong to NeuralScreen.
+    10: (MOD_NOREPEAT, VK_ADD, "nr_passes_up", "Numplus"),
+    11: (MOD_NOREPEAT, VK_SUBTRACT, "nr_passes_down", "Numminus"),
 }
 
 # Key name -> VK (for parsing the config)
@@ -204,8 +209,10 @@ def numlock_needed(bindings: dict | None = None) -> list:
     the program is broken.
     """
     src = bindings or DEFAULT_BINDINGS
+    # The arithmetic keys send the same code with Num Lock off.
     return [name for _, (_, vk, _cmd, name) in sorted(src.items())
-            if vk in _NUMPAD_VKS]
+            if vk in _NUMPAD_VKS
+            and vk not in (VK_ADD, VK_SUBTRACT, VK_MULTIPLY, VK_DIVIDE)]
 
 
 # --- polling fallback -----------------------------------------------------
