@@ -705,6 +705,7 @@ def switch_monitor(st, new_monitor: int | str) -> None:
     # Everything downstream of the size - the worker, the shm, the
     # overlay, the flags - is rebuilt by _rebuild_pipeline, which owns
     # those names; this function only picks the monitor and the size.
+    target_name = new_monitor if isinstance(new_monitor, str) else None
     if isinstance(new_monitor, str):
         resolved = resolve_output_idx(new_monitor)
         if resolved is None:
@@ -719,7 +720,13 @@ def switch_monitor(st, new_monitor: int | str) -> None:
             st.display.alert(UI_STRINGS[st.lang]["mon_fail"])
             return
         new_monitor = resolved
-    if new_monitor == st.monitor:
+    # By identity when the caller named one. When output 0 vanishes and the
+    # dxcam factory has been refreshed since, the live monitor IS output 0
+    # now - the index the dead one had - and comparing indices made the move
+    # off a vanished display a no-op, which follow_monitor then never retried
+    # (F8).
+    current = getattr(getattr(st, "capture", None), "devicename", None)
+    if new_monitor == st.monitor and (target_name is None or target_name == current):
         return
     print(f"[main] monitor change: {st.monitor} -> {new_monitor}")
     teardown_pipeline(st)

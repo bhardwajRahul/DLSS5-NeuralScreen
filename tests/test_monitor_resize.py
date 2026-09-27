@@ -219,6 +219,41 @@ def main() -> int:
         failures.append(f"the capture left the dead monitor anyway: "
                         f"{st.capture.devicename}")
 
+    # 10. Output 0 vanished and the dxcam factory was refreshed since: the
+    #     live monitor now IS output 0, the index the dead one had. The real
+    #     switch_monitor compared indices and returned without moving - the
+    #     pipeline stayed on the missing display while the log said it was
+    #     switching, and mon_gone kept it from ever trying again (F8).
+    st = _state()
+    moved = []
+    real = (pipeline.resolve_output_idx, pipeline.teardown_pipeline,
+            pipeline.ScreenCapture, pipeline.rebuild_pipeline,
+            startup._apply_monitor_env)
+    pipeline.resolve_output_idx = lambda name: 0      # refreshed: DISPLAY2 is 0
+    pipeline.teardown_pipeline = lambda s: moved.append("teardown")
+    pipeline.ScreenCapture = lambda monitor_idx=0: types.SimpleNamespace(
+        devicename=r"\\.\DISPLAY2", resolution=(1920, 1080),
+        monitor_idx=monitor_idx, close=lambda: None)
+    pipeline.rebuild_pipeline = lambda s, note: moved.append("rebuild")
+    startup._apply_monitor_env = lambda capture: (0, 0)
+    try:
+        pipeline.switch_monitor(st, r"\\.\DISPLAY2")
+        if moved != ["teardown", "rebuild"] or st.capture.devicename != r"\\.\DISPLAY2":
+            failures.append(f"switching off vanished output 0 to the monitor that "
+                            f"is output 0 now did nothing (steps {moved}, capture "
+                            f"{st.capture.devicename}) - the index matched (F8)")
+        # ... while a switch to the monitor already captured is still a no-op.
+        st = _state()
+        moved.clear()
+        pipeline.switch_monitor(st, r"\\.\DISPLAY1")
+        if moved:
+            failures.append("a switch to the monitor already captured rebuilt "
+                            "the pipeline")
+    finally:
+        (pipeline.resolve_output_idx, pipeline.teardown_pipeline,
+         pipeline.ScreenCapture, pipeline.rebuild_pipeline,
+         startup._apply_monitor_env) = real
+
     for f in failures:
         print("FAIL:", f)
     if failures:

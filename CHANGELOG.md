@@ -34,6 +34,11 @@ Scope and honesty notes:
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).
 
+* **Moving off a vanished monitor works when it was output 0 (#128).** The
+  switch compared positional indices: once the monitor list was re-read, the
+  live monitor was output 0 - the index the unplugged one had - and the switch
+  returned without doing anything, while the log said it was switching and
+  the absence was never retried. It compares the monitor's identity now.
 * **Frame Generation is really paced by the compositor (#123).** The frame
   latency waitable is a semaphore that every retired present raises, and the
   ordinary present path never waits on it. After a few seconds of NR-only
