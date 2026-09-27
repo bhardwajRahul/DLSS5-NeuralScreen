@@ -34,6 +34,15 @@ Scope and honesty notes:
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).
 
+* **Frame Generation is really paced by the compositor (#123).** The frame
+  latency waitable is a semaphore that every retired present raises, and the
+  ordinary present path never waits on it. After a few seconds of NR-only
+  presenting it held ~40 counts; the FG presenter consumed one, so none of its
+  waits ever blocked, for the whole session, while the log said `paced by the
+  compositor (latency 1)`. The presenter now drains every count at start.
+  Measured at 4x on a 144 Hz display: the wait before each present went from
+  0.00 ms to ~6.4 ms (one vblank), and the generated frames dropped as late
+  from ~95 to ~5 per two seconds.
 * **A still screen no longer resets NR and FG when it moves again.** Since
   #130 made the stall reset real, any second without a new frame counted as a
   capture pause - and on a desktop that is simply not changing, that is every

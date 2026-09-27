@@ -173,7 +173,11 @@ static void FgPresenter()
     auto bin_of = [](double ms) {
         return ms < 1.0 ? 0 : ms < 2.0 ? 1 : ms < 4.0 ? 2 : ms < 8.0 ? 3 : ms < 16.0 ? 4 : 5;
     };
+    // One back buffer is free when the presenter starts with a count in hand
+    // (see the drain below): the first present takes it without waiting.
+    bool free_slot = false;
     auto wait_vblank = [&](DWORD ms) {
+        if (free_slot) { free_slot = false; return static_cast<DWORD>(WAIT_OBJECT_0); }
         const auto t = std::chrono::steady_clock::now();
         const DWORD r = WaitForSingleObject(g_fg_waitable, ms);
         add(vblank, std::chrono::duration<double, std::milli>(
@@ -182,14 +186,27 @@ static void FgPresenter()
     };
     // R11: when the swapchain gave us a frame-latency waitable object, the
     // compositor paces us: waiting on it releases one back buffer one
-    // vblank before the previous frame hits the screen. The first wait
-    // returns immediately (documented), so it is consumed here - from then
-    // on every loop iteration waits for the release before presenting,
-    // and the wall-clock deadlines become a second-order hint rather than
-    // the pacing source. Without the waitable (pre-8.1, blocked QI) the
-    // old wall-clock deadlines stay.
+    // vblank before the previous frame hits the screen. From here on every
+    // present waits for that release, and the wall-clock deadlines become a
+    // second-order hint rather than the pacing source. Without the waitable
+    // (pre-8.1, blocked QI) the old wall-clock deadlines stay.
+    //
+    // The waitable is a semaphore that every retired present raises, and the
+    // ordinary path presents without ever waiting on it: after a few seconds
+    // of NR-only presenting it held ~40 counts (measured, F6), so one wait
+    // here left the rest and no FG wait blocked for the whole session - the
+    // log said "paced by the compositor" while the clock paced it. Every
+    // count is drained; holding at least one means a back buffer is free now,
+    // and the first present takes it without a wait.
     if (g_fg_waitable != nullptr)
-        WaitForSingleObject(g_fg_waitable, 2000);
+    {
+        unsigned drained = 0;
+        while (WaitForSingleObject(g_fg_waitable, 0) == WAIT_OBJECT_0) ++drained;
+        free_slot = drained > 0;
+        if (drained > 1)
+            Log("[fg] the latency waitable held %u counts from ordinary presenting - "
+                "drained", drained);
+    }
     auto present = [&](ID3D12Resource *source) {
         winrt::com_ptr<ID3D12Resource> bb;
         HRESULT hr = g_present_swap->GetBuffer(
