@@ -2593,6 +2593,15 @@ class OverlayMenu:
                 self.capturing = None
                 out.append(("capture", None))
                 return out
+            # Backspace or Delete takes the command off the keyboard entirely
+            # (#134). There is no key to press for "no key", and Esc already
+            # means cancel, so the field needs its own gesture - the one every
+            # rebind dialog uses for clearing.
+            if event.key in (pygame.K_BACKSPACE, pygame.K_DELETE):
+                cmd, self.capturing = self.capturing, None
+                out.append(("hotkey", cmd, "none"))
+                out.append(("capture", None))
+                return out
             text = key_text(event)
             if text is None:
                 return out
@@ -3989,8 +3998,16 @@ class OverlayMenu:
                              (rect.x, rect.y), (rect.right, rect.y), 1)
         hint = getattr(self, "_hint_rect", None)
         if self.page == "settings" and hint is not None and hint.w > 0:
-            img = self._small_font.render(s["hotkey_hint"], True,
-                                          _rgb(self.c["muted"]))
+            # Two facts on one line: where the keys live, and how to take one
+            # off the keyboard (#134). The second half is discoverable only if
+            # it is written down - a field is filled by pressing a key, and
+            # nothing about it suggests Backspace clears it.
+            line = s["hotkey_hint"]
+            clear = s.get("hotkey_clear")
+            if clear:
+                line = f"{line} - {clear}"
+            img = self._clip(self._small_font, line, _rgb(self.c["muted"]),
+                             hint.w)
             surface.blit(img, (hint.x, hint.y))
 
 
@@ -4623,8 +4640,18 @@ class OverlayMenu:
             pygame.draw.rect(surface,
                              _rgb(self.c["accent"] if hot else self.c["border"]),
                              field, self._u(1), border_radius=radius)
-            txt = self._mono_small.render(str(item.extra.get("key", "—")),
-                                          True, _rgb(self.c["text"]))
+            # A command taken off the keyboard (#134) says so in words: the
+            # em dash it used to fall back to is what an unset caption looks
+            # like, and "did this row break?" is not the question the user
+            # should be asking after deliberately clearing a key.
+            key_text_value = str(item.extra.get("key", "") or "")
+            if not key_text_value or key_text_value in ("—", "-"):
+                key_text_value = s.get("hotkey_none", s.get("hotkey_press", "—"))
+                txt = self._small_font.render(key_text_value, True,
+                                              _rgb(self.c["muted"]))
+            else:
+                txt = self._mono_small.render(key_text_value, True,
+                                              _rgb(self.c["text"]))
         surface.blit(txt, (field.centerx - txt.get_width() // 2,
                            field.centery - txt.get_height() // 2))
         item.extra["field"] = field

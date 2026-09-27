@@ -62,6 +62,17 @@ Scope and honesty notes:
   either way. The shipped default is on, so an existing config.json keeps its
   hotkeys.
 
+* **A single command can be taken off the keyboard (#134).** The other half
+  of the same request: "keep only the hotkeys you actually need". A key could
+  be REPLACED but never removed - an empty or unparsable value was ignored and
+  the default stayed, so "I do not want this key" had no answer: a rebound key
+  is still a key. A field now clears with Backspace or Delete (`none` in
+  config.json), the row reads "none" in words rather than an em dash that
+  looks like a broken caption, and the freed combination goes back to every
+  other program. An unparsable value still means "leave it alone" and an empty
+  string is still not an unbind, so a hand-written config cannot mute a hotkey
+  by accident.
+
 ## v2.1.7 - 2026-09-27 - Frame Generation takes only new pictures and is paced by the display
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).

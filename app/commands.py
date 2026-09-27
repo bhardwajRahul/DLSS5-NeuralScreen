@@ -35,7 +35,7 @@ import convert_jobs
 import dialogs
 import pipeline
 import settings_io
-from hotkeys import build_bindings, parse_binding
+from hotkeys import UNBIND_WORDS, build_bindings, parse_binding
 from i18n import STRINGS as UI_STRINGS
 from paths import BASE_DIR
 from pipeline import restart_worker
@@ -1025,9 +1025,14 @@ def apply_menu_action(st, action: tuple) -> None:
             st.hotkeys.resume()
     elif kind == "hotkey":
         cmd, text = action[1], action[2]
-        parsed = parse_binding(text)
+        # Taking a command OFF the keyboard (#134) arrives here as the same
+        # action with an unbind word in it, so the field, the config and the
+        # controller all go through one path. It is not "an unparsable
+        # combination": the user asked for no key, and that is a real answer.
+        unbind = isinstance(text, str) and text.strip().lower() in UNBIND_WORDS
+        parsed = None if unbind else parse_binding(text)
         taken_by = _hotkey_owner(st, parsed, cmd) if parsed is not None else None
-        if parsed is None:
+        if not unbind and parsed is None:
             print(f"[main] could not parse the combination {text!r}", file=sys.stderr)
             st.display.alert(UI_STRINGS[st.lang]["hotkey_bad"])
         elif taken_by is not None:

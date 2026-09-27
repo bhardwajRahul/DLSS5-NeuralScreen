@@ -141,6 +141,13 @@ _KEY_NAMES = {
 }
 
 
+#: What the user may type into a field to take a command off the keyboard
+#: (#134). Words rather than only an empty string, because the field is
+#: filled by pressing a key and there is no obvious "clear" gesture - and
+#: because a config written by hand reads better with a word in it.
+UNBIND_WORDS = frozenset({"none", "off", "no", "disabled", "unbound"})
+
+
 def parse_binding(text: str) -> tuple[int, int] | None:
     """Parse a string like 'F10', 'Ctrl+Alt+Q', 'Insert' -> (mods, vk).
 
@@ -179,12 +186,23 @@ def build_bindings(overrides: dict | None = None) -> dict:
 
     overrides: {"toggle": "F10", "record": "Insert", ...} — command -> string.
     Unknown or malformed strings are ignored and the default stays.
+
+    A command can also be taken OFF the keyboard entirely (#134): an empty
+    string, or one of UNBIND_WORDS, removes its binding from the set. That is
+    the difference between "leave this one alone" (no key in the overrides at
+    all, or an unparsable one) and "I do not want this key" - the request is
+    explicit, and rebinding cannot express it: a new key is still a key.
     """
     bindings = {hk_id: tuple(entry) for hk_id, entry in DEFAULT_BINDINGS.items()}
     if not overrides:
         return bindings
     for hk_id, (mods, vk, cmd, name) in list(bindings.items()):
+        if cmd not in overrides:
+            continue
         text = overrides.get(cmd)
+        if isinstance(text, str) and text.strip().lower() in UNBIND_WORDS:
+            del bindings[hk_id]
+            continue
         if not text:
             continue
         parsed = parse_binding(text)
