@@ -30,7 +30,7 @@ Scope and honesty notes:
 
 ---
 
-## Unreleased
+## v2.1.7 - 2026-09-27 - Frame Generation takes only new pictures and is paced by the display
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).
 
