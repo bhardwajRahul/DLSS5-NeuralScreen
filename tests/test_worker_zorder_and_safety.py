@@ -265,16 +265,26 @@ def main() -> int:
         failures.append("the resume line is printed away from the reset it "
                         "describes - the log claims a reset that may not happen")
 
-    # 17. The first frame of a new Desktop Duplication session is consumed,
-    #     not shown (#128: a screenshot after NR OFF woke the capture and came
-    #     back black, because that empty surface was answered from).
+    # 17. The first frame of a new Desktop Duplication session is consumed ONLY
+    #     when it is really empty, not shown (#128: a screenshot after NR OFF
+    #     woke the capture and came back black, because that empty surface was
+    #     answered from; F3: consuming every first frame threw away the picture
+    #     the reopen fallback reopens the capture for).
     #
     # A fresh duplication session publishes an EMPTY surface on its first
     # AcquireNextFrame - the desktop has not been composited into it. Showing
-    # it would overwrite the last good frame in v.color with black. The flag
-    # has to be raised where the session opens, cleared by the first frame it
-    # actually produces, and the empty frame must leave g_dda_ready false so a
-    # consumer asking for pixels gets "no colour yet", not a black picture.
+    # it would overwrite the last good frame in v.color with black. But a first
+    # frame that CARRIES the desktop is the current content, and the no-colour
+    # fallback reopens the capture precisely to get it: on a still screen it is
+    # the only frame the reopen will ever hand over. The flag has to be raised
+    # where the session opens, the decision has to be made on the frame info,
+    # and an empty frame must leave g_dda_ready false so a consumer asking for
+    # pixels gets "no colour yet", not a black picture.
+    #
+    # Behavioural coverage lives in test_dda_reopen_pixels.py, which drives the
+    # worker: it fails on the code that consumed every first frame and passes on
+    # the conditional one. These source checks are the cheap guard that the
+    # condition cannot be deleted without a test failing somewhere.
     open_dda = _code(_body(cpp, "static bool OpenDda(UINT w, UINT hgt)"))
     if "g_dda_first_frame = true" not in open_dda:
         failures.append("a new duplication session does not raise the "
@@ -282,28 +292,35 @@ def main() -> int:
                         "empty first frame (#128a)")
     grab = _code(_body(cpp, "static bool DdaGrab(VideoState &v)"))
     if "g_dda_first_frame" not in grab:
-        failures.append("DdaGrab does not consume the empty first frame of a "
+        failures.append("DdaGrab does not judge the first frame of a "
                         "duplication session (#128a)")
     else:
         consume = grab[grab.index("g_dda_first_frame"):]
         swizzle = consume.find("SwizzleCaptureIntoColor(")
         if swizzle < 0:
             failures.append("DdaGrab no longer swizzles the capture - cannot "
-                            "tell where the empty first frame is handled (#128a)")
+                            "tell where the first frame is handled (#128a)")
         else:
             guard = consume[:swizzle]
             if not 0 <= guard.find("g_dda_first_frame = false"):
-                failures.append("the empty first frame reaches "
-                                "SwizzleCaptureIntoColor - the last good frame "
-                                "in v.color is overwritten with black (#128a)")
+                failures.append("the first frame reaches "
+                                "SwizzleCaptureIntoColor without the flag being "
+                                "cleared - it is never consumed (#128a)")
             elif guard.find("g_dda_first_frame = false") > guard.rfind("return false"):
                 failures.append("the first-frame flag is cleared after the guard "
                                 "returns - the frame is dropped, not consumed "
                                 "(#128a)")
             if "return false" not in guard:
-                failures.append("the empty first frame is not answered as "
+                failures.append("an empty first frame is not answered as "
                                 "\"no frame\" - the consumer cannot tell it from "
                                 "a real one (#128a)")
+            # The consumption must be conditional on the frame info, or a first
+            # frame carrying the desktop is thrown away again (F3).
+            if not re.search(r"AccumulatedFrames\s*==\s*0", guard):
+                failures.append("the first frame is consumed without checking "
+                                "the frame info - a first frame carrying the "
+                                "desktop is discarded, which is the frame the "
+                                "reopen fallback came for (F3)")
     # The fix is for Desktop Duplication ONLY: discarding the first frame of a
     # WGC pool starves a static window of the only frame it will ever offer.
     wgc = re.search(r"static bool WgcGrab\(VideoState &v\)\s*\{.*?\n\}", cpp, re.S)

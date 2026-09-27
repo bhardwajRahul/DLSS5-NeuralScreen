@@ -34,6 +34,18 @@ Scope and honesty notes:
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).
 
+* **A reopened capture keeps the frame it was opened for.** The #128 fix
+  consumed the first frame of every Desktop Duplication session to avoid
+  showing its empty surface. It did that unconditionally, and the no-colour
+  fallback reopens the capture precisely for that first frame - "a fresh
+  session hands over the current content as its first frame". Measured on the
+  bench with a still desktop: the reopen's first frame carried the picture,
+  the rule consumed it, and all eleven retries that followed saw an empty
+  surface, so a screenshot or a recording slot in that window got no pixels.
+  Only a genuinely empty first frame is consumed now: `AccumulatedFrames == 0`
+  and `LastPresentTime == 0`, which is what the empty surface reports, while a
+  frame carrying the desktop reports `AccumulatedFrames >= 1` and a real
+  present time.
 * **Frame Generation takes only new pictures (#132).** Every frame the loop
   produced went into FG as a new real frame: a pointer-only Desktop
   Duplication update (the same pixels - the cursor is not in the capture) and

@@ -5474,9 +5474,23 @@ static bool DdaGrab(VideoState &v)
     if (g_dda_first_frame)
     {
         g_dda_first_frame = false;
-        Log("[cap] the duplication session's first frame is empty - consumed, "
-            "not shown");
-        return false;
+        // Only an EMPTY first surface is consumed. A session's first frame
+        // that carries a picture IS the current desktop, and it is exactly
+        // what the no-colour fallback reopens the capture to get: discarding
+        // it unconditionally threw that frame away, the retries then answered
+        // WAIT_TIMEOUT on a still desktop, and a screenshot came back empty
+        // (F3). Measured on the bench: the empty surface reports
+        // AccumulatedFrames = 0 and LastPresentTime = 0 and reads black,
+        // while the frame carrying the desktop reports AccumulatedFrames >= 1
+        // and a real LastPresentTime (probe_dda_pixels).
+        if (fi.AccumulatedFrames == 0 && fi.LastPresentTime.QuadPart == 0)
+        {
+            Log("[cap] the duplication session's first frame is empty - "
+                "consumed, not shown");
+            return false;
+        }
+        Log("[cap] the duplication session's first frame carries the "
+            "desktop - shown, not consumed");
     }
     return SwizzleCaptureIntoColor(v);
 }
