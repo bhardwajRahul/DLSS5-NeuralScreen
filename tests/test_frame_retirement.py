@@ -61,9 +61,20 @@ def check_hdr_transition_guard():
 def check_close_failure():
     """Include the actual shared functions so the check cannot mirror a fake implementation."""
     vswhere = Path(os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio/Installer/vswhere.exe'
-    install = subprocess.check_output([str(vswhere), '-latest', '-products', '*',
-                                      '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
-                                      '-property', 'installationPath'], text=True).strip()
+    # Two passes, release first: vswhere hides PRERELEASE installs unless it is
+    # asked for them, and this bench's only C++ toolset is Visual Studio 18
+    # Insiders. The single query answered with an empty string, `install`
+    # became ".", and the test failed with "MSVC compiler environment
+    # unavailable" while a complete MSVC sat in Program Files. Same fix as
+    # native\vcvars.bat.
+    query = [str(vswhere), '-latest', '-products', '*',
+             '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+             '-property', 'installationPath']
+    install = subprocess.check_output(query, text=True).strip()
+    if not install:
+        install = subprocess.check_output(
+            query[:2] + ['-prerelease'] + query[2:], text=True).strip()
+    assert install, 'no Visual Studio with the C++ toolset was reported by vswhere'
     vcvars = Path(install) / 'VC/Auxiliary/Build/vcvars64.bat'
     assert vcvars.is_file(), 'MSVC compiler environment unavailable'
     with tempfile.TemporaryDirectory(prefix='ns-retirement-') as temp:
@@ -128,17 +139,24 @@ int main() {
         build.write_text(f'''@echo off
 call "{vcvars}" >nul
 if errorlevel 1 exit /b 1
-cl /nologo /O2 /EHsc /W3 /MD /std:c++17 /I"{native / 'include'}" /I"{native / 'src'}" "{source}" "{native / 'spout_bridge.cpp'}" "{native / 'gpu_recorder.cpp'}" /Fe:"{work / 'close_check.exe'}" /link "{native / 'lib/Windows_x86_64/x64/nvsdk_ngx_d.lib'}" "{native / 'SpoutDX.lib'}" version.lib kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib WindowsApp.lib dwmapi.lib mfplat.lib mfreadwrite.lib mfuuid.lib
+cl /nologo /O2 /EHsc /W3 /MD /std:c++17 /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS /I"{native / 'include'}" /I"{native / 'src'}" "{source}" "{native / 'spout_bridge.cpp'}" "{native / 'gpu_recorder.cpp'}" /Fe:"{work / 'close_check.exe'}" /link "{native / 'lib/Windows_x86_64/x64/nvsdk_ngx_d.lib'}" "{native / 'SpoutDX.lib'}" version.lib kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib WindowsApp.lib dwmapi.lib mfplat.lib mfreadwrite.lib mfuuid.lib
 ''', encoding='ascii')
+        # errors='replace': the compiler writes its diagnostics in the console
+        # code page, not in UTF-8, so a warning printed in Russian killed the
+        # reader thread with a UnicodeDecodeError and `built.stdout` came back
+        # as None - the assertion then failed on `None + str` instead of saying
+        # what the compiler said.
         built = subprocess.run([os.environ['COMSPEC'], '/d', '/c', str(build)], cwd=work,
-                               capture_output=True, text=True, timeout=120)
-        assert built.returncode == 0, built.stdout + built.stderr
+                               capture_output=True, text=True, timeout=120,
+                               errors='replace')
+        assert built.returncode == 0, (built.stdout or '') + (built.stderr or '')
         env = dict(os.environ, PATH=str(native) + os.pathsep + os.environ['PATH'])
         checked = subprocess.run([str(work / 'close_check.exe')], cwd=work, env=env,
-                                 capture_output=True, text=True, timeout=15)
-        assert checked.returncode == 0, checked.stdout + checked.stderr
-        assert 'Close failed' in checked.stdout + checked.stderr
-        assert 'result=failure' in checked.stdout + checked.stderr
+                                 capture_output=True, text=True, timeout=15,
+                                 errors='replace')
+        assert checked.returncode == 0, (checked.stdout or '') + (checked.stderr or '')
+        assert 'Close failed' in (checked.stdout or '') + (checked.stderr or '')
+        assert 'result=failure' in (checked.stdout or '') + (checked.stderr or '')
     print('OK: failed Close never submits, advances, or replies; replacement retires safely')
 
 

@@ -21,7 +21,16 @@ if not defined VSWHERE (
     exit /b 1
 )
 set "VSPATH="
+rem Two passes, and the order matters: a released Visual Studio first, a
+rem prerelease one only if there is nothing else. vswhere refuses to report a
+rem prerelease install unless -prerelease is passed, so on a machine whose
+rem only C++ tools are an Insiders/Preview build the first query answers
+rem nothing at all and every build script dies with "build tools not found" -
+rem even though vcvars64.bat is sitting right there. Passing -prerelease
+rem first would have the opposite problem: a Preview install would win over a
+rem released one that is also present. Hence: released, then prerelease.
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+if not defined VSPATH for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -prerelease -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
 if not defined VSPATH (
     echo Visual Studio C++ build tools not found via vswhere.
     exit /b 1
