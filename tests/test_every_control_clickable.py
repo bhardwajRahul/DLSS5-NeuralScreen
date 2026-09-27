@@ -140,7 +140,15 @@ def real_state():
         kill=lambda *a, **k: None, stdin=None, stdout=None, stderr=None)
     st.capture = SimpleNamespace(resolution=(2560, 1600),
                                  devicename="\\\\.\\DISPLAY1")
-    st.hotkeys = SimpleNamespace(suspend=lambda: None, resume=lambda: None)
+    # The controller's observable surface: the menu suspends/resumes around a
+    # rebind, and the master switch (#134) is turned on and off from the
+    # settings page. A stub that does not answer every call the dispatcher
+    # makes reports the dispatcher as broken, which is not what this test is
+    # about.
+    st.hotkeys = SimpleNamespace(suspend=lambda: None, resume=lambda: None,
+                                 set_enabled=lambda on: None,
+                                 wait_enabled=lambda timeout=0.5: True,
+                                 registered=[])
     st.tray = SimpleNamespace(_set_state=lambda **k: None)
 
     class _AnyDisplay:

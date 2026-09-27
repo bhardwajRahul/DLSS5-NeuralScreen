@@ -72,6 +72,12 @@ PM_NOREMOVE = 0x0000
 MSG_SUSPEND = 0x8000 + 1
 MSG_RESUME = 0x8000 + 2
 MSG_REBIND = 0x8000 + 3
+# The master switch (#134). Its own message rather than a flag read straight
+# from the main thread: enable and the menu's resume() can be posted in either
+# order, and a flag written outside the queue would let a late resume()
+# re-register hotkeys the user had just switched off. Every message here is
+# handled in order by the one thread, so the last one wins as the user meant.
+MSG_ENABLE = 0x8000 + 4
 
 # id -> (modifiers, VK, command, human-readable name)
 # The defaults live on the numpad. The reasoning, since it changed twice:
@@ -271,6 +277,15 @@ class HotkeyController:
         # `failed` for the NEW bindings (see wait_rebound).
         self._rebound = threading.Event()
         self._active = False                # hotkeys are currently registered
+        # The master switch (#134): off means the bindings are never
+        # registered and the poller stays quiet, whatever suspend/resume say.
+        # Kept apart from `_active` because the two answer different
+        # questions - `_active` is "registered right now", this is "registered
+        # at all" - and resume() must not undo it.
+        self._enabled = True
+        #: Set by the hotkey thread once a MSG_ENABLE has been acted on, so a
+        #: caller can report the real state instead of the one it asked for.
+        self._enabled_done = threading.Event()
         # Polling fallback state: vk -> last time the command fired, and
         # vk -> was the key down on the previous tick. The timestamp kills the
         # duplicate that would otherwise follow a delivered WM_HOTKEY (the
@@ -318,7 +333,17 @@ class HotkeyController:
             elif msg.message == MSG_SUSPEND:
                 self._unregister()
             elif msg.message == MSG_RESUME:
+                # A master switch that is off wins over a resume: the menu
+                # closing gives the keyboard back to the USER, not to us, and
+                # _register() would otherwise put the keys back on (#134).
                 self._register()
+            elif msg.message == MSG_ENABLE:
+                self._enabled = bool(msg.wParam)
+                if self._enabled:
+                    self._register()
+                else:
+                    self._unregister()
+                self._enabled_done.set()
             elif msg.message == MSG_REBIND:
                 self._unregister()
                 with self._lock:
@@ -331,7 +356,12 @@ class HotkeyController:
 
     # Registration lives only in the hotkey thread — see MSG_* above.
     def _register(self) -> None:
-        if self._active:
+        # The master switch wins over every route in: with hotkeys off a
+        # rebind, a resume() or the startup call all land here and must do
+        # nothing. Checked before `_active` so an off controller reports no
+        # `registered` names and the caller is not told it holds keys it does
+        # not (#134).
+        if not self._enabled or self._active:
             return
         self.registered = []
         self.failed = []
@@ -411,6 +441,12 @@ class HotkeyController:
         for hk_id in self._bindings:
             user32.UnregisterHotKey(None, hk_id)
         self._active = False
+        # The names go with the keys. `registered` is REPORTED - startup prints
+        # it, the master switch prints it - and an entry left behind says the
+        # program still holds a key it has just given back. That is the one
+        # question the switch exists to answer, so the list is emptied here,
+        # in the only place the keys are actually released (#134).
+        self.registered = []
         # The poller must treat the CURRENT key state as its baseline after
         # a suspend/rebind: the key the user just pressed to remap (or is
         # still holding) is not a fresh press. Without the reset the poller
@@ -429,6 +465,41 @@ class HotkeyController:
     def resume(self) -> None:
         if self._tid:
             user32.PostThreadMessageW(self._tid, MSG_RESUME, 0, 0)
+
+    def set_enabled(self, on: bool) -> None:
+        """The master switch (#134): off releases every binding for good.
+
+        Unlike suspend(), which the menu uses for the length of a rebind and
+        always pairs with a resume(), this is a setting: it survives a
+        resume() and stays off until the user turns it back on. The keys go
+        back to every other program, which is the entire point of the
+        request - the numpad belongs to the game, Blender or the calculator.
+
+        Posted as a message like the rest: RegisterHotKey with hWnd=None is
+        bound to the hotkey thread, so a flag set from here could not release
+        anything, and the thread has to see the messages in the order the user
+        produced them.
+
+        Before the thread exists there is no queue to post to, and no keys to
+        release either - startup calls this ahead of start() so the very first
+        registration already honours the switch. The flag is written directly
+        in that case, which is safe for the same reason: nothing is running
+        yet to race with.
+        """
+        if not self._tid:
+            self._enabled = bool(on)
+            return
+        self._enabled_done.clear()
+        user32.PostThreadMessageW(self._tid, MSG_ENABLE, 1 if on else 0, 0)
+
+    def wait_enabled(self, timeout: float = 0.5) -> bool:
+        """Wait for the last set_enabled to be acted on; False on a timeout.
+
+        Same reason as wait_rebound: `registered` and `failed` describe the
+        new state only after the hotkey thread has handled the message, and
+        that is what a caller reporting the switch back has to read.
+        """
+        return self._enabled_done.wait(timeout)
 
     def rebind(self, bindings: dict) -> None:
         """Replace the assignments on the fly, without restarting."""

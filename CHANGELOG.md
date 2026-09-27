@@ -49,6 +49,19 @@ Scope and honesty notes:
   when the dialog is ANSWERED, so it carried the menu as it looked 59 seconds
   later, not as it looked when the screenshot was taken.
 
+* **A master switch for the global hotkeys (#134).** The numpad keys
+  NeuralScreen binds belong to it while it runs - that is what RegisterHotKey
+  does - and people lose them in games that use the numpad, in Blender, in a
+  calculator. The menu could already give the keyboard back for a moment
+  (the suspend used while a field waits for a rebind key) but never for good,
+  and nothing survived a restart. `hotkeys_enabled` is a real setting: off
+  releases every binding, stays off across restarts, and is not undone by a
+  resume() - the menu closing after a rebind used to put the keys straight
+  back on. The row sits at the top of the hotkeys page, above the individual
+  keys it governs, and the menu stays reachable from the tray and the taskbar
+  either way. The shipped default is on, so an existing config.json keeps its
+  hotkeys.
+
 ## v2.1.7 - 2026-09-27 - Frame Generation takes only new pictures and is paced by the display
 
 Fixes from the review of v2.1.6 against the tracker (#132, #123).

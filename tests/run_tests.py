@@ -142,6 +142,7 @@ ABOUT = {
     "test_live_resize.py": "a window resize reconfigures the worker instead of replacing it",
     "test_revive_not_disarmed.py": "a transient failure still gets its one automatic revive",
     "test_hotkeys_resume_on_close.py": "every route out of the menu gives the keyboard back",
+    "test_hotkeys_master_switch.py": "the hotkeys master switch really releases every bound key",
     "test_shm_close_releases_out.py": "closing the frame buffer releases every section",
     "test_teardown_always_completes.py": "every step of the teardown is guarded",
     "test_config_hostile_values.py": "a hand-edited config never aborts the launch",
@@ -492,6 +493,7 @@ TEST_GROUPS = {
     GROUP_GUI_E2E: frozenset({
         "test_capture_visibility.py",
         "test_focus_z_order.py",
+        "test_hotkeys_master_switch.py",
         "test_idle_overlay_pumps.py",
         "test_monitor_windows.py",
         "test_overlay_toolwindow.py",

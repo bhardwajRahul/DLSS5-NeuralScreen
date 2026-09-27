@@ -443,6 +443,11 @@ class OverlayMenu:
             # What the taskbar's minimise and close buttons do (#93).
             "tray_on_minimise": False,
             "tray_on_close": False,
+            # The hotkeys master switch (#134). Listed HERE for the reason the
+            # spout/hdr entries above spell out: a key missing from this dict
+            # is dropped by set_state in silence, and the toggle would draw as
+            # off while the hotkeys were still live.
+            "hotkeys_enabled": True,
             "recording_dir": "",
             "screenshot_dir": "",
             "screenshot_mode": "ask",
@@ -1778,6 +1783,14 @@ class OverlayMenu:
                    bool(self.state.get("tray_on_close")))
 
             section(s["sec_hotkeys"], "keys")
+            # The master switch (#134), above the individual keys because it
+            # governs all of them. The request was specifically "off means the
+            # numpad is free again" - in games, Blender, a spreadsheet - so the
+            # row says what it releases rather than only naming the feature.
+            toggle("hotkeys_enabled",
+                   s.get("hotkeys_enabled", "Global hotkeys"),
+                   bool(self.state.get("hotkeys_enabled")),
+                   hint=s.get("hotkeys_off_hint", ""))
             # The remapping fields. The captions on the buttons come from these
             # same values, so a key change is visible across the whole menu at
             # once.

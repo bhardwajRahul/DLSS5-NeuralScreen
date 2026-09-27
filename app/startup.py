@@ -726,8 +726,20 @@ def bring_up(st) -> None:
         hotkey_overrides = {}
     st.hotkey_bindings = build_bindings(hotkey_overrides)
     st.hotkeys = HotkeyController(st.tray_commands, st.hotkey_bindings)
+    # The master switch (#134) is applied BEFORE the thread starts: with it
+    # off the keys are never registered in the first place, so there is no
+    # window in which a game could lose a numpad press to a program the user
+    # asked to stay out of the way. set_enabled() would also work after
+    # start(), but only as a correction of a state that should never have
+    # existed.
+    hotkeys_on = st.cfg.get("hotkeys_enabled", True) is not False
+    st.hotkeys.set_enabled(hotkeys_on)
     st.hotkeys.start()
-    if st.hotkeys.registered:
+    if not hotkeys_on:
+        # Say it plainly: "my hotkeys do not work" is otherwise this setting.
+        print("[main] global hotkeys are switched off (#134) - "
+              "the menu is still reachable from the tray and the taskbar")
+    elif st.hotkeys.registered:
         print(f"[main] hotkeys registered: {', '.join(st.hotkeys.registered)} "
               f"({describe_hotkeys(st.hotkey_bindings)})")
     if st.hotkeys.failed:

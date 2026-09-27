@@ -798,6 +798,26 @@ def apply_menu_action(st, action: tuple) -> None:
             tb.to_tray_on_close = bool(st.cfg.get("tray_on_close", False))
         settings_io.save_menu_layout(st)
         print(f"[main] {name}: {'on' if st.cfg[name] else 'off'}")
+    elif kind == "toggle" and action[1] == "hotkeys_enabled":
+        # The master switch (#134). Off releases every binding for good -
+        # unlike the suspend the menu uses while it waits for a rebind key,
+        # which is always paired with a resume and lasts a moment. Written to
+        # the config like the other switches, so "set and forget" survives a
+        # restart, and the controller is told right away so the keys are back
+        # in the hands of the game without waiting for one.
+        was_on = st.cfg.get("hotkeys_enabled", True) is not False
+        on = not was_on
+        st.cfg["hotkeys_enabled"] = on
+        st.hotkeys.set_enabled(on)
+        settings_io.save_menu_layout(st)
+        # Report the state the hotkey thread actually reached, not the one we
+        # asked for: a switch that says "off" while the keys are still held
+        # would be worse than no switch at all.
+        done = getattr(st.hotkeys, "wait_enabled", None)
+        settled = done(0.5) if done is not None else True
+        print(f"[main] global hotkeys: {'on' if on else 'off'} "
+              f"({len(getattr(st.hotkeys, 'registered', []))} registered"
+              f"{'' if settled else ', not settled yet'})")
     elif kind == "toggle" and action[1] == "rec_indicator":
         # The recording indicator outside the menu: a config flag,
         # the HUD reads it on every redraw.

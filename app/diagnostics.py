@@ -599,6 +599,7 @@ _SETTINGS_KEYS = (
     # repeats the first" and "the second pass is doing something".
     "nr_pass_params",
     "tray_on_minimise", "tray_on_close",
+    "hotkeys_enabled",
     "menu_scale", "menu_scale_auto",
     # Mini mode and the rows it keeps: a report from a shortened
     # panel would otherwise show a page the reporter never saw.

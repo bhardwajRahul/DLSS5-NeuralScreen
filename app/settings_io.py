@@ -865,7 +865,7 @@ _BOOL_KEYS = (
     "fullscreen", "worker_present", "motion_on_gpu", "capture_in_worker",
     "pixels_in_shm", "nr_small", "nr_direct", "frame_generation",
     "record_audio", "rec_indicator", "gpu_record", "convert_audio", "spout",
-    "hdr", "open_menu_on_start",
+    "hdr", "open_menu_on_start", "hotkeys_enabled",
 )
 
 
@@ -1041,6 +1041,10 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
             clean := clean_per_pass(cfg.get("nr_pass_params"))) else {}),
         "tray_on_minimise": bool(cfg.get("tray_on_minimise", False)),
         "tray_on_close": bool(cfg.get("tray_on_close", False)),
+        # The hotkeys master switch (#134). Read with `is not False` so a
+        # missing key means on (the shipped default) and only an explicit
+        # false switches them off.
+        "hotkeys_enabled": cfg.get("hotkeys_enabled", True) is not False,
         "recording_dir": cfg.get("recording_dir") or "",
         "screenshot_dir": cfg.get("screenshot_dir") or "",
         "screenshot_mode": (str(cfg.get("screenshot_mode", "ask"))
@@ -1561,6 +1565,7 @@ def menu_payload(st) -> dict:
         "convert_audio": st.cfg.get("convert_audio", True) is not False,
         "tray_on_minimise": bool(st.cfg.get("tray_on_minimise", False)),
         "tray_on_close": bool(st.cfg.get("tray_on_close", False)),
+        "hotkeys_enabled": st.cfg.get("hotkeys_enabled", True) is not False,
         "recording_dir": st.cfg.get("recording_dir") or "",
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
         "screenshot_mode": str(st.cfg.get("screenshot_mode", "ask")),
