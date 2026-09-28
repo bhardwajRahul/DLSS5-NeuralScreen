@@ -3,10 +3,21 @@ rem Max-optimization build of every native target with the LLVM toolchain:
 rem clang-cl + lld-link, -O3, ThinLTO, -march=x86-64-v2 (see the arch block
 rem below for what that means and how to ask for a different level).
 rem Same sources, same include dirs, same link inputs and the same output
-rem names as build-host.bat / build-launcher.bat / build-spout-*.bat - only
-rem the compiler and the optimization level change. The output names are
-rem load-bearing (native\nvngx.dll is the NGX filename contract, see
-rem paths.py), which is why they are kept byte-identical.
+rem names as build-host.bat / build-launcher.bat / build-spout-*.bat /
+rem build-gpu-recorder-check.bat - only the compiler and the optimization
+rem level change. The output names are load-bearing (native\nvngx.dll is the
+rem NGX filename contract, see paths.py), which is why they are kept
+rem byte-identical. When a target's source list or link inputs change, the
+rem matching line in the MSVC script changes with it: a missing source here
+rem is not a compile error but a LINK error, and see the worker step for why
+rem that is worse here than it looks.
+rem
+rem The one thing that is deliberately not byte-identical: the worker is
+rem linked to a temporary name and moved into place only after the link
+rem succeeds. lld-link creates its output file before it resolves anything
+rem and DELETES it again when the link errors, so a link straight to
+rem nvngx.dll takes out the working DLL that was already sitting there -
+rem exactly the wrong thing for the one binary everything else depends on.
 rem
 rem No vcvars needed: clang-cl and lld-link locate the MSVC headers/libs
 rem and the Windows SDK on their own. CLANG_DIR is empty by default - the
@@ -15,6 +26,13 @@ rem to a specific LLVM install to override that, either its root or its bin,
 rem so the folder an archive extracts to works as it stands.
 rem
 rem Flag notes:
+rem   /clang:      - clang-cl only accepts the GCC-style codegen flags when
+rem                   they carry this prefix; bare, it prints
+rem                   "warning: unknown argument ignored in clang-cl" and
+rem                   drops them, so the build looks max-optimized and is
+rem                   not. Every -f flag below goes through /clang:, while
+rem                   the driver flags (-march=, -flto=, -fuse-ld=) are
+rem                   spelled the way clang-cl already knows them.
 rem   /clang:-O3   - clang-cl maps its own /O spells to /O2; /clang:
 rem                   forwards the GCC-style -O3 straight to the driver.
 rem   -march=<level> - the x86-64 microarchitecture level, see the block
@@ -127,33 +145,56 @@ del "%PROBE_DIR%\arch_probe.*" >nul 2>&1
 set "ARCH=-march=%CLANG_ARCH%"
 echo target: %CLANG_ARCH%
 
-set "OPT=/clang:-O3 %ARCH% -flto=thin -fuse-ld=lld -fno-trapping-math -fomit-frame-pointer -fstrict-aliasing -fslp-vectorize -ffp-model=fast -fvectorize -funroll-loops"
+set "OPT=/clang:-O3 %ARCH% -flto=thin -fuse-ld=lld /clang:-fno-trapping-math /clang:-fomit-frame-pointer /clang:-fstrict-aliasing /clang:-fslp-vectorize /clang:-ffp-model=fast /clang:-fvectorize /clang:-funroll-loops"
 rem Common compile baseline - every target uses it, only the language
 rem standard may differ per target (see the c++20 note on the worker).
 set "CXXBASE=/nologo %OPT% /EHsc /W3 /MD"
 set "CXX=%CXXBASE% /std:c++17"
 set "SPOUT_LIBS=SpoutDX.lib kernel32.lib user32.lib gdi32.lib advapi32.lib ole32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib WindowsApp.lib dwmapi.lib"
 
-echo === [1/6] nvngx.dll_ns-forwarder.dll - the NGX escape hatch ===
+echo === [1/7] nvngx.dll_ns-forwarder.dll - the NGX escape hatch ===
 "%CC%" %CXX% /Iinclude /LD ns_forwarder.cpp ^
     /Fe:nvngx.dll_ns-forwarder.dll ^
     /link kernel32.lib d3d12.lib
 if errorlevel 1 exit /b 1
 del ns_forwarder.obj >nul 2>&1
 
-echo === [2/6] nvngx.dll - the worker (dlss5-feed-host64 + spout_bridge) ===
+echo === [2/7] nvngx.dll - the worker (dlss5-feed-host64 + spout_bridge + gpu_recorder) ===
 rem /std:c++20 here, not c++17: the worker is the only target that pulls in
 rem C++/WinRT (Windows Graphics Capture), and winrt/base.h under Clang needs
 rem the C++20 <coroutine> header - its C++17 fallback (<experimental/coroutine>)
 rem hard-errors "does not support Clang". The worker itself uses no coroutines;
 rem this only satisfies cppwinrt's header requirements.
-"%CC%" %CXXBASE% /std:c++20 /Iinclude /Isrc dlss5-feed-host64.cpp spout_bridge.cpp ^
-    /Fe:nvngx.dll ^
-    /link lib\Windows_x86_64\x64\nvsdk_ngx_d.lib %SPOUT_LIBS% version.lib
+rem gpu_recorder.cpp and the three mf* libs are part of the worker, exactly as
+rem in build-host.bat: the host calls GpuRec* for the video recorder, and
+rem gpu_recorder.cpp writes through a Media Foundation sink writer. Leaving
+rem either out does not fail the compile - it fails the LINK.
+rem The output name is a temporary one: a link error makes lld-link delete its
+rem output, and the output must not be the DLL that is already there. The
+rem move happens only on success, so a failed build leaves the old worker in
+rem place and the app keeps running.
+"%CC%" %CXXBASE% /std:c++20 /Iinclude /Isrc dlss5-feed-host64.cpp spout_bridge.cpp gpu_recorder.cpp ^
+    /Fe:nvngx.dll.build ^
+    /link lib\Windows_x86_64\x64\nvsdk_ngx_d.lib %SPOUT_LIBS% version.lib mfplat.lib mfreadwrite.lib mfuuid.lib
 if errorlevel 1 exit /b 1
-del dlss5-feed-host64.obj spout_bridge.obj >nul 2>&1
+del dlss5-feed-host64.obj spout_bridge.obj gpu_recorder.obj >nul 2>&1
+rem Put the worker in place. The usual reason this cannot is NeuralScreen
+rem running with the DLL open, so say that rather than exiting on a bare
+rem "file in use", and leave the old worker alone instead of leaving the new
+rem one lying about under a temporary name.
+move /y nvngx.dll.build nvngx.dll >nul 2>&1
+if exist nvngx.dll.build (
+    echo Could not replace nvngx.dll. If NeuralScreen is running, close it and build again.
+    del nvngx.dll.build nvngx.dll.build.manifest >nul 2>&1
+    exit /b 1
+)
+rem lld-link writes the SxS manifest next to its output, under the output's
+rem own name - so it landed on the temporary one. Move it to the name the
+rem worker is actually loaded under; build-host.bat gets this for free by
+rem linking straight to nvngx.dll.
+move /y nvngx.dll.build.manifest nvngx.dll.manifest >nul 2>&1
 
-echo === [3/6] ..\NeuralScreen.exe - the launcher ===
+echo === [3/7] ..\NeuralScreen.exe - the launcher ===
 if defined RC goto :compile_rc
 rem Neither llvm-rc nor Windows rc found - the launcher is the only target
 rem that needs a resource compiler, so the rest is not worth building.
@@ -168,14 +209,14 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 del launcher.obj launcher.res >nul 2>&1
 
-echo === [4/6] Spout sender + receiver ===
+echo === [4/7] Spout sender + receiver ===
 "%CC%" %CXX% /Iinclude spout_sender.cpp /Fe:spout_sender.exe /link %SPOUT_LIBS%
 if errorlevel 1 exit /b 1
 "%CC%" %CXX% /Iinclude spout_receiver.cpp /Fe:spout_receiver.exe /link %SPOUT_LIBS%
 if errorlevel 1 exit /b 1
 del spout_sender.obj spout_receiver.obj >nul 2>&1
 
-echo === [5/6] Spout checks (spout_check + adapter check + roundtrip) ===
+echo === [5/7] Spout checks (spout_check + adapter check + roundtrip) ===
 "%CC%" %CXX% /Iinclude spout_compile_check.cpp /Fe:spout_check.exe /link %SPOUT_LIBS%
 if errorlevel 1 exit /b 1
 "%CC%" %CXX% spout_adapter_check.cpp /Fe:spout_adapter_check.exe /link d3d11.lib dxgi.lib
@@ -184,7 +225,19 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 del spout_compile_check.obj spout_adapter_check.obj spout_roundtrip.obj >nul 2>&1
 
-echo === [6/6] done ===
-endlocal
+echo === [6/7] gpu_recorder_check.exe - the recorder with no worker and no NGX ===
+rem Same sources and same link inputs as build-gpu-recorder-check.bat, and for
+rem the same reason it is here: tests\test_gpu_recorder.py builds this exe and
+rem runs it, and a build that cannot produce it leaves that test to fall back
+rem to the MSVC script. No /I needed - the two files include nothing from
+rem include\ or src\.
+"%CC%" %CXX% gpu_recorder_check.cpp gpu_recorder.cpp ^
+    /Fe:gpu_recorder_check.exe ^
+    /link d3d12.lib d3d11.lib dxgi.lib d3dcompiler.lib mfplat.lib mfreadwrite.lib mfuuid.lib ole32.lib
+if errorlevel 1 exit /b 1
+del gpu_recorder_check.obj gpu_recorder.obj >nul 2>&1
+
+echo === [7/7] done ===
 echo all targets built: clang-cl -O3 -march=%CLANG_ARCH% -flto=thin -fuse-ld=lld.
+endlocal
 exit /b 0
