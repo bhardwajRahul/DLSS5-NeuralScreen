@@ -5970,10 +5970,27 @@ static bool UploadMotionOnly(VideoState &v, const BYTE *mv, bool motion_small,
 // much of that the GPU really computes.
 //
 // Measured (RTX 5070 Ti, 2560x1600 desktop): CPU 8.9 ms, GPU 8.0 ms - 0.9 ms
-// of overhead, the rest is real work. And the GPU time does not depend on the
-// input resolution: 7.9-8.6 ms over 0.37-3.32 MPix, nine times the pixels for
-// the same time. The model computes at its own internal resolution, which is
-// why work_scale never cost anything.
+// of overhead, the rest is real work.
+//
+// The numbers above were taken in the legacy upscale mode (nr_small off), and
+// in THAT mode the GPU time does not depend on the input resolution: 7.9-8.6 ms
+// over 0.37-3.32 MPix, nine times the pixels for the same time. The network is
+// handed the whole frame there and downsamples to the work size internally, so
+// the slider is a quality control, not a speed control - which is why it read
+// as "work_scale never cost anything".
+//
+// That reading stopped holding once Boost (nr_small) became the shipped
+// default: with it on the network IS handed the work size, and the slider costs
+// exactly what it says. Measured as a 2x2 on eval GPU, work_scale 0.6 against
+// 0.3 at a 4K desktop:
+//
+//                   scale 0.6   scale 0.3
+//     Boost on        6.15 ms     2.75 ms
+//     Boost off      15.97 ms    15.90 ms
+//
+// So the scale moves nothing with Boost off and 3.4 ms with it on. TECHNICAL.md
+// carries the same correction under "work_scale costs nothing (in upscale mode)"
+// - the mode matters, and this comment used to leave it out.
 // ---------------------------------------------------------------------------
 static ID3D12QueryHeap *g_ts_heap;
 static ID3D12Resource  *g_ts_readback;

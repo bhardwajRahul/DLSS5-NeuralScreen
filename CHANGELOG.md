@@ -30,7 +30,7 @@ Scope and honesty notes:
 
 ---
 
-## Unreleased
+## v2.1.9 - 2026-09-29 - Three tracker reports: full speed when hidden, the Windows 10 window mode, and a panel that opened itself
 
 * **Full speed while the window is hidden (#137).** The report: the picture is
   smooth while the program is open and collapses the moment it is minimised or
