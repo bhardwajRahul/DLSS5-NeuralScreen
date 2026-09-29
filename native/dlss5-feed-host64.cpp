@@ -62,6 +62,7 @@
 #include "hdr_display.h"
 #include "hdr_shaders.h"
 #include "dll_trust.h"
+#include "present_follow.h"
 
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_helpers.h>
@@ -2758,21 +2759,37 @@ static void FollowCapturedWindow()
     //     picture shimmered for the whole stability wait.
     // So the window keeps the buffer's own size, and a buffer that is
     // SMALLER than the target sits in its top-left corner, inside the rect.
-    // A buffer that is LARGER cannot be shown at all without one of the two:
-    // it used to be placed anyway - the origin "clamp" moved it left and then
-    // straight back, so it hung past the right and bottom edges, the trail of
-    // copies again. Until the client's live resize lands the new size, the
-    // overlay gets out of the way, as it does for a minimised window.
+    // A buffer that is LARGER than the target cannot be shown: it used to be
+    // placed anyway - the origin "clamp" moved it left and then straight
+    // back, so it hung past the right and bottom edges, the trail of copies
+    // again. Until the client's live resize lands the new size, the overlay
+    // gets out of the way, as it does for a minimised window.
+    //
+    // "Larger" is against the surface the buffer is presented on, not the
+    // frame alone: on Windows 10 the capture carries the invisible resize
+    // border and the frame does not, so a literal comparison hid the overlay
+    // for EVERY window and the effect never came back (#139). The border is
+    // measured here, in the same step. The decision itself lives in
+    // present_follow.h, so it is driven with real numbers by its own harness
+    // (tests/present_follow_check.cpp) instead of only being read as source.
     const UINT bw = g_present_w, bh = g_present_h;
     const UINT rw = (UINT)(r.right - r.left), rh = (UINT)(r.bottom - r.top);
-    if (bw > rw || bh > rh)
+    RECT wr = {};
+    const bool capture_known = GetWindowRect(g_wgc_hwnd, &wr) != 0;
+    const UINT slack_w = ns_present_follow::CaptureSlack(
+        wr.right - wr.left, (std::int32_t)rw, capture_known);
+    const UINT slack_h = ns_present_follow::CaptureSlack(
+        wr.bottom - wr.top, (std::int32_t)rh, capture_known);
+    if (ns_present_follow::DecideForStep(bw, bh, rw, rh, slack_w, slack_h) ==
+        ns_present_follow::Verdict::Hide)
     {
         if (g_present_shown)
         {
             ShowWindow(g_present_hwnd, SW_HIDE);
             g_present_shown = false;
-            Log("[wgc] the window is smaller than the picture (%ux%u) - the "
-                "overlay is hidden until the resize lands", bw, bh);
+            Log("[wgc] the window is %ux%u (+%ux%u over the frame) and the "
+                "picture is %ux%u - the overlay is hidden until the resize "
+                "lands", rw, rh, slack_w, slack_h, bw, bh);
         }
         return;
     }

@@ -51,6 +51,27 @@ Scope and honesty notes:
   read back from the OS for both processes, so a support bundle can say
   whether the opt-out held rather than only that it was requested.
 
+* **Window mode on Windows 10: the effect disappeared after the switch because
+  the overlay was hidden (#139).** The report: fullscreen works, one-window mode
+  draws a frame around the window but the effect is gone, and switching back to
+  fullscreen brings it back. The frame is the capture border Windows 10 will not
+  let us remove (`IsBorderRequired` is a Windows 11 API; the call is already
+  guarded). The missing effect was ours. The overlay the worker presents into
+  keeps the size of the buffer it was built for, and every follow step hides it
+  when that buffer will not fit inside the frame of the window being captured.
+  On Windows 10 the two rectangles of ONE window differ: the capture comes back
+  at the `GetWindowRect` size, invisible resize border included, while the frame
+  is `DWMWA_EXTENDED_FRAME_BOUNDS` without it - a log in the older #30 measured
+  1354x853 captured against 1340x846 framed. The comparison was `buffer >
+  frame`, which is true for every window on Windows 10, so the overlay was
+  hidden on the first follow step and stayed hidden for as long as that window
+  was captured. Fullscreen has no follower, which is why it stayed clean. The
+  border is now measured in the same step and the buffer is compared against
+  the surface it is really presented on; on Windows 11 the measurement is zero
+  and the rule is the one it always was. The decision lives in
+  `native/present_follow.h` so its harness drives it with #30's own numbers
+  instead of reading it as source.
+
 ## v2.1.8 - 2026-09-27 - Both tracker tickets: the screenshot dialog, and a hotkey master switch
 
 Fixes for the two open tickets (#135, #134), the last native item from the

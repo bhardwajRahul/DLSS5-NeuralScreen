@@ -175,7 +175,20 @@ def main() -> int:
     # 12. The overlay never hangs past a shrunken window, and a size mismatch
     #     really hides it
     follow = _code(_body(cpp, "static void FollowCapturedWindow()"))
-    if "bw > rw || bh > rh" not in follow:
+    # The comparison must go through the shared decision, which measures the
+    # capture's own border (present_follow.h, #139): the literal `buffer >
+    # frame` was true for every window on Windows 10, where the capture
+    # carries the invisible resize border and the frame does not, so the
+    # overlay was hidden on the first follow step and the effect never came
+    # back. The decision itself is driven by tests/test_present_follow.py.
+    if "ns_present_follow::DecideForStep(" not in follow:
+        failures.append("the follower does not use the shared step decision "
+                        "(present_follow.h) - a raw buffer/frame comparison "
+                        "hides the overlay on every Windows 10 window (#139)")
+    if "ns_present_follow::CaptureSlack(" not in follow:
+        failures.append("the follower compares the buffer against the frame "
+                        "without measuring the capture's resize border (#139)")
+    if re.search(r"\bbw\s*>\s*rw\b|\bbh\s*>\s*rh\b", follow):
         failures.append("a buffer larger than the followed window is still "
                         "placed over it - it hangs past the right/bottom edge")
     if "!g_present_mismatch" not in follow:
