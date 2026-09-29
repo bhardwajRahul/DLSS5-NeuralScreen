@@ -443,6 +443,11 @@ class OverlayMenu:
             # What the taskbar's minimise and close buttons do (#93).
             "tray_on_minimise": False,
             "tray_on_close": False,
+            # #137: keep full speed while the window is hidden (#137). Listed
+            # here for the reason the comment above spells out - a key missing
+            # from this dict is dropped by set_state in silence, and the toggle
+            # would draw as off while the opt-out was still in force.
+            "keep_speed_when_hidden": True,
             # The hotkeys master switch (#134). Listed HERE for the reason the
             # spout/hdr entries above spell out: a key missing from this dict
             # is dropped by set_state in silence, and the toggle would draw as
@@ -1781,6 +1786,17 @@ class OverlayMenu:
             toggle("tray_on_close",
                    s.get("tray_on_close", "Close to tray"),
                    bool(self.state.get("tray_on_close")))
+            # #137: the frame rate collapsed when the program was sent to the
+            # background, and Windows does that on purpose - a window-owning
+            # process whose window is minimised or fully occluded is classified
+            # Low and may lose its timer resolution. This asks for full speed
+            # anyway, which is what a real-time overlay needs and what costs
+            # battery and heat. On by default: the report came from someone who
+            # minimised the program expecting it to keep working.
+            toggle("keep_speed_when_hidden",
+                   s.get("keep_speed_when_hidden", "Keep full speed when hidden"),
+                   bool(self.state.get("keep_speed_when_hidden", True)),
+                   hint=s.get("keep_speed_hint", ""))
 
             section(s["sec_hotkeys"], "keys")
             # The master switch (#134), above the individual keys because it

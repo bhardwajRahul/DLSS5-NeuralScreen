@@ -779,6 +779,12 @@ def _validate_config(cfg: dict) -> dict:
     # into the tray because a string was truthy would look like a crash.
     cfg["tray_on_minimise"] = cfg.get("tray_on_minimise") is True
     cfg["tray_on_close"] = cfg.get("tray_on_close") is True
+    # #137: keep full speed while our window is hidden. A real switch, ON
+    # unless the config really says otherwise, and read exactly like
+    # hotkeys_enabled above -- which means NO normalisation here: the string
+    # "false" is truthy, so `is not False` would turn it into True before
+    # _BOOL_KEYS could read it as the off it spells. Leave the raw value to
+    # that loop and only decide the default where the value is consumed.
     if cfg.get("fps_overlay") not in ("off", "tl", "tr", "bl", "br"):
         _fallback("fps_overlay", cfg.get("fps_overlay"), "off",
                   "is not one of off/tl/tr/bl/br")
@@ -865,7 +871,7 @@ _BOOL_KEYS = (
     "fullscreen", "worker_present", "motion_on_gpu", "capture_in_worker",
     "pixels_in_shm", "nr_small", "nr_direct", "frame_generation",
     "record_audio", "rec_indicator", "gpu_record", "convert_audio", "spout",
-    "hdr", "open_menu_on_start", "hotkeys_enabled",
+    "hdr", "open_menu_on_start", "hotkeys_enabled", "keep_speed_when_hidden",
 )
 
 
@@ -1041,6 +1047,10 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
             clean := clean_per_pass(cfg.get("nr_pass_params"))) else {}),
         "tray_on_minimise": bool(cfg.get("tray_on_minimise", False)),
         "tray_on_close": bool(cfg.get("tray_on_close", False)),
+        # #137: keep full speed while the window is hidden. `is not False`
+        # for the same reason as the hotkeys switch below - a missing key
+        # means the shipped default (on).
+        "keep_speed_when_hidden": cfg.get("keep_speed_when_hidden", True) is not False,
         # The hotkeys master switch (#134). Read with `is not False` so a
         # missing key means on (the shipped default) and only an explicit
         # false switches them off.
@@ -1565,6 +1575,8 @@ def menu_payload(st) -> dict:
         "convert_audio": st.cfg.get("convert_audio", True) is not False,
         "tray_on_minimise": bool(st.cfg.get("tray_on_minimise", False)),
         "tray_on_close": bool(st.cfg.get("tray_on_close", False)),
+        # #137: the switch's live state, so the panel draws what is in force.
+        "keep_speed_when_hidden": st.cfg.get("keep_speed_when_hidden", True) is not False,
         "hotkeys_enabled": st.cfg.get("hotkeys_enabled", True) is not False,
         "recording_dir": st.cfg.get("recording_dir") or "",
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",

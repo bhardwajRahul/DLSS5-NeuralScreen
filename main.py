@@ -139,6 +139,7 @@ from i18n import STRINGS as UI_STRINGS
 import channels
 import commands
 import compatibility_runtime
+import power
 import startup
 import settings_io
 import pipeline
@@ -385,6 +386,11 @@ class _Pipeline:
         # purpose.
         "in_tray",
         "lang",
+        # #137: the last (enabled, ours, worker) verdict the power opt-out
+        # reported, so the log carries one line per change instead of one per
+        # re-assert. Declared here because __slots__ turns an undeclared field
+        # into an AttributeError at run time, which is its purpose.
+        "_power_throttle_last",
         "last_foreground",
         "window_list",
         "last_restart",
@@ -875,6 +881,13 @@ def main() -> int:
                 # And whether Frame Generation came up at all (issue #76:
                 # the switch used to stay ON after the runtime refused).
                 settings_io.refresh_fg_ok(st)
+                # #137: the OS may demote a window-owning process to Low again
+                # after the opt-out was set - a re-assert here is what keeps
+                # the answer true, and the read-back inside it is what lets a
+                # support bundle say whether it held. Twice a second is the
+                # same cadence as the checks above, and the call is two
+                # SetProcessInformation with no allocation when nothing moved.
+                power.apply_both(st)
                 # And whether the display being captured is in HDR. The
                 # network is trained on SDR: on an HDR desktop the result
                 # reads as "everything is too bright and the sliders do

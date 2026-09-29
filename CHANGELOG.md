@@ -30,6 +30,27 @@ Scope and honesty notes:
 
 ---
 
+## Unreleased
+
+* **Full speed while the window is hidden (#137).** The report: the picture is
+  smooth while the program is open and collapses the moment it is minimised or
+  sent to the background. Windows 11 does that deliberately - Quality of
+  Service classifies a window-owning process by its window's state (High in
+  focus, Medium visible, Low minimised or fully occluded) and the timer
+  resolution page states that a process whose window is invisible "does not get
+  a guaranteed higher resolution than the default system resolution". Neither
+  rule is aimed at us; a real-time overlay is simply the case where they are
+  wrong, and the documented opt-out is per process:
+  `SetProcessInformation(ProcessPowerThrottling)` with the EXECUTION_SPEED bit
+  selected and cleared. The call takes a process HANDLE, so the same opt-out
+  reaches the worker by pid - both processes own a window and each needs its
+  own answer, which is why nothing here required a native change or a rebuild.
+  The option is a real switch in the Behaviour section, **on by default**,
+  because a user who minimises the program is asking it to keep working; the
+  hint states the price (power and heat). `power.status()` reports the mask
+  read back from the OS for both processes, so a support bundle can say
+  whether the opt-out held rather than only that it was requested.
+
 ## v2.1.8 - 2026-09-27 - Both tracker tickets: the screenshot dialog, and a hotkey master switch
 
 Fixes for the two open tickets (#135, #134), the last native item from the

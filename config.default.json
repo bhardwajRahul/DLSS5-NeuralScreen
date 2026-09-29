@@ -50,6 +50,7 @@
   "residual_strength": null,
   "tray_on_minimise": false,
   "tray_on_close": false,
+  "keep_speed_when_hidden": true,
   "menu_height": null,
   "menu_offset": [
     0,

@@ -31,6 +31,7 @@ import time
 import numpy as np
 
 import channels
+import power
 import settings_io
 from capture import (ScreenCapture, _refresh_dxcam_factory,
                      list_monitors, monitor_origin, monitor_size,
@@ -571,6 +572,12 @@ def rebuild_pipeline(st, note: str) -> None:
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
         st.params, st.work_w, st.work_h, warmup, full_w, full_h,
         st.shm)
+    # #137: ask the OS for full speed in this process and in the worker. Here
+    # rather than only in the frame loop because the loop re-asserts every 30
+    # frames and a worker that starts demoted would run a whole session that
+    # way if the user never opened the menu. A failure is logged and ignored -
+    # the option is a speed-up, not a precondition.
+    power.apply_both(st)
     if getattr(st, "worker_failed", False):
         # Rebuilt while the worker stood failed: a monitor, GPU, HDR, Spout or
         # motion change made from the menu of a dead worker. The fresh one IS

@@ -34,6 +34,7 @@ import channels
 import convert_jobs
 import dialogs
 import pipeline
+import power
 import settings_io
 from hotkeys import UNBIND_WORDS, build_bindings, parse_binding
 from i18n import STRINGS as UI_STRINGS
@@ -798,6 +799,19 @@ def apply_menu_action(st, action: tuple) -> None:
             tb.to_tray_on_close = bool(st.cfg.get("tray_on_close", False))
         settings_io.save_menu_layout(st)
         print(f"[main] {name}: {'on' if st.cfg[name] else 'off'}")
+    elif kind == "toggle" and action[1] == "keep_speed_when_hidden":
+        # #137: the background-speed opt-out. Applied at once rather than at
+        # the next frame loop tick, so the switch and the two processes never
+        # disagree about what is in force.
+        st.cfg["keep_speed_when_hidden"] = not bool(
+            st.cfg.get("keep_speed_when_hidden", True))
+        if st.cfg["keep_speed_when_hidden"]:
+            power.apply_both(st, True)
+        else:
+            power.apply_both(st, False)
+        settings_io.save_menu_layout(st)
+        print(f"[main] keep_speed_when_hidden: "
+              f"{'on' if st.cfg['keep_speed_when_hidden'] else 'off'}")
     elif kind == "toggle" and action[1] == "hotkeys_enabled":
         # The master switch (#134). Off releases every binding for good -
         # unlike the suspend the menu uses while it waits for a rebind key,
