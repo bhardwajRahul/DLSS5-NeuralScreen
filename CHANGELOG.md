@@ -72,6 +72,23 @@ Scope and honesty notes:
   `native/present_follow.h` so its harness drives it with #30's own numbers
   instead of reading it as source.
 
+* **The panel no longer opens by itself at launch when the cursor is over the
+  taskbar.** The taskbar button is a 1x1 APPWINDOW window, and it used to be
+  shown with `SW_SHOW` - which makes it the FOREGROUND window. Windows then
+  sends the `WM_NCACTIVATE(WA_ACTIVE)` pair, and that pair is exactly what a
+  click on our own taskbar button looks like to the guard that separates a real
+  click from a system activation (#96). So the menu opened on its own at launch
+  whenever the cursor happened to rest over the taskbar, and stayed shut
+  anywhere else - measured on the bench before the fix: 4 of 4 launches with
+  the cursor parked over the taskbar, 0 of 4 with it anywhere else. The same
+  rule was already spelled out on `set_visible()`, which shows and hides the
+  button with `SW_SHOWNA` precisely so the button "comes back without taking
+  the focus"; the startup path was the one place it had been missed. It is now
+  `SW_SHOWNA` too, and the button still appears - covered by
+  `tests/test_taskbar_startup_menu.py`, which parks the cursor over the real
+  taskbar, launches with the menu switched off, and checks both that nothing
+  opened and that the button is still there and visible.
+
 ## v2.1.8 - 2026-09-27 - Both tracker tickets: the screenshot dialog, and a hotkey master switch
 
 Fixes for the two open tickets (#135, #134), the last native item from the

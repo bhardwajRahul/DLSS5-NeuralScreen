@@ -468,7 +468,17 @@ class TaskbarWindow:
         # CreateWindowExW may drop WS_VISIBLE for a popup with caption styles
         # until the first ShowWindow - force it, or the taskbar button never
         # appears (measured: window came up hidden without it).
-        user32.ShowWindow(self._hwnd, 5)  # SW_SHOW
+        #
+        # SW_SHOWNA, not SW_SHOW: showing it must NOT activate it. With
+        # SW_SHOW this 1x1 window became the FOREGROUND window at startup,
+        # and the WM_NCACTIVATE/WA_ACTIVE pair that follows is exactly what a
+        # click on our own taskbar button looks like - so the guards let it
+        # through whenever the cursor happened to rest over the taskbar, and
+        # the menu opened by itself on launch (same family as #96, measured
+        # on the bench: 4/4 launches with the cursor over the taskbar, 0/4
+        # with it anywhere else). The same reasoning already applies to
+        # set_visible() below; it was simply missed here.
+        user32.ShowWindow(self._hwnd, 8)  # SW_SHOWNA - show, do not activate
         self._set_icon(hinst)
         msg = wt.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
